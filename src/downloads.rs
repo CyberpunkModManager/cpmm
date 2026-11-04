@@ -2,6 +2,7 @@
 //! folder with a small record next to it, listed separately from installed mods, and installed
 //! only when the user asks (or right away when `auto_install_downloads` is on).
 
+use crate::nexus::catalogue::{download_name, mod_id_from_download};
 use crate::state::{Paths, State};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -55,18 +56,6 @@ pub fn write_meta(arc: &Path, m: &DlMeta) -> Result<()> {
     Ok(())
 }
 
-/// Nexus names manual downloads `<Name>-<modid>-<version>-<unix time>.<ext>`.
-pub fn nexus_id_from_filename(stem: &str) -> Option<u64> {
-    let re = regex::Regex::new(r"^.+?-(\d+)-(?:[\w.]+-)*?(\d{9,11})$").ok()?;
-    re.captures(stem).and_then(|c| c[1].parse().ok())
-}
-pub fn name_from_filename(stem: &str) -> String {
-    match regex::Regex::new(r"^(.+?)-\d+-(?:[\w.]+-)*?\d{9,11}$").ok().and_then(|re| re.captures(stem).map(|c| c[1].to_string())) {
-        Some(n) => n.replace('_', " "),
-        None => stem.replace('_', " "),
-    }
-}
-
 fn is_archive_file(p: &Path) -> bool {
     let n = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
     p.is_file() && !n.ends_with(&format!(".{META_EXT}")) && !n.ends_with(".part") && !n.ends_with(".tmp") && !n.starts_with('.')
@@ -88,8 +77,8 @@ pub fn list(paths: &Paths, st: &State) -> Vec<Download> {
             let rel = p.strip_prefix(&dir).unwrap_or(&p).to_string_lossy().to_string();
             let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
             let meta = read_meta(&p).unwrap_or_else(|| DlMeta {
-                name: name_from_filename(&stem),
-                mod_id: nexus_id_from_filename(&stem),
+                name: download_name(&stem),
+                mod_id: mod_id_from_download(&stem),
                 source: "local".into(),
                 ..Default::default()
             });
@@ -171,8 +160,8 @@ pub fn add(paths: &Paths, src: &Path, mod_id: Option<u64>, source: &str, move_it
     }
     let stem = dst.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let mut m = read_meta(&dst).unwrap_or_default();
-    m.name = if m.name.is_empty() { name_from_filename(&stem) } else { m.name };
-    m.mod_id = mod_id.or(m.mod_id).or_else(|| nexus_id_from_filename(&stem));
+    m.name = if m.name.is_empty() { download_name(&stem) } else { m.name };
+    m.mod_id = mod_id.or(m.mod_id).or_else(|| mod_id_from_download(&stem));
     m.source = source.into();
     m.downloaded_at = crate::state::now();
     write_meta(&dst, &m)?;
@@ -188,15 +177,6 @@ pub fn remove(d: &Download) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn nexus_manual_download_names() {
-        assert_eq!(nexus_id_from_filename("Curbside-35922-1-0-1-1761517298"), Some(35922));
-        assert_eq!(nexus_id_from_filename("Cyber Engine Tweaks-107-1-38-1-1761442138"), Some(107));
-        assert_eq!(nexus_id_from_filename("my_custom_mod"), None);
-        assert_eq!(name_from_filename("Cyber_Engine_Tweaks-107-1-38-1-1761442138"), "Cyber Engine Tweaks");
-        assert_eq!(name_from_filename("random"), "random");
-    }
 
     #[test]
     fn metadata_sits_next_to_the_archive() {

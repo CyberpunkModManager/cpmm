@@ -23,7 +23,7 @@ mod vfs;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use nexus::Nexus;
+use nexus::Catalogue;
 use state::{InstalledCollection, Mod, NexusSource, Paths, ReqCheck, Requirement, State, now, short_name, slugify};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -604,10 +604,6 @@ fn expand(p: &str) -> PathBuf {
     }
 }
 
-fn nexus(paths: &Paths) -> Nexus {
-    Nexus::new(paths.api_key().ok(), &paths.cache())
-}
-
 fn warn_if_running(paths: &Paths) {
     if vfs::running(paths).is_some() {
         eprintln!("note: a game session is running; changes apply on next launch");
@@ -770,8 +766,8 @@ fn real_main() -> Result<()> {
                 fomod,
                 fomod_defaults,
             };
-            if let Some(gid) = parse_nexus(&source) {
-                let nx = nexus(&paths);
+            if let Some(gid) = nexus::catalogue::mod_id(&source) {
+                let nx = Catalogue::open(&paths);
                 let mut visiting = BTreeSet::new();
                 install_nexus(&paths, &mut st, &nx, gid, &o, 0, &mut visiting)?;
             } else {
@@ -887,14 +883,14 @@ fn real_main() -> Result<()> {
             println!("{} now wins {} contested files (undo with `cpmm unhide <other mod>`)", st.mods[i].id, d.len());
         }
         Cmd::Tracked { install, untrack } => {
-            let nx = nexus(&paths);
-            let ids = nx.tracked()?;
+            let nx = Catalogue::open(&paths);
+            let ids = nx.gate().tracked()?;
             if ids.is_empty() {
                 println!("no tracked Cyberpunk mods (press Track on a mod page on nexusmods.com)");
             }
             let mut done = vec![];
             for gid in ids {
-                let name = nx.mod_info(gid).map(|i| i.name).unwrap_or_default();
+                let name = nx.gate().mod_info(gid).map(|i| i.name).unwrap_or_default();
                 match st.by_nexus(gid) {
                     Some(m) => {
                         println!("  {gid:<7} {name}: installed as {}", m.id);
@@ -927,7 +923,7 @@ fn real_main() -> Result<()> {
             }
             if untrack {
                 for gid in done {
-                    nx.untrack(gid)?;
+                    nx.gate().untrack(gid)?;
                     println!("  untracked {gid}");
                 }
             }
@@ -958,7 +954,7 @@ fn real_main() -> Result<()> {
             }
             if let Some(u) = url {
                 let l = manage::parse_nxm(&u)?;
-                let nx = nexus(&paths);
+                let nx = Catalogue::open(&paths);
                 // Mod Manager Download = download into the Downloads list; install only if the
                 // user asked for that (Settings → Install downloads automatically).
                 let arc = match download_nexus(&paths, &nx, l.mod_id, Some(&l.file_gsid), l.key.as_deref().zip(l.expires.as_deref()), "nxm")
@@ -1063,7 +1059,7 @@ fn real_main() -> Result<()> {
                     let i = st.get(&r#mod)?;
                     let m = &st.mods[i];
                     let gid = m.nexus.as_ref().map(|n| n.mod_id).context("not a Nexus mod")?;
-                    let entries = nexus(&paths).changelog(gid)?;
+                    let entries = Catalogue::open(&paths).gate().changelog(gid)?;
                     serde_json::json!({
                         "id": m.id, "name": m.name, "installed": m.version,
                         "entries": entries.iter().map(|(v, l)| serde_json::json!({
@@ -1114,11 +1110,11 @@ fn real_main() -> Result<()> {
                     "api_key": paths.api_key().is_ok(),
                 }),
                 ApiCmd::Safety => {
-                    let nx = nexus(&paths);
+                    let nx = Catalogue::open(&paths);
                     serde_json::json!({
                         "crashes": safety::crashes(&paths, 5),
                         "errors": safety::error_diff(&paths),
-                        "patch": safety::patch_status(&paths, &st, Some(&nx)),
+                        "patch": safety::patch_status(&paths, &st, Some(nx.gate())),
                         "snapshots": safety::list_snapshots(&paths),
                         "save_risks": safety::save_risks(&paths, &st),
                         "batches": safety::batches(&paths, &st),
@@ -1133,7 +1129,9 @@ fn real_main() -> Result<()> {
                     let ids: Vec<String> = st.mods.iter().map(|m| m.id.clone()).collect();
                     serde_json::to_value(loadorder::archive_conflicts(&paths, &st, &ids))?
                 }
-                ApiCmd::Lookup { source } => api::search_info(&paths, parse_nexus(&source).context("not a Nexus mod id or URL")?)?,
+                ApiCmd::Lookup { source } => {
+                    api::search_info(&paths, nexus::catalogue::mod_id(&source).context("not a Nexus mod id or URL")?)?
+                }
             };
             println!("{}", serde_json::to_string(&v)?);
         }
@@ -1355,7 +1353,7 @@ fn real_main() -> Result<()> {
             }
         }
         Cmd::Patch => {
-            let p = safety::patch_status(&paths, &st, Some(&nexus(&paths)));
+            let p = safety::patch_status(&paths, &st, Some(Catalogue::open(&paths).gate()));
             println!(
                 "game build {} (last updated {})",
                 p.build_id,
@@ -1414,7 +1412,7 @@ fn real_main() -> Result<()> {
             let i = st.get(&r#mod)?;
             let m = &st.mods[i];
             let gid = m.nexus.as_ref().map(|n| n.mod_id).context("not a Nexus mod")?;
-            let entries = nexus(&paths).changelog(gid)?;
+            let entries = Catalogue::open(&paths).gate().changelog(gid)?;
             if entries.is_empty() {
                 println!("{} has no changelog on Nexus", m.name);
             }
@@ -1518,8 +1516,8 @@ fn real_main() -> Result<()> {
         },
         Cmd::Settings { action } => settings_cmd(&paths, &st, action.unwrap_or(SettingsCmd::Show { json: false }))?,
         Cmd::Download { source, file } => {
-            let gid = parse_nexus(&source).context("give a Nexus mod id or URL")?;
-            let p = download_nexus(&paths, &nexus(&paths), gid, file.as_deref(), None, "nexus")?;
+            let gid = nexus::catalogue::mod_id(&source).context("give a Nexus mod id or URL")?;
+            let p = download_nexus(&paths, &Catalogue::open(&paths), gid, file.as_deref(), None, "nexus")?;
             println!("downloaded to {} (cpmm downloads install … to install it)", p.display());
         }
         Cmd::Downloads { action } => match action.unwrap_or(DownloadsCmd::List) {
@@ -1735,14 +1733,6 @@ fn same_fs_check(paths: &Paths) -> Result<()> {
         eprintln!("warning: data dir and game dir are on different filesystems; import will copy instead of rename");
     }
     Ok(())
-}
-
-fn parse_nexus(s: &str) -> Option<u64> {
-    if let Ok(n) = s.parse() {
-        return Some(n);
-    }
-    let i = s.find("cyberpunk2077/mods/")?;
-    s[i + 19..].split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
 }
 
 fn modio_mods(paths: &Paths) -> Vec<(String, String, String, String)> {
@@ -1961,102 +1951,6 @@ pub struct InstallOpts {
     fomod_defaults: bool,
 }
 
-fn pick_file(nx: &Nexus, info: &nexus::ModInfo, sel: Option<&str>) -> Result<nexus::Version> {
-    let files = nx.mod_files(&info.id)?;
-    // A numeric selection that is a version id (collections, nxm links): one lookup instead of
-    // listing every file's versions.
-    if let Some(s) = sel.filter(|s| s.chars().all(|c| c.is_ascii_digit()) && !files.iter().any(|f| f.id == *s))
-        && let Ok(v) = nx.version_by_gsid(s)
-        && files.iter().any(|f| f.id == v.file.id)
-    {
-        return Ok(v);
-    }
-    let mut cands = vec![];
-    for f in files.iter().filter(|f| f.is_active) {
-        if let Some(v) = nx.versions(&f.id)?.into_iter().next() {
-            cands.push(v);
-        }
-    }
-    if let Some(s) = sel {
-        if let Some(c) = cands.iter().find(|c| c.file.id == s || c.game_scoped_id == s) {
-            return Ok(c.clone());
-        }
-        if s.chars().all(|c| c.is_ascii_digit()) {
-            // an older upload, addressed by its game-scoped version id
-            let v = nx.version_by_gsid(s)?;
-            if !files.iter().any(|f| f.id == v.file.id) {
-                bail!("version {s} does not belong to {}", info.name);
-            }
-            return Ok(v);
-        }
-        let ls = s.to_lowercase();
-        let hits: Vec<&nexus::Version> = cands
-            .iter()
-            .filter(|c| c.file.id == s || c.file.name.to_lowercase().contains(&ls) || c.name.to_lowercase().contains(&ls))
-            .collect();
-        if hits.len() == 1 {
-            return Ok(hits[0].clone());
-        }
-        bail!("--file {s:?} matched {} files", hits.len());
-    }
-    let mains: Vec<&nexus::Version> = cands.iter().filter(|c| c.category == "main").collect();
-    let primary = info.primary_file_version.as_ref().map(|p| p.id.clone()).unwrap_or_default();
-    if mains.len() == 1 {
-        return Ok(mains[0].clone());
-    }
-    if let Some(p) = cands.iter().find(|c| c.id == primary)
-        && (mains.is_empty() || mains.iter().any(|m| m.id == p.id))
-    {
-        return Ok(p.clone());
-    }
-    let mut msg = format!("{} has several files; choose one with --file <gsid>:\n", info.name);
-    for c in &cands {
-        msg += &format!(
-            "  {:>7}  {:<9} v{:<10} {}  {}\n",
-            c.game_scoped_id,
-            c.category,
-            c.version,
-            c.uploaded_at.get(..10).unwrap_or(""),
-            c.file.name
-        );
-    }
-    bail!(msg)
-}
-
-fn to_reqs(rs: &[nexus::Req]) -> Vec<Requirement> {
-    rs.iter()
-        .filter(|r| !r.external && r.mod_id != 0)
-        .map(|r| Requirement { mod_id: r.mod_id, name: r.name.clone(), notes: r.notes.clone(), optional: r.optional() })
-        .collect()
-}
-
-/// Everything a Nexus mod requires: its mod page's list (GraphQL) plus the file-level
-/// dependencies of the installed file version (v3), if known. Returns the external
-/// (non-Nexus) requirements for display, and the list to store on the mod.
-fn fetch_requirements(
-    nx: &Nexus,
-    gid: u64,
-    version_id: &str,
-    force_page: bool,
-    force_files: bool,
-) -> Result<(Vec<nexus::Req>, Vec<Requirement>)> {
-    let reqs = nx.requirements(&[gid], force_page)?.into_iter().next().map(|x| x.2).unwrap_or_default();
-    let mut stored = to_reqs(&reqs);
-    if !version_id.is_empty() {
-        for (dgid, dname, minv) in nx.file_deps(version_id, force_files).unwrap_or_default() {
-            if dgid != 0 && dgid != gid && !stored.iter().any(|r| r.mod_id == dgid) {
-                stored.push(Requirement {
-                    mod_id: dgid,
-                    name: dname,
-                    notes: format!("file dependency, min version {minv}"),
-                    optional: false,
-                });
-            }
-        }
-    }
-    Ok((reqs.into_iter().filter(|r| r.external).collect(), stored))
-}
-
 fn req_notes(r: &Requirement) -> String {
     if r.notes.is_empty() { String::new() } else { format!(" — {}", r.notes) }
 }
@@ -2068,7 +1962,7 @@ fn req_notes(r: &Requirement) -> String {
 fn resolve_requirements(
     paths: &Paths,
     st: &mut State,
-    nx: &Nexus,
+    nx: &Catalogue,
     label: &str,
     stored: &[Requirement],
     ignored: &[u64],
@@ -2118,7 +2012,7 @@ fn resolve_requirements(
 fn install_nexus(
     paths: &Paths,
     st: &mut State,
-    nx: &Nexus,
+    nx: &Catalogue,
     gid: u64,
     o: &InstallOpts,
     depth: usize,
@@ -2127,13 +2021,12 @@ fn install_nexus(
     if !visiting.insert(gid) {
         return Ok(());
     }
-    let info = nx.mod_info(gid)?;
     let ind = "  ".repeat(depth);
-    let ver = pick_file(nx, &info, if depth == 0 { o.file.as_deref() } else { None })?;
+    let (info, ver) = nx.pick(gid, if depth == 0 { o.file.as_deref() } else { None })?;
     println!("{ind}{} ({gid}): file {:?} v{} [{}]", info.name, ver.file.name, ver.version, ver.category);
 
     // Requirements of this exact file version: checked now, then stored on the mod.
-    let (external, stored) = fetch_requirements(nx, gid, &ver.id, false, false)?;
+    let (external, stored) = nx.requirements(gid, &ver.id, false)?;
     for r in &external {
         println!("{ind}  external requirement: {} {}", r.name, r.url);
     }
@@ -2166,14 +2059,12 @@ fn install_nexus(
         let base = slugify(short_name(&info.name));
         st.unique_id(&if sibling { slugify(&format!("{base} {}", ver.file.name)) } else { base })
     });
-    let manifest_url = ver.manifest_url.clone().context("version has no manifest")?;
-    let man = nx.manifest(&manifest_url)?;
+    let man = nx.manifest(&ver)?;
     paths.ensure_dirs()?;
-    let arc = paths.downloads().join(format!("{}-{}", ver.game_scoped_id, slugify(&ver.file.name)));
-    if !arc.exists() {
+    if !nx.archive_path(&ver).exists() {
         println!("{ind}  downloading {:.1} MB", man.archive.size as f64 / 1048576.0);
     }
-    nx.download(&ver, &man, &arc, o.nxm.as_ref().map(|(k, e)| (k.as_str(), e.as_str())))?;
+    let arc = nx.fetch_archive(&ver, &man, o.nxm.as_ref().map(|(k, e)| (k.as_str(), e.as_str())))?;
     record_download(&arc, &info.name, gid, &ver, if o.nxm.is_some() { "nxm" } else { "nexus" });
 
     let x = install::tmp_extract_dir(paths, &id);
@@ -2219,7 +2110,7 @@ fn install_nexus(
         version_id: ver.id.clone(),
         version_gsid: ver.game_scoped_id.clone(),
         uploaded_at: ver.uploaded_at.clone(),
-        manifest_url,
+        manifest_url: ver.manifest_url.clone().unwrap_or_default(),
     };
     match existing.and_then(|e| st.find(&e)) {
         Some(i) => {
@@ -2301,8 +2192,8 @@ fn install_local(paths: &Paths, st: &mut State, arc: &std::path::Path, nid: Opti
     // Tagged with a Nexus mod: check its requirements before anything is staged.
     let mut checked = None;
     if let Some(gid) = nid {
-        let nx = nexus(paths);
-        let (external, stored) = fetch_requirements(&nx, gid, "", false, false)?;
+        let nx = Catalogue::open(paths);
+        let (external, stored) = nx.requirements(gid, "", false)?;
         for r in &external {
             println!("  external requirement: {} {}", r.name, r.url);
         }
@@ -2388,65 +2279,31 @@ struct UpdateStatus {
 }
 
 fn check_updates(paths: &Paths, st: &State, refresh: bool) -> Vec<UpdateStatus> {
-    let mut nx = nexus(paths);
-    if refresh {
-        nx.ttl = std::time::Duration::ZERO;
-    }
-    let nx = &nx;
+    use nexus::catalogue::Update;
+    let nx = Catalogue::open(paths);
+    let nx = if refresh { nx.uncached() } else { nx };
     let work: Vec<&Mod> = st.mods.iter().filter(|m| m.nexus.is_some()).collect();
-    let mut out: Vec<UpdateStatus> = vec![];
-    std::thread::scope(|s| {
-        let hs: Vec<_> = work
-            .chunks(work.len().div_ceil(6).max(1))
-            .map(|chunk| {
-                s.spawn(move || {
-                    chunk
-                        .iter()
-                        .map(|m| {
-                            let n = m.nexus.as_ref().unwrap();
-                            let r: Result<(String, Option<nexus::Version>)> = (|| {
-                                let info = nx.mod_info(n.mod_id)?;
-                                if info.status != "published" && !info.status.is_empty() {
-                                    return Ok((format!("mod page status: {}", info.status), None));
-                                }
-                                if n.file_id.is_empty() {
-                                    return Ok((format!("file unknown; page version {}", info.version), None));
-                                }
-                                let vs = nx.versions(&n.file_id)?;
-                                let Some(newest) = vs.first() else { return Ok(("no versions".into(), None)) };
-                                let ours =
-                                    vs.iter().find(|v| v.id == n.version_id || (n.version_id.is_empty() && v.uploaded_at == n.uploaded_at));
-                                if ours.is_some_and(|o| o.id == newest.id) {
-                                    if newest.category == "archived" {
-                                        return Ok((
-                                            format!(
-                                                "file archived by author; page version {} — check `cpmm install {} --file`",
-                                                info.version, n.mod_id
-                                            ),
-                                            None,
-                                        ));
-                                    }
-                                    return Ok(("up to date".into(), None));
-                                }
-                                Ok((
-                                    format!("UPDATE {} -> {} ({})", m.version, newest.version, newest.uploaded_at.get(..10).unwrap_or("")),
-                                    Some(newest.clone()),
-                                ))
-                            })();
-                            match r {
-                                Ok((s, v)) => UpdateStatus { id: m.id.clone(), status: s, newer: v },
-                                Err(e) => UpdateStatus { id: m.id.clone(), status: format!("error: {e}"), newer: None },
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        for h in hs {
-            out.extend(h.join().unwrap());
-        }
-    });
-    out
+    let sources: Vec<&NexusSource> = work.iter().filter_map(|m| m.nexus.as_ref()).collect();
+    work.iter()
+        .zip(nx.updates(&sources))
+        .map(|(m, r)| {
+            let mod_id = m.nexus.as_ref().map_or(0, |n| n.mod_id);
+            let (status, newer) = match r {
+                Ok(Update::PageStatus(s)) => (format!("mod page status: {s}"), None),
+                Ok(Update::FileUnknown { page_version }) => (format!("file unknown; page version {page_version}"), None),
+                Ok(Update::NoVersions) => ("no versions".into(), None),
+                Ok(Update::Archived { page_version }) => {
+                    (format!("file archived by author; page version {page_version} — check `cpmm install {mod_id} --file`"), None)
+                }
+                Ok(Update::UpToDate) => ("up to date".into(), None),
+                Ok(Update::Available(v)) => {
+                    (format!("UPDATE {} -> {} ({})", m.version, v.version, v.uploaded_at.get(..10).unwrap_or("")), Some(*v))
+                }
+                Err(e) => (format!("error: {e}"), None),
+            };
+            UpdateStatus { id: m.id.clone(), status, newer }
+        })
+        .collect()
 }
 
 fn updates(paths: &Paths, st: &State, refresh: bool) -> Result<()> {
@@ -2486,7 +2343,7 @@ fn update(paths: &Paths, st: &mut State, keys: &[String], all: bool) -> Result<(
         *b = Some(batch.clone());
     }
     safety::journal(paths, "update", &wanted, &batch);
-    let nx = nexus(paths);
+    let nx = Catalogue::open(paths);
     struct ClearBatch;
     impl Drop for ClearBatch {
         fn drop(&mut self) {
@@ -2506,7 +2363,7 @@ fn update(paths: &Paths, st: &mut State, keys: &[String], all: bool) -> Result<(
             println!("{id}: installed file unknown; use `cpmm install {} --file …`", n.mod_id);
             continue;
         }
-        let newest = nx.versions(&n.file_id)?.into_iter().next().context("no versions")?;
+        let newest = nx.gate().versions(&n.file_id)?.into_iter().next().context("no versions")?;
         let o = InstallOpts {
             file: Some(newest.game_scoped_id.clone()),
             id: Some(id.clone()),
@@ -2560,13 +2417,13 @@ fn deps(paths: &Paths, st: &mut State, refresh: bool) -> Result<()> {
     let stale = stale_requirements(st, refresh);
     let total = st.mods.iter().filter(|m| m.nexus.is_some()).count();
     if !stale.is_empty() {
-        let nx = nexus(paths);
+        let nx = Catalogue::open(paths);
         // one batched GraphQL request for all mod pages; per-mod lookups below hit its cache
         let ids: Vec<u64> = stale.iter().filter_map(|&i| st.mods[i].nexus.as_ref().map(|n| n.mod_id)).collect();
-        nx.requirements(&ids, refresh)?;
+        nx.gate().requirements(&ids, refresh)?;
         for &i in &stale {
             let n = st.mods[i].nexus.clone().unwrap();
-            match fetch_requirements(&nx, n.mod_id, &n.version_id, false, refresh) {
+            match nx.requirements(n.mod_id, &n.version_id, refresh) {
                 Ok((_, stored)) => {
                     st.mods[i].requires = stored;
                     st.mods[i].reqs_checked = Some(ReqCheck { at: now(), version_id: n.version_id.clone() });
@@ -2665,8 +2522,8 @@ fn fomod_plan(
 
 /// The archive for a source: a local path, or the Nexus file downloaded into the cache.
 fn fetch_archive(paths: &Paths, source: &str, file: Option<&str>) -> Result<PathBuf> {
-    match parse_nexus(source) {
-        Some(gid) => download_nexus(paths, &nexus(paths), gid, file, None, "nexus"),
+    match nexus::catalogue::mod_id(source) {
+        Some(gid) => download_nexus(paths, &Catalogue::open(paths), gid, file, None, "nexus"),
         None => {
             // a name or number from the Downloads list, or a path
             let p = expand(source);
@@ -2702,16 +2559,14 @@ fn record_download(arc: &std::path::Path, name: &str, gid: u64, ver: &nexus::Ver
 }
 
 /// Download one Nexus file into the Downloads list (no install).
-fn download_nexus(paths: &Paths, nx: &Nexus, gid: u64, file: Option<&str>, nxm: Option<(&str, &str)>, source: &str) -> Result<PathBuf> {
-    let info = nx.mod_info(gid)?;
-    let ver = pick_file(nx, &info, file)?;
-    let man = nx.manifest(ver.manifest_url.as_deref().context("version has no manifest")?)?;
+fn download_nexus(paths: &Paths, nx: &Catalogue, gid: u64, file: Option<&str>, nxm: Option<(&str, &str)>, source: &str) -> Result<PathBuf> {
+    let (info, ver) = nx.pick(gid, file)?;
+    let man = nx.manifest(&ver)?;
     paths.ensure_dirs()?;
-    let arc = paths.downloads().join(format!("{}-{}", ver.game_scoped_id, slugify(&ver.file.name)));
-    if !arc.exists() {
+    if !nx.archive_path(&ver).exists() {
         println!("downloading {} {} ({:.1} MB)", info.name, ver.version, man.archive.size as f64 / 1048576.0);
     }
-    nx.download(&ver, &man, &arc, nxm)?;
+    let arc = nx.fetch_archive(&ver, &man, nxm)?;
     record_download(&arc, &info.name, gid, &ver, source);
     Ok(arc)
 }
@@ -2744,27 +2599,10 @@ fn install_download(
     match (d.meta.mod_id, d.meta.version_gsid.is_empty()) {
         (Some(gid), false) => {
             let mut visiting = BTreeSet::new();
-            install_nexus(paths, st, &nexus(paths), gid, &InstallOpts { name: None, ..o }, 0, &mut visiting)
+            install_nexus(paths, st, &Catalogue::open(paths), gid, &InstallOpts { name: None, ..o }, 0, &mut visiting)
         }
         (gid, _) => install_local(paths, st, &d.path, gid, &o),
     }
-}
-
-/// Revision info + manifest of a collection (the archive is cached per revision).
-fn fetch_collection(paths: &Paths, nx: &Nexus, reference: &str) -> Result<(String, serde_json::Value, collections::Manifest, PathBuf)> {
-    let (slug, rev) = collections::parse_ref(reference)?;
-    let rv = nx.collection_revision(&slug, rev)?;
-    let n = rv["revisionNumber"].as_u64().unwrap_or(0);
-    let dir = paths.cache().join("collections").join(format!("{slug}-{n}"));
-    if !dir.join("collection.json").is_file() {
-        fs::create_dir_all(&dir)?;
-        let arc = dir.join("collection.7z");
-        nx.download_collection(rv["downloadLink"].as_str().context("no download link for this collection")?, &arc)?;
-        install::extract(&arc, &dir)?;
-        let _ = fs::remove_file(&arc);
-    }
-    let man = collections::read_manifest(&dir)?;
-    Ok((slug, rv, man, dir))
 }
 
 fn coll_status(st: &State, m: &collections::CollMod) -> &'static str {
@@ -2781,8 +2619,7 @@ fn coll_status(st: &State, m: &collections::CollMod) -> &'static str {
 }
 
 fn collection_json(paths: &Paths, st: &State, reference: &str) -> Result<serde_json::Value> {
-    let nx = nexus(paths);
-    let (slug, rv, man, _) = fetch_collection(paths, &nx, reference)?;
+    let (slug, rv, man, _) = Catalogue::open(paths).collection(reference)?;
     Ok(serde_json::json!({
         "slug": slug,
         "revision": rv["revisionNumber"],
@@ -2813,8 +2650,8 @@ fn collection_install(
     profile: Option<String>,
 ) -> Result<()> {
     manage::ensure_idle(paths)?;
-    let nx = nexus(paths);
-    let (slug, rv, man, dir) = fetch_collection(paths, &nx, reference)?;
+    let nx = Catalogue::open(paths);
+    let (slug, rv, man, dir) = nx.collection(reference)?;
     let name = rv.pointer("/collection/name").and_then(|v| v.as_str()).unwrap_or(&man.name).to_string();
     let rev = rv["revisionNumber"].as_u64().unwrap_or(0);
     println!("{name} (revision {rev}) by {}: {} mods", man.author, man.mods.len());
@@ -2979,20 +2816,16 @@ fn installed_exe() -> Result<PathBuf> {
     Ok(std::env::current_exe()?)
 }
 
-fn key_file() -> PathBuf {
-    expand("~/.config/nexusmods/apikey")
-}
-
 fn nexus_key_cmd(paths: &Paths, key: Option<String>, check: bool, remove: bool) -> Result<()> {
     if remove {
-        let _ = fs::remove_file(key_file());
+        let _ = fs::remove_file(nexus::key_file());
         println!("Nexus API key removed");
         return Ok(());
     }
     if let Some(k) = key {
         let k = k.trim().to_string();
-        let (name, premium) = Nexus::new(Some(k.clone()), &paths.cache()).validate().context("validating the key")?;
-        let f = key_file();
+        let (name, premium) = Catalogue::with_key(paths, Some(k.clone())).gate().validate().context("validating the key")?;
+        let f = nexus::key_file();
         fs::create_dir_all(f.parent().unwrap())?;
         fs::write(&f, &k)?;
         use std::os::unix::fs::PermissionsExt;
@@ -3002,13 +2835,13 @@ fn nexus_key_cmd(paths: &Paths, key: Option<String>, check: bool, remove: bool) 
     }
     match paths.api_key() {
         Ok(k) if check => {
-            let (name, premium) = Nexus::new(Some(k), &paths.cache()).validate()?;
+            let (name, premium) = Catalogue::with_key(paths, Some(k)).gate().validate()?;
             println!(
                 "key OK: {name}{}",
                 if premium { " (premium: downloads work from cpmm)" } else { " (free: use Mod Manager Download links)" }
             );
         }
-        Ok(_) => println!("a Nexus API key is set ({}); --check validates it", key_file().display()),
+        Ok(_) => println!("a Nexus API key is set ({}); --check validates it", nexus::key_file().display()),
         Err(_) => {
             println!("no Nexus API key; get yours at https://www.nexusmods.com/users/myaccount?tab=api and run `cpmm nexus-key <KEY>`")
         }
@@ -3220,7 +3053,7 @@ fn deps_fix(paths: &Paths, st: &mut State) -> Result<()> {
     st.save(paths)?;
     if !missing.is_empty() {
         manage::ensure_idle(paths)?;
-        let nx = nexus(paths);
+        let nx = Catalogue::open(paths);
         let o = InstallOpts {
             file: None,
             id: None,
@@ -3247,7 +3080,7 @@ fn deps_fix(paths: &Paths, st: &mut State) -> Result<()> {
 }
 
 fn verify(paths: &Paths, st: &State, keys: &[String]) -> Result<()> {
-    let nx = nexus(paths);
+    let nx = Catalogue::open(paths);
     let sel: Vec<usize> =
         if keys.is_empty() { (0..st.mods.len()).collect() } else { keys.iter().map(|k| st.get(k)).collect::<Result<_>>()? };
     for i in sel {
@@ -3256,7 +3089,7 @@ fn verify(paths: &Paths, st: &State, keys: &[String]) -> Result<()> {
             println!("  {:<34} no manifest (manual mod)", m.id);
             continue;
         };
-        let man = nx.manifest(&url)?;
+        let man = nx.gate().manifest(&url)?;
         let by_suffix: Vec<(String, String)> =
             man.files.iter().map(|f| (f.file_path.to_lowercase(), f.file_hashes.sha256.clone())).collect();
         let root = paths.mod_files(&m.id);

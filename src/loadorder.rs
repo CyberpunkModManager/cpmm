@@ -650,8 +650,8 @@ pub fn doctor(paths: &Paths, st: &State) -> Vec<Finding> {
             actions: vec![],
         });
     }
-    let nx = crate::nexus::Nexus::new(paths.api_key().ok(), &paths.cache());
-    let ps = crate::safety::patch_status(paths, st, Some(&nx));
+    let nx = crate::nexus::Catalogue::open(paths);
+    let ps = crate::safety::patch_status(paths, st, Some(nx.gate()));
     if ps.patch_detected && ps.at_risk.iter().any(|x| !x.released_since_patch || x.update_available) {
         let mut actions: Vec<Action> = ps
             .at_risk
