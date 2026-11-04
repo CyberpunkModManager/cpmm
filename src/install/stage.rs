@@ -1,4 +1,6 @@
-//! Turning an archive into a staged mod: extract, find the game root, canonicalise case.
+//! Laying out an extracted tree as a staged mod: extract, find the game root, canonicalise case,
+//! move the files into `mods/<id>/files`. Pure planning plus the filesystem move; the
+//! pipeline around it (sources, requirements, recording) is in `install/mod.rs`.
 
 use crate::files::{self, CaseIndex};
 use crate::state::{Paths, State};

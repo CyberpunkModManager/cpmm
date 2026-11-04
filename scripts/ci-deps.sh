@@ -10,6 +10,8 @@ if [ "${1:-}" = "gui" ]; then
 else
   command -v cc >/dev/null || { $SUDO apt-get update -qq && $SUDO apt-get install -y -qq --no-install-recommends build-essential pkg-config curl >/dev/null; }
 fi
+# the install tests extract archives with 7z, as cpmm does
+command -v 7z >/dev/null || { $SUDO apt-get update -qq && $SUDO apt-get install -y -qq --no-install-recommends p7zip-full >/dev/null; }
 if ! command -v cargo >/dev/null; then
   curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c clippy,rustfmt
   echo "$HOME/.cargo/bin" >> "${GITHUB_PATH:-/dev/null}"
