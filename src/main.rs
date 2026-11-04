@@ -441,8 +441,8 @@ fn real_main() -> Result<()> {
         _ => Some(lock(&paths)?),
     };
     if let Cmd::Nxm { url: Some(_), .. } = &cli.cmd {
-        // Launched by the browser without a terminal: log instead.
-        if unsafe { libc::isatty(1) } == 0 {
+        // Launched by the browser without a terminal: log instead. (The GUI reads stdout itself.)
+        if unsafe { libc::isatty(1) } == 0 && std::env::var_os("CPMM_GUI").is_none() {
             use std::os::fd::AsRawFd;
             fs::create_dir_all(&paths.data)?;
             let f = fs::OpenOptions::new().create(true).append(true).open(paths.data.join("nxm.log"))?;

@@ -1,11 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { invoke } from "@tauri-apps/api/core";
-import { Activity, ArrowDownToLine, HeartPulse, LogOut, Play, CheckCircle2, CircleAlert, Cpu, Download, Gamepad2, GitMerge, Layers, Loader2, Network, PackagePlus, RefreshCw, Save, X } from "lucide-react";
+import { Activity, ArrowDownToLine, Globe, HeartPulse, LogOut, Play, CheckCircle2, CircleAlert, Cpu, Download, Gamepad2, GitMerge, Layers, Loader2, Network, PackagePlus, RefreshCw, Save, X } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { api } from "./lib/cpmm";
 import { useSpatialNav } from "./lib/gamepad";
 import { useJobs } from "./lib/jobs";
+import { openNexus, useNexusBridge } from "./lib/nexus";
 import { ErrorBox, IconButton, Spinner } from "./components/ui";
 import { ModsView } from "./views/Mods";
 import { HealthView } from "./views/LoadOrder";
@@ -50,6 +51,7 @@ export default function App() {
     qc.invalidateQueries();
   }, [qc]);
   useSpatialNav(onSection, onBack, onStart, onSelect);
+  useNexusBridge();
 
   useEffect(() => {
     if (busy) setLogOpen(true);
@@ -97,10 +99,17 @@ export default function App() {
           <div className="pl-5">LB/RB section · L-stick scroll</div>
           <div className="pl-5">R-stick cursor · RT/R3 click</div>
           <div className="pl-5">Start activity · Select refresh</div>
+          <div className="pl-5">In Nexus: Y keyboard · Start back</div>
         </div>
         <button
+          onClick={() => openNexus().catch((e) => alert(String(e)))}
+          className="mt-4 flex h-11 items-center gap-3 rounded-xl border border-neon-cyan/30 px-3 text-sm text-neon-cyan hover:bg-neon-cyan/12 cursor-pointer"
+        >
+          <Globe className="size-4.5" /> Browse Nexus
+        </button>
+        <button
           onClick={() => invoke("quit")}
-          className="mt-4 flex h-11 items-center gap-3 rounded-xl px-3 text-sm text-ink-300 hover:bg-neon-red/10 hover:text-neon-red cursor-pointer"
+          className="mt-1 flex h-11 items-center gap-3 rounded-xl px-3 text-sm text-ink-300 hover:bg-neon-red/10 hover:text-neon-red cursor-pointer"
         >
           <LogOut className="size-4.5" /> Exit
         </button>

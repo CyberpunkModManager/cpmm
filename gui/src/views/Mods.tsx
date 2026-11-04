@@ -1,5 +1,4 @@
 import { useQuery } from "@tanstack/react-query";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import clsx from "clsx";
 import {
   ArrowDown,
@@ -20,6 +19,7 @@ import {
 import { useMemo, useState } from "react";
 import { api, timeAgo, type AppState, type ModRow } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
+import { openLink } from "../lib/nexus";
 import { Badge, Button, Confirm, Drawer, Empty, ErrorBox, IconButton, Input, PageHeader, Spinner, Switch } from "../components/ui";
 import { ModHistory } from "./Safety";
 
@@ -196,7 +196,7 @@ function ModDrawer({ mod, state, onClose, onOrder }: { mod: ModRow | null; state
     >
       <div className="flex flex-wrap gap-2">
         {mod.nexus && (
-          <Button icon={<ExternalLink className="size-4" />} onClick={() => openUrl(mod.nexus!.url)}>
+          <Button icon={<ExternalLink className="size-4" />} onClick={() => openLink(mod.nexus!.url)}>
             Nexus page
           </Button>
         )}

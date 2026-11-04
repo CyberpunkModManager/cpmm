@@ -73,6 +73,25 @@ non-HTTP URL` in `~/.local/share/Steam/logs/console_log.txt`), so the button doe
 Use Firefox (as a non-Steam game, or on the desktop), or press Track in Steam's browser and run
 `cpmm tracked --install`.
 
+### Built-in Nexus browser
+
+The GUI's **Browse Nexus** button (sidebar, or the Install view) opens nexusmods.com in a cpmm window,
+which is the easiest route in Game Mode:
+
+* **Mod Manager Download** (`nxm://`, premium or the free "slow download") is intercepted and installed
+  with its requirements as a normal job: it shows in Activity, and the result pops up in the page.
+* **Manual download** archives are saved to `~/.local/share/cpmm/downloads/browser/` and installed
+  with `--nexus <id>` from the page they came from, so update checks work.
+* Controller: right stick / D-pad moves a cursor, A / RT / R3 clicks, left stick scrolls, B / LB back,
+  RB forward, Y opens Steam's on-screen keyboard (also opened when you click a text field in Game Mode;
+  `CPMM_OSK=0/1` overrides the detection), Select reloads, Start returns to cpmm.
+* Nexus "Mod" links elsewhere in the GUI open here too; other sites still open in the system browser.
+* Sign in with email and password: Google/Apple sign-in usually refuse embedded browsers.
+
+The page gets no access to the Tauri IPC (the window isn't in any capability). It reaches cpmm only
+through navigations the backend intercepts and cancels: `nxm://…`, `cpmm://close` and `cpmm://keyboard`.
+See `gui/src-tauri/src/nexus.rs` and `nexus.js`.
+
 ## GUI (`gui/`)
 
 Tauri 2 + React 19 + TypeScript + Tailwind CSS 4 (TanStack Query, Lucide icons). The Rust side is a

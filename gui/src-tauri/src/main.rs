@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter, Manager};
 
+mod nexus;
+
 fn cpmm_bin() -> PathBuf {
     if let Some(p) = std::env::var_os("CPMM_BIN") {
         return p.into();
@@ -32,12 +34,7 @@ fn quit(app: AppHandle) {
 /// close cpmm: in Game Mode a second "game" launching while cpmm runs would prompt.
 #[tauri::command]
 fn launch_game(app: AppHandle) -> Result<(), String> {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let steam = [home.join(".local/share/Steam/ubuntu12_32/steam"), home.join(".steam/steam/ubuntu12_32/steam")]
-        .into_iter()
-        .find(|p| p.is_file())
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "steam".into());
+    let steam = nexus::steam_bin();
     // Steam's reaper kills everything a "game" leaves behind, so the delayed request must run
     // outside cpmm's process tree: hand it to the user's systemd. It fires after cpmm exits.
     let script = format!("sleep 1.5; exec \"{steam}\" steam://rungameid/1091500");
@@ -100,6 +97,7 @@ async fn run(app: AppHandle, job: u64, args: Vec<String>) -> Result<RunResult, S
     tauri::async_runtime::spawn_blocking(move || {
         let mut child = Command::new(cpmm_bin())
             .args(&args)
+            .env("CPMM_GUI", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -164,14 +162,23 @@ fn spawn_gamepad(app: AppHandle) {
         let mut last_analog = Instant::now();
         let mut dpad = [false; 4];
         loop {
-            let focused = app.get_webview_window("main").and_then(|w| w.is_focused().ok()).unwrap_or(true);
-            if last_focus != Some(focused) {
-                glog(&format!("window focused: {focused}"));
-                last_focus = Some(focused);
+            // Input goes to the window in front: the Nexus browser when it's open and focused
+            // (or when focus is unknown, as under some gamescope setups), else the main window.
+            let nexus = app.get_webview_window(nexus::LABEL).filter(|w| w.is_visible().unwrap_or(true));
+            let nexus_focused = nexus.as_ref().and_then(|w| w.is_focused().ok()).unwrap_or(false);
+            let main_focused = app.get_webview_window("main").and_then(|w| w.is_focused().ok()).unwrap_or(nexus.is_none());
+            let nexus = nexus.filter(|_| nexus_focused || !main_focused);
+            let focused = main_focused && nexus.is_none();
+            let state = (focused, nexus.is_some());
+            if last_focus != Some(state) {
+                glog(&format!("input target: main {focused}, nexus {}", nexus.is_some()));
+                last_focus = Some(state);
             }
             let emit = |a: &str| {
-                if focused {
-                    let _ = app.emit("gamepad", a.to_string());
+                if let Some(w) = &nexus {
+                    nexus::pad(w, &format!("pad({})", serde_json::json!(a)));
+                } else if focused {
+                    let _ = app.emit_to("main", "gamepad", a.to_string());
                 }
             };
             while let Some(ev) = gil.next_event() {
@@ -187,6 +194,7 @@ fn spawn_gamepad(app: AppHandle) {
                 match ev.event {
                     EventType::ButtonPressed(b, _) => match b {
                         Button::South => emit("a"),
+                        Button::North => emit("y"),
                         Button::East => emit("b"),
                         Button::LeftTrigger => emit("lb"),
                         Button::RightTrigger => emit("rb"),
@@ -233,13 +241,21 @@ fn spawn_gamepad(app: AppHandle) {
                     if a < 0.15 { 0.0 } else { ((a - 0.15) / 0.85).powi(2) * v.signum() }
                 };
                 let (scx, scy) = (curve(sx), curve(sy));
-                if focused && (scx != 0.0 || scy != 0.0) {
-                    // gilrs Y is positive up; the page scrolls down when the stick goes down
-                    let _ = app.emit("scroll", serde_json::json!({ "dx": scx, "dy": -scy }));
+                // gilrs Y is positive up; the page scrolls down when the stick goes down
+                if scx != 0.0 || scy != 0.0 {
+                    if let Some(w) = &nexus {
+                        nexus::pad(w, &format!("scroll({scx}, {})", -scy));
+                    } else if focused {
+                        let _ = app.emit_to("main", "scroll", serde_json::json!({ "dx": scx, "dy": -scy }));
+                    }
                 }
                 let (cx, cy) = (curve(rx), curve(ry));
-                if focused && (cx != 0.0 || cy != 0.0) {
-                    let _ = app.emit("pointer", serde_json::json!({ "dx": cx, "dy": -cy }));
+                if cx != 0.0 || cy != 0.0 {
+                    if let Some(w) = &nexus {
+                        nexus::pad(w, &format!("pointer({cx}, {})", -cy));
+                    } else if focused {
+                        let _ = app.emit_to("main", "pointer", serde_json::json!({ "dx": cx, "dy": -cy }));
+                    }
                 }
             }
             let want = [dpad[0], dpad[1], dpad[2], dpad[3]];
@@ -274,7 +290,7 @@ fn main() {
             spawn_gamepad(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![api, run, gui_log, quit, launch_game])
+        .invoke_handler(tauri::generate_handler![api, run, gui_log, quit, launch_game, nexus::open_nexus, nexus::close_nexus, nexus::nexus_toast])
         .run(tauri::generate_context!())
         .expect("error while running cpmm GUI");
 }

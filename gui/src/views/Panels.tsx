@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import clsx from "clsx";
 import {
+  Globe,
   ArrowDownToLine,
   BookmarkCheck,
   CheckCircle2,
@@ -24,6 +24,7 @@ import {
 import { useState } from "react";
 import { api, api2, api3, ownerLabel, timeAgo, type AppState } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
+import { openLink, openNexus } from "../lib/nexus";
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Input, PageHeader, Spinner, Stat } from "../components/ui";
 import { ReqBadge } from "./Mods";
 
@@ -224,7 +225,7 @@ export function DepsView({ state }: { state: AppState }) {
                 </div>
                 {r.notes && <div className="truncate text-xs text-ink-400">{r.notes}</div>}
               </div>
-              <Button size="sm" variant="ghost" icon={<ExternalLink className="size-3.5" />} onClick={() => openUrl(r.url)}>
+              <Button size="sm" variant="ghost" icon={<ExternalLink className="size-3.5" />} onClick={() => openLink(r.url)}>
                 Nexus
               </Button>
               {(r.status === "missing" || r.status === "optional-missing") && (
@@ -400,6 +401,18 @@ export function InstallView({ state }: { state: AppState }) {
   return (
     <>
       <PageHeader title="Install" subtitle="From a Nexus mod page, a mod id, or a local archive. Requirements are installed with it." />
+      <Card className="mb-6 flex flex-wrap items-center gap-4 p-5">
+        <Globe className="size-8 shrink-0 text-neon-cyan" />
+        <div className="min-w-60 flex-1">
+          <div className="font-semibold">Browse Nexus Mods</div>
+          <div className="text-sm text-ink-400">
+            Nexus in a cpmm window. <em>Mod Manager Download</em> and manual downloads install straight away, with requirements. Works in Game Mode, where Steam's browser ignores these links.
+          </div>
+        </div>
+        <Button variant="primary" icon={<Globe className="size-4" />} onClick={() => openNexus().catch((e) => alert(String(e)))}>
+          Open browser
+        </Button>
+      </Card>
       <Card className="mb-6 p-5">
         <form
           className="flex flex-wrap gap-3"
@@ -431,7 +444,7 @@ export function InstallView({ state }: { state: AppState }) {
                 </div>
               </div>
               <div className="flex gap-2">
-                <Button variant="ghost" icon={<ExternalLink className="size-4" />} onClick={() => openUrl(look.data!.url)}>
+                <Button variant="ghost" icon={<ExternalLink className="size-4" />} onClick={() => openLink(look.data!.url)}>
                   Nexus
                 </Button>
                 <Button

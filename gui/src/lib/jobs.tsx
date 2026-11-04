@@ -22,6 +22,8 @@ interface Ctx {
   toasts: Toast[];
   busy: boolean;
   run: (label: string, args: string[]) => Promise<boolean>;
+  /** Like run, but also returns the command's output. */
+  exec: (label: string, args: string[]) => Promise<{ ok: boolean; output: string }>;
   toast: (kind: Toast["kind"], text: string) => void;
   dismiss: (id: number) => void;
   clearFinished: () => void;
@@ -41,7 +43,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "error" ? 9000 : 4500);
   }, []);
 
-  const run = useCallback(
+  const exec = useCallback(
     async (label: string, args: string[]) => {
       const local = seq.current++;
       setJobs((j) => [{ id: local, label, args, lines: [], status: "running" as const, startedAt: Date.now() } satisfies Job, ...j].slice(0, 30));
@@ -53,18 +55,19 @@ export function JobsProvider({ children }: { children: ReactNode }) {
         setJobs((js) => js.map((j) => (j.id === local ? { ...j, status: ok ? "ok" : "error" } : j)));
         const last = r.output.trim().split("\n").filter(Boolean).pop() ?? "";
         toast(ok ? "ok" : "error", ok ? `${label}: done` : `${label} failed: ${last.replace(/^error:\s*/, "")}`);
-        return ok;
+        return { ok, output: r.output };
       } catch (e) {
         push(String(e), true);
         setJobs((js) => js.map((j) => (j.id === local ? { ...j, status: "error" } : j)));
         toast("error", `${label} failed: ${e}`);
-        return false;
+        return { ok: false, output: String(e) };
       } finally {
         await qc.invalidateQueries();
       }
     },
     [qc, toast],
   );
+  const run = useCallback((label: string, args: string[]) => exec(label, args).then((r) => r.ok), [exec]);
 
   const value = useMemo<Ctx>(
     () => ({
@@ -72,11 +75,12 @@ export function JobsProvider({ children }: { children: ReactNode }) {
       toasts,
       busy: jobs.some((j) => j.status === "running"),
       run,
+      exec,
       toast,
       dismiss: (id) => setToasts((t) => t.filter((x) => x.id !== id)),
       clearFinished: () => setJobs((j) => j.filter((x) => x.status === "running")),
     }),
-    [jobs, toasts, run, toast],
+    [jobs, toasts, run, exec, toast],
   );
   return <JobsCtx.Provider value={value}>{children}</JobsCtx.Provider>;
 }
