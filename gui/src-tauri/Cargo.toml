@@ -17,6 +17,12 @@ gilrs = "0.11"
 [target.'cfg(target_os = "linux")'.dependencies]
 # same version Tauri/wry use; v2_40 gives media settings and the web-process-terminated signal
 webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
+# real pointer input for the Nexus webview (same versions as Tauri's)
+gtk = "0.18"
+glib = "0.18"
+gdk-sys = "0.18"
+gtk-sys = "0.18"
+gobject-sys = "0.18"
 
 [profile.release]
 opt-level = 3

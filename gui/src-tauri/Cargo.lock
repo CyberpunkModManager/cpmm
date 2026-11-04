@@ -545,7 +545,12 @@ dependencies = [
 name = "cpmm-gui"
 version = "0.1.0"
 dependencies = [
+ "gdk-sys",
  "gilrs",
+ "glib",
+ "gobject-sys",
+ "gtk",
+ "gtk-sys",
  "serde",
  "serde_json",
  "tauri",

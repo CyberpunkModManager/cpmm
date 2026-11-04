@@ -82,7 +82,8 @@ which is the easiest route in Game Mode:
   with its requirements as a normal job: it shows in Activity, and the result pops up in the page.
 * **Manual download** archives are saved to `~/.local/share/cpmm/downloads/browser/` and installed
   with `--nexus <id>` from the page they came from, so update checks work.
-* Controller: right stick / D-pad moves a cursor, A / RT / R3 clicks, left stick scrolls, B / LB back,
+* Controller: right stick / D-pad moves a cursor, A / RT / R3 clicks, left stick scrolls (clicks and
+  scrolling are real GTK pointer events injected into the webview, so sites treat them as a mouse), B / LB back,
   RB forward, Y opens Steam's on-screen keyboard (also opened when you click a text field in Game Mode;
   `CPMM_OSK=0/1` overrides the detection), Select reloads, Start returns to cpmm.
 * Nexus "Mod" links elsewhere in the GUI open here too; other sites still open in the system browser.

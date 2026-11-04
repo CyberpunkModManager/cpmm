@@ -135,7 +135,7 @@ fn glog(msg: &str) {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(home.join(".local/share/cpmm/gui.log")) {
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let _ = writeln!(f, "{t} {msg}");
+        let _ = writeln!(f, "{t} [{}] {msg}", std::process::id());
     }
 }
 
@@ -176,7 +176,7 @@ fn spawn_gamepad(app: AppHandle) {
             }
             let emit = |a: &str| {
                 if let Some(w) = &nexus {
-                    nexus::pad(w, &format!("pad({})", serde_json::json!(a)));
+                    nexus::action(w, a);
                 } else if focused {
                     let _ = app.emit_to("main", "gamepad", a.to_string());
                 }
@@ -244,7 +244,7 @@ fn spawn_gamepad(app: AppHandle) {
                 // gilrs Y is positive up; the page scrolls down when the stick goes down
                 if scx != 0.0 || scy != 0.0 {
                     if let Some(w) = &nexus {
-                        nexus::pad(w, &format!("scroll({scx}, {})", -scy));
+                        nexus::scroll(w, scx, -scy);
                     } else if focused {
                         let _ = app.emit_to("main", "scroll", serde_json::json!({ "dx": scx, "dy": -scy }));
                     }
@@ -252,7 +252,7 @@ fn spawn_gamepad(app: AppHandle) {
                 let (cx, cy) = (curve(rx), curve(ry));
                 if cx != 0.0 || cy != 0.0 {
                     if let Some(w) = &nexus {
-                        nexus::pad(w, &format!("pointer({cx}, {})", -cy));
+                        nexus::pointer(w, cx, -cy);
                     } else if focused {
                         let _ = app.emit_to("main", "pointer", serde_json::json!({ "dx": cx, "dy": -cy }));
                     }
@@ -290,7 +290,10 @@ fn main() {
             spawn_gamepad(app.handle().clone());
             // `cpmm-gui --nexus [url]`: open the Nexus browser right away.
             let args: Vec<String> = std::env::args().collect();
-            if let Some(i) = args.iter().position(|a| a == "--nexus") {
+            if args.iter().any(|a| a == "--nexus-selftest") {
+                nexus::selftest(app.handle().clone());
+            }
+            if let Some(i) = args.iter().position(|a| a == "--nexus" || a == "--nexus-selftest") {
                 let url = args.get(i + 1).cloned();
                 let h = app.handle().clone();
                 std::thread::spawn(move || {

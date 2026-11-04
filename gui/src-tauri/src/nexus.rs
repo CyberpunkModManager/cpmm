@@ -80,9 +80,166 @@ pub fn toast(app: &AppHandle, kind: &str, text: &str) {
     }
 }
 
-/// Forward a gamepad action / analog motion to the page.
-pub fn pad(w: &tauri::WebviewWindow, call: &str) {
+fn page(w: &tauri::WebviewWindow, call: &str) {
     let _ = w.eval(format!("window.__cpmm && window.__cpmm.{call}"));
+}
+
+/// A gamepad button in the Nexus window. Clicks and the D-pad cursor nudges are real pointer
+/// input (see `input`); navigation buttons are handled by the page script.
+pub fn action(w: &tauri::WebviewWindow, a: &str) {
+    match a {
+        "a" | "click" => {
+            page(w, "padClick()");
+            input::click(w);
+        }
+        "up" => input::move_by(w, 0.0, -28.0),
+        "down" => input::move_by(w, 0.0, 28.0),
+        "left" => input::move_by(w, -28.0, 0.0),
+        "right" => input::move_by(w, 28.0, 0.0),
+        _ => page(w, &format!("pad({})", serde_json::json!(a))),
+    }
+}
+
+/// Right stick: move the cursor (stick deflection after the response curve, -1..1).
+pub fn pointer(w: &tauri::WebviewWindow, dx: f32, dy: f32) {
+    input::move_by(w, dx as f64 * 22.0, dy as f64 * 22.0);
+}
+
+/// Left stick: scroll whatever is under the cursor.
+pub fn scroll(w: &tauri::WebviewWindow, dx: f32, dy: f32) {
+    input::scroll(w, dx as f64 * 0.8, dy as f64 * 0.8);
+}
+
+/// Real pointer input for the Nexus webview: GDK events built here and dispatched by GTK, so
+/// WebKit treats them like a mouse (trusted events, user activation, :hover). Synthetic DOM
+/// events from the page script aren't enough: sites ignore them for popups, nxm:// downloads
+/// and many modal buttons.
+#[cfg(target_os = "linux")]
+mod input {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+    use webkit2gtk::WebView;
+
+    static CURSOR: Mutex<Option<(f64, f64)>> = Mutex::new(None);
+
+    enum Kind {
+        Motion,
+        Press,
+        Release,
+        Scroll(f64, f64),
+    }
+
+    fn now_ms() -> u32 {
+        static T0: OnceLock<Instant> = OnceLock::new();
+        T0.get_or_init(Instant::now).elapsed().as_millis() as u32
+    }
+
+    /// Move the cursor by (dx, dy) px, clamped to the view; returns the new position.
+    fn step(v: &WebView, dx: f64, dy: f64) -> (f64, f64) {
+        use gtk::prelude::WidgetExt;
+        let (w, h) = (v.allocated_width().max(1) as f64, v.allocated_height().max(1) as f64);
+        let mut c = CURSOR.lock().unwrap();
+        let (x, y) = c.unwrap_or((w / 2.0, h / 2.0));
+        let p = ((x + dx).clamp(0.0, w - 1.0), (y + dy).clamp(0.0, h - 1.0));
+        *c = Some(p);
+        p
+    }
+
+    unsafe fn send(v: &WebView, kind: Kind, x: f64, y: f64) {
+        use glib::translate::ToGlibPtr;
+        use gtk::prelude::*;
+        let widget: &gtk::Widget = v.upcast_ref();
+        let Some(win) = widget.window() else { return };
+        let (ox, oy) = if widget.has_window() {
+            (0.0, 0.0)
+        } else {
+            let a = widget.allocation();
+            (a.x() as f64, a.y() as f64)
+        };
+        let wptr: *mut gdk_sys::GdkWindow = win.to_glib_none().0;
+        unsafe {
+            let (mut rx, mut ry) = (0, 0);
+            gdk_sys::gdk_window_get_origin(wptr, &mut rx, &mut ry);
+            let seat = gdk_sys::gdk_display_get_default_seat(gdk_sys::gdk_window_get_display(wptr));
+            let dev = if seat.is_null() { std::ptr::null_mut() } else { gdk_sys::gdk_seat_get_pointer(seat) };
+            if dev.is_null() {
+                return;
+            }
+            let ty = match kind {
+                Kind::Motion => gdk_sys::GDK_MOTION_NOTIFY,
+                Kind::Press => gdk_sys::GDK_BUTTON_PRESS,
+                Kind::Release => gdk_sys::GDK_BUTTON_RELEASE,
+                Kind::Scroll(..) => gdk_sys::GDK_SCROLL,
+            };
+            let ev = gdk_sys::gdk_event_new(ty);
+            let (ex, ey) = (x + ox, y + oy);
+            let (xr, yr) = (rx as f64 + ex, ry as f64 + ey);
+            // the event owns a reference to its window (gdk_event_free drops it)
+            let wref = gobject_sys::g_object_ref(wptr as *mut _) as *mut gdk_sys::GdkWindow;
+            match kind {
+                Kind::Motion => {
+                    let e = &mut (*ev).motion;
+                    (e.window, e.send_event, e.time, e.x, e.y, e.axes, e.state, e.is_hint, e.device, e.x_root, e.y_root) =
+                        (wref, 0, now_ms(), ex, ey, std::ptr::null_mut(), 0, 0, dev, xr, yr);
+                }
+                Kind::Press | Kind::Release => {
+                    let state = if matches!(kind, Kind::Release) { gdk_sys::GDK_BUTTON1_MASK } else { 0 };
+                    let e = &mut (*ev).button;
+                    (e.window, e.send_event, e.time, e.x, e.y, e.axes, e.state, e.button, e.device, e.x_root, e.y_root) =
+                        (wref, 0, now_ms(), ex, ey, std::ptr::null_mut(), state, 1, dev, xr, yr);
+                }
+                Kind::Scroll(dx, dy) => {
+                    let e = &mut (*ev).scroll;
+                    (e.window, e.send_event, e.time, e.x, e.y, e.state, e.direction, e.device, e.x_root, e.y_root) =
+                        (wref, 0, now_ms(), ex, ey, 0, gdk_sys::GDK_SCROLL_SMOOTH, dev, xr, yr);
+                    (e.delta_x, e.delta_y, e.is_stop) = (dx, dy, 0);
+                }
+            }
+            gdk_sys::gdk_event_set_device(ev, dev);
+            gdk_sys::gdk_event_set_source_device(ev, dev);
+            gtk_sys::gtk_main_do_event(ev);
+            gdk_sys::gdk_event_free(ev);
+        }
+    }
+
+    pub fn move_by(w: &tauri::WebviewWindow, dx: f64, dy: f64) {
+        let w2 = w.clone();
+        let _ = w.with_webview(move |wv| {
+            let v = wv.inner();
+            let (x, y) = step(&v, dx, dy);
+            unsafe { send(&v, Kind::Motion, x, y) };
+            let _ = w2.eval(format!("window.__cpmm && window.__cpmm.cursorAt({x}, {y})"));
+        });
+    }
+
+    pub fn click(w: &tauri::WebviewWindow) {
+        let w2 = w.clone();
+        let _ = w.with_webview(move |wv| {
+            let v = wv.inner();
+            let (x, y) = step(&v, 0.0, 0.0);
+            unsafe {
+                send(&v, Kind::Motion, x, y);
+                send(&v, Kind::Press, x, y);
+                send(&v, Kind::Release, x, y);
+            }
+            let _ = w2.eval(format!("window.__cpmm && window.__cpmm.cursorAt({x}, {y})"));
+        });
+    }
+
+    pub fn scroll(w: &tauri::WebviewWindow, dx: f64, dy: f64) {
+        let _ = w.with_webview(move |wv| {
+            let v = wv.inner();
+            let (x, y) = step(&v, 0.0, 0.0);
+            unsafe { send(&v, Kind::Scroll(dx, dy), x, y) };
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+mod input {
+    pub fn move_by(_: &tauri::WebviewWindow, _: f64, _: f64) {}
+    pub fn click(_: &tauri::WebviewWindow) {}
+    pub fn scroll(_: &tauri::WebviewWindow, _: f64, _: f64) {}
 }
 
 fn close(app: &AppHandle) {
@@ -269,6 +426,23 @@ mod linux {
             }
         });
     }
+}
+
+/// `cpmm-gui --nexus-selftest`: drive the cursor without a controller (for headless checks):
+/// wait for the page, then click in the middle of it and again a bit lower.
+pub fn selftest(app: AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(8));
+        for (dx, dy) in [(0.0, 0.0), (0.0, 120.0)] {
+            if let Some(w) = app.get_webview_window(LABEL) {
+                crate::glog(&format!("nexus selftest: click at centre + ({dx}, {dy})"));
+                input::move_by(&w, dx, dy);
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                action(&w, "a");
+            }
+            std::thread::sleep(std::time::Duration::from_secs(6));
+        }
+    });
 }
 
 #[tauri::command]

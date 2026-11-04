@@ -29,9 +29,9 @@
                border-radius: 14px; background: rgb(12 11 20 / .92); border: 1px solid rgb(34 211 238 / .35);
                box-shadow: 0 8px 30px rgb(0 0 0 / .5); pointer-events: auto; }
         .bar button { all: unset; cursor: pointer; color: #d6d3e6; padding: 8px 12px; border-radius: 9px; display: flex; gap: 6px; align-items: center; }
-        .bar button:hover, .bar button.hover { background: rgb(34 211 238 / .15); color: #22d3ee; }
+        .bar button:hover { background: rgb(34 211 238 / .15); color: #22d3ee; }
         .bar .done { background: #22d3ee; color: #07060c; font-weight: 650; }
-        .bar .done:hover, .bar .done.hover { background: #67e8f9; color: #07060c; }
+        .bar .done:hover { background: #67e8f9; color: #07060c; }
         .bar kbd { font-size: 11px; opacity: .65; }
         .toasts { position: fixed; right: 16px; top: 16px; display: flex; flex-direction: column; gap: 8px; width: 360px; }
         .toast { padding: 11px 14px; border-radius: 12px; color: #ece9f7; background: rgb(18 16 30 / .96);
@@ -88,60 +88,18 @@
     else if (a === "keyboard" || a === "close") signal(a);
   }
 
-  /* ---- virtual cursor (right stick / d-pad), clicks (A / RT / R3), scrolling (left stick) ---- */
-  const cur = { x: innerWidth / 2, y: innerHeight / 2, hover: null, overlayHover: null, timer: 0 };
-  const CLICKABLE = 'a[href], button, input, select, textarea, label, summary, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [onclick], [tabindex]';
-
-  function showCursor() {
+  /* ---- cursor ----
+   * The backend owns the cursor position and sends WebKit real pointer events (motion, clicks,
+   * scrolling) at it, so pages see genuine user gestures: popups, nxm:// navigations and modal
+   * buttons all work. The page only draws the cursor. */
+  let cursorTimer = 0;
+  let lastPadClick = 0;
+  function cursorAt(x, y) {
     if (!ui()) return;
     cursorEl.style.opacity = "1";
-    cursorEl.style.transform = `translate(${cur.x - 4}px, ${cur.y - 2}px)`;
-    clearTimeout(cur.timer);
-    cur.timer = setTimeout(() => (cursorEl.style.opacity = "0"), 6000);
-  }
-
-  /** Our own toolbar button under the cursor (the shadow root hides it from elementFromPoint). */
-  function overlayButtonAt(x, y) {
-    if (!root) return null;
-    for (const b of root.querySelectorAll(".bar button")) {
-      const r = b.getBoundingClientRect();
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return b;
-    }
-    return null;
-  }
-
-  function fire(el, type, x, y) {
-    const Ctor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
-    el.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window, button: 0, buttons: type.endsWith("down") ? 1 : 0, pointerType: "mouse", isPrimary: true }));
-  }
-
-  function hoverAt() {
-    const ob = overlayButtonAt(cur.x, cur.y);
-    if (cur.overlayHover !== ob) {
-      cur.overlayHover?.classList.remove("hover");
-      ob?.classList.add("hover");
-      cur.overlayHover = ob;
-    }
-    const el = ob ? null : document.elementFromPoint(cur.x, cur.y);
-    if (el !== cur.hover) {
-      if (cur.hover) {
-        fire(cur.hover, "pointerout", cur.x, cur.y);
-        fire(cur.hover, "mouseout", cur.x, cur.y);
-      }
-      if (el) {
-        fire(el, "pointerover", cur.x, cur.y);
-        fire(el, "mouseover", cur.x, cur.y);
-      }
-      cur.hover = el;
-    }
-    if (el) fire(el, "mousemove", cur.x, cur.y);
-  }
-
-  function pointer(dx, dy, speed = 22) {
-    cur.x = Math.min(innerWidth - 2, Math.max(0, cur.x + dx * speed));
-    cur.y = Math.min(innerHeight - 2, Math.max(0, cur.y + dy * speed));
-    showCursor();
-    hoverAt();
+    cursorEl.style.transform = `translate(${x - 4}px, ${y - 2}px)`;
+    clearTimeout(cursorTimer);
+    cursorTimer = setTimeout(() => (cursorEl.style.opacity = "0"), 6000);
   }
 
   function isText(el) {
@@ -149,48 +107,31 @@
     if (el instanceof HTMLInputElement) return !["button", "submit", "checkbox", "radio", "range", "color", "file", "image", "reset"].includes(el.type);
     return el?.isContentEditable === true;
   }
+  // A pad click that lands in a text field asks for Steam's on-screen keyboard (page autofocus
+  // doesn't, so the keyboard only appears when you picked the field).
+  document.addEventListener(
+    "focusin",
+    (e) => {
+      if (Date.now() - lastPadClick < 800 && isText(e.target)) signal("keyboard");
+    },
+    true,
+  );
 
-  function click() {
-    showCursor();
-    const ob = overlayButtonAt(cur.x, cur.y);
-    if (ob) {
-      action(ob.dataset.a);
-      return;
-    }
-    const under = document.elementFromPoint(cur.x, cur.y);
-    if (!under) return;
-    const target = under.closest(CLICKABLE) || under;
-    fire(target, "pointerdown", cur.x, cur.y);
-    fire(target, "mousedown", cur.x, cur.y);
-    if (isText(target)) {
-      target.focus();
-      signal("keyboard");
-    }
-    fire(target, "pointerup", cur.x, cur.y);
-    fire(target, "mouseup", cur.x, cur.y);
-    if (target instanceof HTMLSelectElement) target.focus();
-    else if (!isText(target)) target.click();
-  }
-
-  function scrollable(el) {
-    for (; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
-      const oy = getComputedStyle(el).overflowY;
-      if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 4) return el;
-    }
-    return null;
-  }
-
-  function scroll(dx, dy) {
-    const t = scrollable(document.elementFromPoint(cur.x, cur.y));
-    (t || window).scrollBy({ left: dx * 36, top: dy * 36 });
-  }
+  // Diagnostics for gui.log: are clicks reaching the page as real (trusted) input?
+  let logged = 0;
+  document.addEventListener(
+    "click",
+    (e) => {
+      if (logged++ >= 5) return;
+      const t = e.target;
+      const what = (t.tagName || "?") + (t.id ? "#" + t.id : "") + (t.textContent ? " '" + t.textContent.trim().slice(0, 30) + "'" : "");
+      signal("log?" + encodeURIComponent(`click trusted=${e.isTrusted} activation=${navigator.userActivation ? navigator.userActivation.isActive : "?"} on ${what}`));
+    },
+    true,
+  );
 
   function pad(a) {
     switch (a) {
-      case "a":
-      case "click":
-        click();
-        break;
       case "b":
       case "lb":
         history.back();
@@ -207,20 +148,8 @@
       case "y":
         signal("keyboard");
         break;
-      case "up":
-        pointer(0, -1, 28);
-        break;
-      case "down":
-        pointer(0, 1, 28);
-        break;
-      case "left":
-        pointer(-1, 0, 28);
-        break;
-      case "right":
-        pointer(1, 0, 28);
-        break;
     }
   }
 
-  window.__cpmm = { pad, pointer: (dx, dy) => pointer(dx, dy), scroll, toast };
+  window.__cpmm = { pad, toast, cursorAt, padClick: () => (lastPadClick = Date.now()) };
 })();
