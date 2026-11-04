@@ -132,17 +132,25 @@ See `gui/src-tauri/src/nexus.rs` and `nexus.js`.
 
 ## GUI (`gui/`)
 
-Tauri 2 + React 19 + TypeScript + Tailwind CSS 4 (TanStack Query, Lucide icons). The Rust side is a
-thin bridge: reads go through `cpmm api …` (JSON), actions run the normal CLI commands and stream
-their output into the Activity panel, so the CLI stays the single source of truth.
+Tauri 2 + React 19 + TypeScript + Tailwind CSS 4 (TanStack Query, Lucide icons). The Tauri side
+links the `cpmm` library and runs the same typed queries and actions as the CLI, in-process; an
+action's log in the Activity panel is the text the CLI prints. The TypeScript types are generated
+from the Rust ones (`gui/src/lib/bindings.ts`).
 
 Built for the handheld: large touch targets, and spatial navigation with the D-pad/stick (or
 arrow keys), A to select, B to go back, LB/RB to switch sections.
 
+## Building from source
+
 ```
-cd gui && npm install && npx tauri build --no-bundle
-cp src-tauri/target/release/cpmm-gui ~/.local/bin/     # finds ~/.local/bin/cpmm next to itself
+./scripts/install-local.sh     # builds cpmm + cpmm-gui (release) and installs both into ~/.local/bin
 ```
+
+Needs Rust, Node 22+ and the Tauri system libraries (WebKitGTK 4.1). Rerun it after pulling or
+editing to run the working tree; `CPMM_INSTALL_DIR` installs elsewhere. A running GUI or game
+session keeps its old binary until it restarts. `./scripts/check.sh` runs what CI runs.
+
+## Steam library shortcut
 
 Add it to the Steam library as the non-Steam game **cpmm**, with the capsule/wide/hero/logo artwork
 from `gui/art/` (embedded in the binary):
