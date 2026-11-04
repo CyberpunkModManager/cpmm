@@ -7,7 +7,7 @@ import { useJobs } from "../lib/jobs";
 
 /** mod.io watcher: subscriptions made in the in-game Mods menu, what changed, and collisions. */
 export function ModioCard({ state }: { state: AppState }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   const q = useQuery({ queryKey: ["modio"], queryFn: api.modio, staleTime: 30_000 });
   const d = q.data;
   if (!d) return null;

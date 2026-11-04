@@ -11,7 +11,7 @@ const mb = (b: number) => (b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : `
 
 /** Everything downloaded, separate from what's installed (like Vortex's / MO2's downloads list). */
 export function DownloadsView({ state }: { state: AppState }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   const q = useQuery({ queryKey: ["downloads"], queryFn: api.downloads, refetchInterval: 10_000 });
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
   const [del, setDel] = useState<DownloadEntry | null>(null);

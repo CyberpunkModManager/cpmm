@@ -1,6 +1,12 @@
-//! cpmm GUI backend: a thin bridge to the `cpmm` CLI, which stays the single source of truth.
-//! `api` runs `cpmm api …` and returns its JSON; `run` runs an action and streams its output.
+//! cpmm GUI backend: the Tauri adapter at the core's Operations seam. It links the `cpmm`
+//! library and runs operations in-process: `query` answers a typed Query with its view;
+//! `act` runs a typed Action on a blocking thread under the same cpmm lock the CLI takes,
+//! streaming its log as `cpmm-log` events (the CLI's text, rendered from the events).
 
+use cpmm::ops::query::Query;
+use cpmm::ops::render::{ActResult, LogLine, Transcript};
+use cpmm::ops::{self, Action, Event, Ui};
+use cpmm::state::Paths;
 use serde::Serialize;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -9,6 +15,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 mod nexus;
 
+/// The `cpmm` binary: what Steam's launch options and the nxm:// link handler run (and, until
+/// remedies are typed, the CLI the `run` command spawns).
 fn cpmm_bin() -> PathBuf {
     if let Some(p) = std::env::var_os("CPMM_BIN") {
         return p.into();
@@ -22,7 +30,72 @@ fn cpmm_bin() -> PathBuf {
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let local = home.join(".local/bin/cpmm");
-    if local.is_file() { local } else { "cpmm".into() }
+    if local.is_file() {
+        return local;
+    }
+    std::env::var_os("PATH")
+        .and_then(|p| std::env::split_paths(&p).map(|d| d.join("cpmm")).find(|f| f.is_file()))
+        .unwrap_or_else(|| "cpmm".into())
+}
+
+/// Operations ask the GUI nothing (no terminal: FOMOD options come with the request, or the
+/// installer's suggestions are used); their events become the job's log.
+struct Job {
+    app: AppHandle,
+    job: u64,
+    log: Transcript,
+}
+
+impl Job {
+    fn line(app: &AppHandle, job: u64) -> impl FnMut(&str, bool) + '_ {
+        move |line, stderr| {
+            let _ = app.emit("cpmm-log", LogLine { job, line: line.to_string(), stderr });
+        }
+    }
+}
+
+impl Ui for Job {
+    fn event(&mut self, e: &Event) {
+        self.log.add(e, &mut Self::line(&self.app, self.job));
+    }
+    fn this_exe(&self) -> ops::Result<PathBuf> {
+        Ok(cpmm_bin())
+    }
+}
+
+/// A query from the GUI; ui only lends `this_exe` (no job: progress is not shown).
+struct Quiet;
+
+impl Ui for Quiet {
+    fn event(&mut self, _: &Event) {}
+    fn this_exe(&self) -> ops::Result<PathBuf> {
+        Ok(cpmm_bin())
+    }
+}
+
+/// A read-only view (what `cpmm api …` prints). Errors read as the CLI's did.
+#[tauri::command]
+async fn query(q: Query) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = Paths::load().map_err(|e| format!("error: {e:#}"))?;
+        ops::query::view(&paths, &q, &mut Quiet).map_err(|e| format!("error: {e:#}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Run an action as job `job`: its log lines stream as `cpmm-log` events, the result says how
+/// it ended. The action takes the cpmm lock itself, so it waits for (and blocks) a CLI command.
+#[tauri::command]
+async fn act(app: AppHandle, job: u64, action: Action) -> Result<ActResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut ui = Job { app, job, log: Transcript::default() };
+        let r = Paths::load().and_then(|paths| ops::act(&paths, action, &mut ui));
+        let Job { app, job, log } = ui;
+        Ok(log.finish(r, &mut Job::line(&app, job)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -74,34 +147,14 @@ fn gui_log(msg: String) {
     glog(&format!("ui: {msg}"));
 }
 
-#[tauri::command]
-async fn api(args: Vec<String>) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let out =
-            Command::new(cpmm_bin()).arg("api").args(&args).stdin(Stdio::null()).output().map_err(|e| format!("running cpmm: {e}"))?;
-        if !out.status.success() {
-            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-        }
-        serde_json::from_slice(&out.stdout).map_err(|e| format!("bad JSON from cpmm: {e}"))
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[derive(Serialize, Clone)]
-struct LogLine {
-    job: u64,
-    line: String,
-    stderr: bool,
-}
-
 #[derive(Serialize)]
 struct RunResult {
     code: i32,
     output: String,
 }
 
-/// Run `cpmm <args>`; each output line is emitted as a `cpmm-log` event tagged with `job`.
+/// Run `cpmm <args>` for the doctor's remedies, which are still CLI argv; each output line is
+/// emitted as a `cpmm-log` event tagged with `job`.
 #[tauri::command]
 async fn run(app: AppHandle, job: u64, args: Vec<String>) -> Result<RunResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -315,7 +368,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            api,
+            query,
+            act,
             run,
             gui_log,
             quit,

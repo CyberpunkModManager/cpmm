@@ -263,7 +263,7 @@ function ActivityPanel({ onClose }: { onClose: () => void }) {
                 <CircleAlert className="size-4 text-neon-red" />
               )}
               <span className="min-w-0 flex-1 truncate">{j.label}</span>
-              <span className="font-mono text-[10px] text-ink-400">cpmm {j.args[0]}</span>
+              <span className="font-mono text-[10px] text-ink-400">cpmm {j.command}</span>
             </div>
             <pre className="max-h-64 overflow-y-auto px-3 py-2 font-mono text-[11px] leading-4 whitespace-pre-wrap select-text">
               {j.lines.length === 0 ? (

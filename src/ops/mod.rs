@@ -25,7 +25,7 @@ pub use act::{Action, CollectionDone, InstallRequest, Place, ProfileAction, act,
 
 use crate::fomod::{Choices, Fomod};
 use crate::{import, install, loadorder, nexus, safety, steam};
-use anyhow::Result;
+pub use anyhow::Result;
 use std::path::PathBuf;
 
 /// What the adapter supplies: where events go, and its interactive capabilities.
@@ -288,6 +288,7 @@ pub enum Note {
         premium: bool,
     },
     KeyRemoved,
+    Key(query::KeyStatus),
     StagingMoved {
         mods: usize,
         to: PathBuf,

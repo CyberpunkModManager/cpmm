@@ -13,6 +13,8 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 gilrs = "0.11"
+# the core, in-process: the Operations module is this shell's interface to it
+cpmm = { path = "../.." }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # same version Tauri/wry use; v2_40 gives media settings and the web-process-terminated signal

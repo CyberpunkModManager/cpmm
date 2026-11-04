@@ -1,6 +1,19 @@
 // Generated from the Rust types of the Operations interface (src/ops/bindings.rs). Do not edit:
 // `UPDATE_BINDINGS=1 cargo test bindings` regenerates it.
 
+/**
+ * How an action ended. `output` is the log as one text, stdout lines then stderr lines (the
+ * last line of a failed action is its error, `error: …`); `installed` the mods it newly
+ * installed (what the GUI names in "Installed …").
+ */
+export type ActResult = { code: number, output: string, installed: Array<string>, };
+
+/**
+ * Every change to the mod setup and cpmm's data that the CLI or the GUI can ask for
+ * (`{"op": "enable", "mods": ["…"]}` from the GUI).
+ */
+export type Action = { "op": "init", game: string | null, } | { "op": "enable", mods: Array<string>, } | { "op": "disable", mods: Array<string>, } | { "op": "order", mod: string, place: Place | null, } | { "op": "install" } & InstallRequest | { "op": "update", mods: Array<string>, all: boolean, } | { "op": "rename", mod: string, new_id: string, } | { "op": "remove", mod: string, force: boolean, } | { "op": "deps", refresh: boolean, fix: boolean, ignore: [string, string] | null, unignore: [string, string] | null, } | { "op": "hide", mod: string, paths: Array<string>, } | { "op": "unhide", mod: string, paths: Array<string>, } | { "op": "prefer", mod: string, paths: Array<string>, } | { "op": "nxm", url: string | null, register: boolean, } | { "op": "tracked", install: boolean, untrack: boolean, } | { "op": "register_handler" } | { "op": "unregister_handler" } | { "op": "import", modlist: string, apply: boolean, } | { "op": "adopt", id: string, name: string | null, paths: Array<string>, } | { "op": "overwrite_move", to: string, paths: Array<string>, } | { "op": "overwrite_clear", paths: Array<string>, } | { "op": "eject", apply: boolean, } | { "op": "collection_install", reference: string, optional: boolean, into_current: boolean, profile: string | null, } | { "op": "settings_set", key: string, value: string, } | { "op": "settings_reset", key: string | null, } | { "op": "download", source: string, file: string | null, } | { "op": "downloads_install", key: string, fomod: { [key in string]: Array<string> } | null, ask: boolean, with_deps: boolean, } | { "op": "downloads_remove", key: string, } | { "op": "downloads_add", path: string, nexus: number | null, move_it: boolean, source: string, auto: boolean, } | { "op": "clean", dry_run: boolean, } | { "op": "sort", apply: boolean, } | { "op": "rule", mod: string, after: string, remove: boolean, } | { "op": "ack", finding: string, } | { "op": "unack", finding: string, } | { "op": "rollback", mod: string, to: number | null, } | { "op": "undo_update", batch: string | null, } | { "op": "errors" } | { "op": "vanilla", on: boolean, } | { "op": "snapshot_saves" } | { "op": "restore_saves", name: string, } | { "op": "profile" } & ProfileAction | { "op": "modio_ack" } | { "op": "launch_options_apply" } | { "op": "nexus_key_set", key: string, } | { "op": "nexus_key_remove" } | { "op": "nexus_key", check: boolean, } | { "op": "steam_shortcut", name: string, exe: string | null, remove: boolean, dry_run: boolean, } | { "op": "setup" };
+
 export type AppState = { game_dir: string, data_dir: string, game_running: boolean, session: SessionInfo | null, mods: Array<ModRow>, modio: Array<ModioSub>, overwrite_count: number, nxm_handler: boolean, active_profile: string, profiles: Array<ProfileRow>, };
 
 export type ArchivePair = { a: Owner, b: Owner, archive_a: string, archive_b: string, shared: number, identical: number, 
@@ -144,11 +157,41 @@ export type Framework = { id: string, name: string, version: string, latest_uplo
 
 export type HistEntry = { files: number, ts: number, id: string, version: string, nexus: NexusSource | null, reason: string, batch: string | null, };
 
+/**
+ * What to install and how: `cpmm install`'s options. Only `source` is required.
+ */
+export type InstallRequest = { 
+/**
+ * A Nexus mod id or page URL, or a local archive or folder (`~/` expands).
+ */
+source: string, 
+/**
+ * Nexus file: a file or version id, or part of its name (default: the main file)
+ */
+file?: string | null, id?: string | null, name?: string | null, 
+/**
+ * Strip this folder from the archive / place files under this game-relative folder
+ */
+root?: string | null, dest?: string | null, fomod?: { [key in string]: Array<string> } | null, 
+/**
+ * Ask the user for FOMOD options the adapter can ask (else the installer's suggestions)
+ */
+ask?: boolean, missing?: OnMissing, disabled?: boolean, 
+/**
+ * The Nexus mod a local archive belongs to (enables update checks)
+ */
+nexus?: number | null, keep_archive?: boolean, };
+
 export type LoadOrder = { plan: SortPlan, rules: Array<Rule>, 
 /**
  * Archives in modlist.txt order
  */
 modlist: Array<string>, };
+
+/**
+ * One line of a job's log, as the GUI receives it (Tauri event `cpmm-log`).
+ */
+export type LogLine = { job: number, line: string, stderr: boolean, };
 
 export type Lookup = { mod_id: number, name: string, version: string, author: string, url: string, files: Array<LookupFile>, requires: Array<LookupReq>, };
 
@@ -215,6 +258,11 @@ version_id: string,
  */
 version_gsid: string, uploaded_at: string, manifest_url: string, };
 
+/**
+ * What to do about a hard requirement that is not installed.
+ */
+export type OnMissing = "refuse" | "install" | "warn";
+
 export type Onboarding = { game_dir: string, game_found: boolean, api_key: boolean, launch_options: string | null, launch_ok: boolean, launch_suggested: string, steam_running: boolean, steam_cef: boolean, nxm_handler: boolean, onboarded: boolean, mods_installed: number, };
 
 export type OverwriteRow = { path: string, kind: OwKind, shadows: string | null, };
@@ -237,6 +285,13 @@ export type PatchStatus = { build_id: string, previous_build: string | null, pat
  * the game changed build since cpmm first saw it
  */
 patch_detected: boolean, at_risk: Array<Framework>, red4ext_errors: Array<string>, vanilla: boolean, };
+
+/**
+ * Where `Action::Order` puts a mod.
+ */
+export type Place = "top" | "bottom" | { "before": string } | { "after": string };
+
+export type ProfileAction = { "do": "create", name: string, from: string | null, empty: boolean, own_saves: boolean, copy_saves: boolean, switch: boolean, } | { "do": "switch", name: string, } | { "do": "rename", old: string, new: string, } | { "do": "saves", name: string, own: boolean, copy: boolean, } | { "do": "delete", name: string, };
 
 export type ProfileRow = { name: string, 
 /**

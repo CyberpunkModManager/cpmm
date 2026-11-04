@@ -761,7 +761,7 @@ fn real_main() -> Result<()> {
         Cmd::LaunchOptions { apply: false } => cli::launch_options(&ops::query::launch_options(&term)?),
         Cmd::NexusKey { remove: true, .. } => act(Action::NexusKeyRemove)?,
         Cmd::NexusKey { key: Some(k), .. } => act(Action::NexusKeySet { key: k })?,
-        Cmd::NexusKey { check, .. } => cli::nexus_key(&ops::query::nexus_key(&paths, check)?),
+        Cmd::NexusKey { check, .. } => act(Action::NexusKey { check })?,
         Cmd::Setup => act(Action::Setup)?,
     }
     Ok(())

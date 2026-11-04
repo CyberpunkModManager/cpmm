@@ -12,6 +12,9 @@ const FILE: &str = "gui/src/lib/bindings.ts";
 /// The types at the seam; everything they reference is declared too.
 fn roots(c: &mut Collect) {
     c.visit::<query::Query>();
+    c.visit::<super::Action>();
+    c.visit::<super::render::LogLine>();
+    c.visit::<super::render::ActResult>();
     c.visit::<query::AppState>();
     c.visit::<query::ModInfo>();
     c.visit::<query::Conflicts>();

@@ -11,12 +11,15 @@ use crate::requirements::{self, Status};
 use crate::state::{InstalledCollection, Paths, ReqCheck, State, now, slugify};
 use crate::{collections, downloads, files, health, import, loadorder, manage, modio, profiles, safety, settings, steam, vfs};
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use ts_rs::TS;
 
 /// Where `Action::Order` puts a mod.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
 pub enum Place {
     Top,
     Bottom,
@@ -24,29 +27,42 @@ pub enum Place {
     After(String),
 }
 
-/// What to install and how: `cpmm install`'s options.
-#[derive(Clone, Debug, Default)]
+/// What to install and how: `cpmm install`'s options. Only `source` is required.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(default)]
 pub struct InstallRequest {
     /// A Nexus mod id or page URL, or a local archive or folder (`~/` expands).
     pub source: String,
     /// Nexus file: a file or version id, or part of its name (default: the main file)
+    #[ts(optional = nullable)]
     pub file: Option<String>,
+    #[ts(optional = nullable)]
     pub id: Option<String>,
+    #[ts(optional = nullable)]
     pub name: Option<String>,
     /// Strip this folder from the archive / place files under this game-relative folder
+    #[ts(optional = nullable)]
     pub root: Option<String>,
+    #[ts(optional = nullable)]
     pub dest: Option<String>,
+    #[ts(optional = nullable)]
     pub fomod: Option<Choices>,
     /// Ask the user for FOMOD options the adapter can ask (else the installer's suggestions)
+    #[ts(as = "Option<bool>", optional)]
     pub ask: bool,
+    #[ts(as = "Option<OnMissing>", optional)]
     pub missing: OnMissing,
+    #[ts(as = "Option<bool>", optional)]
     pub disabled: bool,
     /// The Nexus mod a local archive belongs to (enables update checks)
+    #[ts(optional = nullable)]
     pub nexus: Option<u64>,
+    #[ts(as = "Option<bool>", optional)]
     pub keep_archive: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "do", rename_all = "snake_case")]
 pub enum ProfileAction {
     Create {
         name: String,
@@ -74,8 +90,10 @@ pub enum ProfileAction {
     },
 }
 
-/// Every change to the mod setup and cpmm's data that the CLI or the GUI can ask for.
-#[derive(Clone, Debug)]
+/// Every change to the mod setup and cpmm's data that the CLI or the GUI can ask for
+/// (`{"op": "enable", "mods": ["…"]}` from the GUI).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "op", rename_all = "snake_case")]
 pub enum Action {
     /// Create the data directory; optionally record a non-default game directory.
     Init {
@@ -237,6 +255,10 @@ pub enum Action {
         key: String,
     },
     NexusKeyRemove,
+    /// Is a key set; with `check`, is it valid (asks Nexus)?
+    NexusKey {
+        check: bool,
+    },
     SteamShortcut {
         name: String,
         exe: Option<PathBuf>,
@@ -254,7 +276,7 @@ impl Action {
     /// choose, and a change made by an action declared read-only fails.
     pub fn changes_state(&self) -> bool {
         match self {
-            Action::SteamShortcut { .. } | Action::RegisterHandler | Action::UnregisterHandler => false,
+            Action::SteamShortcut { .. } | Action::RegisterHandler | Action::UnregisterHandler | Action::NexusKey { .. } => false,
             Action::Init { .. }
             | Action::Enable { .. }
             | Action::Disable { .. }
@@ -680,6 +702,7 @@ fn run(paths: &Paths, st: &mut State, action: Action, ui: &mut dyn Ui) -> Result
             let (name, premium) = save_key(paths, &key)?;
             say(ui, Note::KeySaved { name, premium });
         }
+        Action::NexusKey { check } => say(ui, Note::Key(super::query::nexus_key(paths, check)?)),
         Action::NexusKeyRemove => {
             let _ = fs::remove_file(nexus::key_file());
             say(ui, Note::KeyRemoved);

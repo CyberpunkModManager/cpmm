@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  Action,
+  ActResult,
   AppState,
   ArchivePair,
   Changelog,
@@ -11,6 +13,7 @@ import type {
   FomodDesc,
   HistEntry,
   LoadOrder,
+  LogLine,
   Lookup,
   ModInfo,
   ModioData,
@@ -27,33 +30,9 @@ import type {
 // The shapes cpmm answers with are generated from its Rust types.
 export type * from "./bindings";
 
-/** The `cpmm api` argv of a query (the Tauri shell runs it). */
-function apiArgs(q: Query): string[] {
-  switch (q.view) {
-    case "info":
-    case "history":
-    case "changelog":
-      return [q.view, q.mod];
-    case "updates":
-      return q.refresh ? ["updates", "--refresh"] : ["updates"];
-    case "lookup":
-      return ["lookup", q.source];
-    case "collection":
-      return ["collection", q.reference];
-    case "fomod":
-      return [
-        "fomod",
-        q.source,
-        ...(q.file ? ["--file", q.file] : []),
-        ...(q.choices && Object.keys(q.choices).length ? ["--choices", JSON.stringify(q.choices)] : []),
-      ];
-    default:
-      return [q.view];
-  }
-}
-
+/** A read-only view, answered in-process by the core (what `cpmm api …` prints). */
 function query<T>(q: Query): Promise<T> {
-  return invoke<T>("api", { args: apiArgs(q) });
+  return invoke<T>("query", { q });
 }
 
 /** cpmm's read-only views, one typed call each. */
@@ -75,7 +54,8 @@ export const api = {
   onboarding: () => query<Onboarding>({ view: "onboarding" }),
   changelog: (id: string) => query<Changelog>({ view: "changelog", mod: id }),
   modio: () => query<ModioData>({ view: "modio" }),
-  fomod: (source: string, file?: string | null, choices?: Record<string, string[]>) => query<FomodDesc>({ view: "fomod", source, file, choices }),
+  fomod: (source: string, file?: string | null, choices?: Record<string, string[]>) =>
+    query<FomodDesc>({ view: "fomod", source, file, choices: choices && Object.keys(choices).length ? choices : null }),
   collection: (reference: string) => query<CollectionInfo>({ view: "collection", reference }),
 };
 
@@ -84,25 +64,53 @@ export interface RunResult {
   output: string;
 }
 
-export interface LogLine {
-  job: number;
-  line: string;
-  stderr: boolean;
-}
-
 let nextJob = 1;
 
-/** Run a cpmm CLI action; lines stream to `onLine` as they arrive. */
-export async function runCpmm(args: string[], onLine?: (l: LogLine) => void): Promise<RunResult & { job: number }> {
+async function asJob<R>(onLine: ((l: LogLine) => void) | undefined, start: (job: number) => Promise<R>): Promise<R & { job: number }> {
   const job = nextJob++;
   const unlisten = onLine ? await listen<LogLine>("cpmm-log", (e) => e.payload.job === job && onLine(e.payload)) : null;
   try {
-    const r = await invoke<RunResult>("run", { job, args });
-    return { ...r, job };
+    return { ...(await start(job)), job };
   } finally {
     unlisten?.();
   }
 }
+
+/** Run an action in the core; its log lines stream to `onLine` as they happen. */
+export function act(action: Action, onLine?: (l: LogLine) => void): Promise<ActResult & { job: number }> {
+  return asJob(onLine, (job) => invoke<ActResult>("act", { job, action }));
+}
+
+/** Run a cpmm CLI command (the doctor's remedies, still argv); lines stream to `onLine`. */
+export function runCpmm(args: string[], onLine?: (l: LogLine) => void): Promise<RunResult & { job: number }> {
+  return asJob(onLine, (job) => invoke<RunResult>("run", { job, args }));
+}
+
+/** The `cpmm` command an action is (the job log names it). */
+const COMMAND: Partial<Record<Action["op"], string>> = {
+  register_handler: "register-handler",
+  unregister_handler: "register-handler",
+  overwrite_move: "overwrite",
+  overwrite_clear: "overwrite",
+  collection_install: "collection",
+  settings_set: "settings",
+  settings_reset: "settings",
+  downloads_install: "downloads",
+  downloads_remove: "downloads",
+  downloads_add: "downloads",
+  ack: "doctor",
+  unack: "doctor",
+  undo_update: "undo-update",
+  snapshot_saves: "saves",
+  restore_saves: "saves",
+  modio_ack: "modio",
+  launch_options_apply: "launch-options",
+  nexus_key_set: "nexus-key",
+  nexus_key_remove: "nexus-key",
+  nexus_key: "nexus-key",
+  steam_shortcut: "steam-shortcut",
+};
+export const command = (a: Action) => COMMAND[a.op] ?? a.op;
 
 export function timeAgo(iso: string): string {
   if (!iso) return "";

@@ -7,7 +7,7 @@ import { useJobs } from "./jobs";
  * install them if allowed (never while the game runs), and install new downloads.
  */
 export function useAutomation(state: AppState | undefined, settings: SettingsData | undefined) {
-  const { run, busy, toast } = useJobs();
+  const { runArgs: run, busy, toast } = useJobs();
   const started = useRef(false);
   const toldModio = useRef("");
   const latest = useRef({ state, settings, busy });

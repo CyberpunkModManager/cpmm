@@ -37,7 +37,7 @@ const locked = (s: AppState) => s.game_running || !!s.session;
 /* ------------------------------------------------------------------ Conflicts */
 
 export function ConflictsView({ state }: { state: AppState }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   const [showSame, setShowSame] = useState(false);
   const q = useQuery({ queryKey: ["conflicts"], queryFn: api.conflicts });
   const arch = useQuery({ queryKey: ["archives"], queryFn: api.archives });
@@ -205,7 +205,7 @@ export function ConflictsView({ state }: { state: AppState }) {
 /* ---------------------------------------------------------------- Dependencies */
 
 export function DepsView({ state }: { state: AppState }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   const rows = state.mods.filter((m) => m.enabled).flatMap((m) => m.requires.filter((r) => r.status !== "ok").map((r) => ({ m, r })));
   const hard = rows.filter(({ r }) => r.status === "missing" || r.status === "disabled");
   return (
@@ -301,7 +301,7 @@ export function DepsView({ state }: { state: AppState }) {
 /* --------------------------------------------------------------------- Updates */
 
 export function UpdatesView({ state }: { state: AppState }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   const [refresh, setRefresh] = useState(false);
   const safety = useQuery({ queryKey: ["safety"], queryFn: api.safety, staleTime: 30_000 });
   const [log, setLog] = useState<string | null>(null);
@@ -393,7 +393,7 @@ export function UpdatesView({ state }: { state: AppState }) {
 /* ------------------------------------------------------------------- Overwrite */
 
 export function OverwriteView({ state }: { state: AppState }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   const q = useQuery({ queryKey: ["overwrite"], queryFn: api.overwrite });
   const [target, setTarget] = useState("");
   const [confirm, setConfirm] = useState(false);
@@ -460,7 +460,7 @@ export function OverwriteView({ state }: { state: AppState }) {
 /* --------------------------------------------------------------------- Install */
 
 export function InstallView({ state }: { state: AppState }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   const [src, setSrc] = useState("");
   const [lookupId, setLookupId] = useState<string | null>(null);
   const [file, setFile] = useState<string | null>(null);
@@ -698,7 +698,7 @@ export function InstallView({ state }: { state: AppState }) {
 /* ---------------------------------------------------------------------- System */
 
 export function SystemView({ state }: { state: AppState }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   return (
     <>
       <PageHeader title="System" subtitle="Session, paths and housekeeping." />

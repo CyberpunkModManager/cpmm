@@ -27,7 +27,7 @@ import { ModHistory } from "./Safety";
 type Filter = "all" | "enabled" | "disabled" | "problems" | "conflicts" | "manual";
 
 export function ModsView({ state }: { state: AppState }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [open, setOpen] = useState<string | null>(null);
@@ -197,7 +197,7 @@ function ModDrawer({
   onClose: () => void;
   onOrder: (m: ModRow, how: "up" | "down" | "top" | "bottom") => void;
 }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   const [confirm, setConfirm] = useState(false);
   const [reconf, setReconf] = useState(false);
   const info = useQuery({ queryKey: ["info", mod?.id], queryFn: () => api.info(mod!.id), enabled: !!mod });

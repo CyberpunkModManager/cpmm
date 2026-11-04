@@ -29,7 +29,7 @@ export function ProfileButton({ state }: { state: AppState | undefined }) {
 }
 
 function ProfilesDrawer({ open, onClose, state }: { open: boolean; onClose: () => void; state: AppState }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   const [name, setName] = useState("");
   const [renaming, setRenaming] = useState<string | null>(null);
   const [newName, setNewName] = useState("");

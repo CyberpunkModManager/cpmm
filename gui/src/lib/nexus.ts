@@ -35,7 +35,7 @@ function summary(output: string): string {
  * become normal cpmm jobs here, so they show in Activity; the result is echoed into the browser.
  */
 export function useNexusBridge() {
-  const { exec } = useJobs();
+  const { execArgs: exec } = useJobs();
   useEffect(() => {
     const report = (ok: boolean, output: string) => nexusToast(ok ? "ok" : "error", ok ? `Installed ${summary(output)}` : `Install failed: ${summary(output)}`);
     const unNxm = listen<{ url: string }>("nexus-nxm", async (e) => {

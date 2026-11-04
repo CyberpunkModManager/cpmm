@@ -208,3 +208,54 @@ fn views_answer_queries_by_name() {
     assert!(r.unwrap_err().to_string().contains("nosuch"));
     let _ = fs::remove_dir_all(&p.data);
 }
+
+#[test]
+fn actions_arrive_as_json() {
+    let a = |v: serde_json::Value| serde_json::from_value::<Action>(v).unwrap();
+    assert_eq!(
+        a(serde_json::json!({"op": "install", "source": "107", "missing": "install"})),
+        Action::Install(InstallRequest { source: "107".into(), missing: crate::install::OnMissing::Install, ..Default::default() })
+    );
+    assert_eq!(
+        a(serde_json::json!({"op": "order", "mod": "a", "place": {"after": "b"}})),
+        Action::Order { r#mod: "a".into(), place: Some(Place::After("b".into())) }
+    );
+    assert_eq!(
+        a(serde_json::json!({"op": "profile", "do": "saves", "name": "P", "own": true, "copy": false})),
+        Action::Profile(ProfileAction::Saves { name: "P".into(), own: true, copy: false })
+    );
+    assert_eq!(
+        a(serde_json::json!({"op": "deps", "refresh": false, "fix": false, "ignore": ["a", "2"], "unignore": null})),
+        Action::Deps { refresh: false, fix: false, ignore: Some(("a".into(), "2".into())), unignore: None }
+    );
+}
+
+#[test]
+fn a_job_log_is_the_cli_text() {
+    let p = paths("log");
+    setup(&p);
+    let mut log = render::Transcript::default();
+    let mut lines = vec![];
+    let mut ui = |e: &Event| log.add(e, &mut |l, err| lines.push((err, l.to_string())));
+    act(&p, Action::Disable { mods: vec!["b".into(), "nosuch".into()] }, &mut ui).unwrap_err();
+    // the CLI's two streams: a percentage line continues until it ends
+    for t in [nexus::Transfer::Percent(10), nexus::Transfer::Percent(20), nexus::Transfer::Finished] {
+        ui(&Event::Install(&install::Event::Transfer(t)));
+    }
+    ui(&Event::Note(Note::Removed("c".into())));
+    let r = log.finish(Err(anyhow::anyhow!("no mod matching \"nosuch\"")), &mut |l, err| lines.push((err, l.to_string())));
+    assert_eq!(
+        lines,
+        [
+            (false, "disabled b".to_string()),
+            (true, "  warning: still required by a".into()),
+            (true, " 10% 20%".into()),
+            (false, "removed c".into()),
+            (true, "error: no mod matching \"nosuch\"".into()),
+        ]
+    );
+    assert_eq!(r.code, 1);
+    assert_eq!(r.output, "disabled b\nremoved c\n  warning: still required by a\n 10% 20%\nerror: no mod matching \"nosuch\"\n");
+    assert!(r.installed.is_empty());
+    let _ = fs::remove_dir_all(&p.data);
+}

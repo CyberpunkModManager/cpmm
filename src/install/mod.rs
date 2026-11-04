@@ -50,7 +50,8 @@ pub enum Source<'a> {
 }
 
 /// What to do about a hard requirement that is not installed.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
 pub enum OnMissing {
     /// Fail before anything is staged.
     #[default]

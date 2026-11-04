@@ -20,7 +20,7 @@ const PREFS = [
 
 /** First-launch setup: game folder, Nexus key, Steam launch options and the main preferences. */
 export function Onboarding({ onClose }: { onClose: () => void }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   const qc = useQueryClient();
   const st = useQuery({ queryKey: ["onboarding"], queryFn: api.onboarding });
   const cfg = useQuery({ queryKey: ["settings"], queryFn: api.settings });

@@ -954,6 +954,7 @@ pub fn session(paths: &Paths) -> Option<(crate::vfs::RunInfo, u32)> {
 }
 
 /// The Nexus API key: none, set, or (with `check`) validated against Nexus.
+#[derive(Clone, Debug)]
 pub enum KeyStatus {
     Missing,
     Set(PathBuf),

@@ -9,7 +9,7 @@ const GROUPS = ["Updates", "Load order", "After installing", "Downloads", "Stora
 
 /** Settings page, rendered from the schema `cpmm api settings` returns. */
 export function SettingsView({ onSetup }: { onSetup: () => void }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   const q = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   if (q.isLoading) return <Spinner />;
   if (q.error) return <ErrorBox error={q.error} />;

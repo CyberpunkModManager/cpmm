@@ -2,7 +2,7 @@
 //! asked on stdin) and the text of the read-only commands.
 
 use cpmm::fomod::{self, Choices, Fomod};
-use cpmm::ops::query::{self, ConflictReport, Detail, KeyStatus, LaunchOptions, UpdateStatus};
+use cpmm::ops::query::{self, ConflictReport, Detail, LaunchOptions, UpdateStatus};
 use cpmm::ops::render::{self, Line};
 use cpmm::ops::{self, Event, Ui};
 use cpmm::requirements::Status;
@@ -538,18 +538,4 @@ pub fn launch_options(lo: &LaunchOptions) {
         Some(c) => println!("current:  {c}\nwith cpmm: {}\n(`cpmm launch-options --apply` sets it)", lo.with_cpmm),
         None => println!("Cyberpunk isn't in Steam's local config yet; start it once from Steam. Use:\n  {}", lo.with_cpmm),
     }
-}
-
-pub fn nexus_key(k: &KeyStatus) {
-    match k {
-        KeyStatus::Valid { name, premium } => println!(
-            "key OK: {name}{}",
-            if *premium { " (premium: downloads work from cpmm)" } else { " (free: use Mod Manager Download links)" }
-        ),
-        KeyStatus::Set(f) => println!("a Nexus API key is set ({}); --check validates it", f.display()),
-        KeyStatus::Missing => {
-            println!("no Nexus API key; get yours at https://www.nexusmods.com/users/myaccount?tab=api and run `cpmm nexus-key <KEY>`")
-        }
-    }
-    warnings();
 }

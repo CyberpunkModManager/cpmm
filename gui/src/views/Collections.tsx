@@ -9,7 +9,7 @@ const tone = { installed: "lime", "other version": "amber", missing: "muted", bu
 
 /** Install a Nexus collection: exact versions, the curator's installer choices and load order. */
 export function CollectionsCard({ state }: { state: AppState }) {
-  const { run, busy } = useJobs();
+  const { runArgs: run, busy } = useJobs();
   const [ref, setRef] = useState("");
   const [look, setLook] = useState<string | null>(null);
   const [optional, setOptional] = useState(false);

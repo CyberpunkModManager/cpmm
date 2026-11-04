@@ -1,5 +1,6 @@
 //! The text of events: what the CLI prints and the GUI's job log shows, the same for both.
 
+use super::query::KeyStatus;
 use super::{CollectionNote, Event, LaunchNote, Note, ProfileNote, SetupStep};
 use crate::import::Progress;
 use crate::install;
@@ -13,6 +14,66 @@ pub struct Line {
     pub text: String,
     pub err: bool,
     pub open: bool,
+}
+
+/// An action's text as a job log for an adapter that shows it (the GUI): complete lines as
+/// they happen (an open line waits for its end), the CLI's stdout and stderr kept apart as
+/// that streams them, and the mods the action newly installed.
+#[derive(Default)]
+pub struct Transcript {
+    /// the unfinished line of stdout, stderr
+    open: [String; 2],
+    stdout: Vec<String>,
+    stderr: Vec<String>,
+    installed: Vec<String>,
+}
+
+/// One line of a job's log, as the GUI receives it (Tauri event `cpmm-log`).
+#[derive(serde::Serialize, Clone, Debug, ts_rs::TS)]
+pub struct LogLine {
+    pub job: u64,
+    pub line: String,
+    pub stderr: bool,
+}
+
+/// How an action ended. `output` is the log as one text, stdout lines then stderr lines (the
+/// last line of a failed action is its error, `error: …`); `installed` the mods it newly
+/// installed (what the GUI names in "Installed …").
+#[derive(serde::Serialize, Clone, Debug, ts_rs::TS)]
+pub struct ActResult {
+    pub code: i32,
+    pub output: String,
+    pub installed: Vec<String>,
+}
+
+impl Transcript {
+    /// Take an event; `line` hears each line it completes (text, stderr?).
+    pub fn add(&mut self, e: &Event, line: &mut dyn FnMut(&str, bool)) {
+        if let Some(id) = e.installed() {
+            self.installed.push(id.to_string());
+        }
+        for l in lines(e) {
+            if l.open {
+                self.open[l.err as usize].push_str(&l.text);
+                continue;
+            }
+            let text = std::mem::take(&mut self.open[l.err as usize]) + &l.text;
+            line(&text, l.err);
+            if l.err { &mut self.stderr } else { &mut self.stdout }.push(text);
+        }
+    }
+
+    /// The end: an error is the last stderr lines, as the CLI prints it.
+    pub fn finish(mut self, r: anyhow::Result<()>, line: &mut dyn FnMut(&str, bool)) -> ActResult {
+        if let Err(e) = &r {
+            for l in format!("error: {e:#}").lines() {
+                line(l, true);
+                self.stderr.push(l.to_string());
+            }
+        }
+        let output = self.stdout.iter().chain(&self.stderr).map(|l| format!("{l}\n")).collect();
+        ActResult { code: if r.is_ok() { 0 } else { 1 }, output, installed: self.installed }
+    }
 }
 
 fn out(v: Vec<String>) -> Vec<Line> {
@@ -214,6 +275,14 @@ fn note(n: &Note) -> Vec<Line> {
         }
         Note::KeySaved { name, premium } => one(format!("saved the key for {name}{}", if *premium { " (premium)" } else { "" })),
         Note::KeyRemoved => one("Nexus API key removed".into()),
+        Note::Key(KeyStatus::Valid { name, premium }) => one(format!(
+            "key OK: {name}{}",
+            if *premium { " (premium: downloads work from cpmm)" } else { " (free: use Mod Manager Download links)" }
+        )),
+        Note::Key(KeyStatus::Set(f)) => one(format!("a Nexus API key is set ({}); --check validates it", f.display())),
+        Note::Key(KeyStatus::Missing) => {
+            one("no Nexus API key; get yours at https://www.nexusmods.com/users/myaccount?tab=api and run `cpmm nexus-key <KEY>`".into())
+        }
         Note::StagingMoved { mods, to } => one(format!("moved {mods} mods to {}", to.display())),
         Note::StagingOtherDrive => {
             one("note: the new folder is on a different drive than the game; installs and imports will copy instead of move".into())
