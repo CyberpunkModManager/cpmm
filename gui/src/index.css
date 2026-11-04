@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Noto Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+
+  --color-ink-950: #07060c;
+  --color-ink-900: #0d0c16;
+  --color-ink-850: #13111f;
+  --color-ink-800: #1a1729;
+  --color-ink-700: #2a2640;
+  --color-ink-600: #3b3657;
+  --color-ink-400: #8b85a8;
+  --color-ink-300: #b4afcc;
+  --color-ink-100: #ece9f7;
+
+  --color-neon-cyan: #22d3ee;
+  --color-neon-violet: #a78bfa;
+  --color-neon-pink: #f472b6;
+  --color-neon-lime: #a3e635;
+  --color-neon-amber: #fbbf24;
+  --color-neon-red: #fb7185;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-ink-950 text-ink-100 font-sans antialiased select-none;
+    background-image:
+      radial-gradient(1200px 600px at 100% -10%, rgb(34 211 238 / 0.08), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgb(167 139 250 / 0.08), transparent 60%);
+  }
+  ::selection {
+    background: rgb(34 211 238 / 0.3);
+  }
+  /* Focus ring for controller/keyboard navigation; hidden while using touch/mouse */
+  html[data-input="pointer"] :focus,
+  html[data-input="pointer"] :focus-visible {
+    outline: none;
+    box-shadow: none;
+  }
+  html[data-input="pad"] :focus,
+  :focus-visible,
+  .gp-focus {
+    outline: 2px solid var(--color-neon-cyan);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 6px rgb(34 211 238 / 0.18);
+  }
+  /* element under the controller's virtual cursor */
+  .vc-hover {
+    outline: 2px solid rgb(34 211 238 / 0.55) !important;
+    outline-offset: 2px;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-ink-600) transparent;
+  }
+}
+
+@utility glass {
+  background: rgb(19 17 31 / 0.72);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--color-ink-700);
+}
+
+@utility glow-cyan {
+  box-shadow: 0 0 24px rgb(34 211 238 / 0.25);
+}
