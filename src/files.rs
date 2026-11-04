@@ -9,6 +9,14 @@ use std::os::fd::AsRawFd;
 use std::path::Path;
 use walkdir::WalkDir;
 
+/// A path the user typed: `~/` is their home.
+pub fn expand_home(p: &str) -> std::path::PathBuf {
+    match p.strip_prefix("~/") {
+        Some(r) => std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(r),
+        None => std::path::PathBuf::from(p),
+    }
+}
+
 /// Relative, '/'-separated paths of all regular files (and symlinks) under `root`, sorted.
 pub fn list_tree(root: &Path) -> Vec<String> {
     if !root.exists() {

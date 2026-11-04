@@ -221,11 +221,22 @@ impl<'p> Catalogue<'p> {
     /// manifest's hash is reused. `nxm` is the key/expires of a "Mod Manager Download" link
     /// (lets free accounts download).
     pub fn fetch_archive(&self, v: &Version, man: &Manifest, nxm: Option<(&str, &str)>) -> Result<PathBuf> {
+        self.fetch_archive_with(v, man, nxm, &mut |_| {})
+    }
+
+    /// [`Self::fetch_archive`], telling `progress` how the download is getting on.
+    pub fn fetch_archive_with(
+        &self,
+        v: &Version,
+        man: &Manifest,
+        nxm: Option<(&str, &str)>,
+        progress: &mut dyn FnMut(crate::nexus::Transfer),
+    ) -> Result<PathBuf> {
         let arc = self.archive_path(v);
         if let Some(dir) = arc.parent() {
             fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
-        self.nx.download(v, man, &arc, nxm)?;
+        self.nx.download(v, man, &arc, nxm, progress)?;
         Ok(arc)
     }
 

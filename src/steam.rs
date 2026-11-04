@@ -274,7 +274,37 @@ fn art_files(grid: &Path, appid: u32) -> Vec<PathBuf> {
     ART.iter().map(|(_, suf, _)| grid.join(format!("{appid}{suf}.png"))).chain([grid.join(format!("{appid}_icon.png"))]).collect()
 }
 
-fn offline(opts: &Opts, exe: &Path, users: &[PathBuf]) -> Result<()> {
+/// What adding or removing the shortcut does, step by step. `user` is the Steam user whose
+/// shortcuts.vdf is edited (Steam closed); None when it goes through the running client.
+#[derive(Clone, Debug)]
+pub enum Step {
+    NotThere {
+        user: Option<String>,
+        name: String,
+    },
+    Removing {
+        user: Option<String>,
+        appid: u32,
+    },
+    Refreshing {
+        user: Option<String>,
+        appid: u32,
+    },
+    Adding {
+        user: Option<String>,
+        appid: Option<u32>,
+        name: String,
+        exe: PathBuf,
+    },
+    /// shortcuts.vdf written; Steam reads it at its next start
+    Written,
+    /// Added through the client, with its artwork
+    Added {
+        appid: u32,
+    },
+}
+
+fn offline(opts: &Opts, exe: &Path, users: &[PathBuf], say: &mut dyn FnMut(Step)) -> Result<()> {
     let exe_q = format!("\"{}\"", exe.display());
     let start = exe.parent().map(Path::to_path_buf).unwrap_or_else(home);
     let start_q = format!("\"{}\"", start.display());
@@ -288,10 +318,10 @@ fn offline(opts: &Opts, exe: &Path, users: &[PathBuf]) -> Result<()> {
         };
         if opts.remove {
             let Some(f) = found else {
-                println!("user {uid}: no {} shortcut", opts.name);
+                say(Step::NotThere { user: Some(uid.to_string()), name: opts.name.clone() });
                 continue;
             };
-            println!("user {uid}: removing shortcut {} and its artwork", f.appid);
+            say(Step::Removing { user: Some(uid.to_string()), appid: f.appid });
             if opts.dry_run {
                 continue;
             }
@@ -306,8 +336,8 @@ fn offline(opts: &Opts, exe: &Path, users: &[PathBuf]) -> Result<()> {
         let appid = found.as_ref().map(|f| f.appid).unwrap_or_else(|| shortcut_appid(&exe_q, &opts.name));
         let icon = icon_path(&grid, appid);
         match &found {
-            Some(_) => println!("user {uid}: shortcut {appid} already there; refreshing artwork"),
-            None => println!("user {uid}: adding shortcut {appid} ({} -> {})", opts.name, exe.display()),
+            Some(_) => say(Step::Refreshing { user: Some(uid.to_string()), appid }),
+            None => say(Step::Adding { user: Some(uid.to_string()), appid: Some(appid), name: opts.name.clone(), exe: exe.to_path_buf() }),
         }
         if opts.dry_run {
             continue;
@@ -326,7 +356,7 @@ fn offline(opts: &Opts, exe: &Path, users: &[PathBuf]) -> Result<()> {
         }
     }
     if !opts.dry_run {
-        println!("done; Steam picks it up the next time it starts");
+        say(Step::Written);
     }
     Ok(())
 }
@@ -392,7 +422,7 @@ fn js(s: &str) -> String {
 
 const NEEDED: &str = "['AddShortcut','RemoveShortcut','SetShortcutName','SetCustomArtworkForApp']";
 
-fn live(opts: &Opts, exe: &Path, users: &[PathBuf], ws: &str) -> Result<()> {
+fn live(opts: &Opts, exe: &Path, users: &[PathBuf], ws: &str, say: &mut dyn FnMut(Step)) -> Result<()> {
     let missing = eval(ws, &format!("{NEEDED}.filter(f => typeof SteamClient.Apps[f] !== 'function')"))?;
     if missing.as_array().is_some_and(|a| !a.is_empty()) {
         bail!("this Steam client lacks SteamClient.Apps functions {missing}; quit Steam and rerun to edit shortcuts.vdf instead");
@@ -411,10 +441,10 @@ fn live(opts: &Opts, exe: &Path, users: &[PathBuf], ws: &str) -> Result<()> {
     }
     if opts.remove {
         let Some(id) = existing else {
-            println!("no {} shortcut in the Steam library", opts.name);
+            say(Step::NotThere { user: None, name: opts.name.clone() });
             return Ok(());
         };
-        println!("removing shortcut {id} (live, through the Steam client)");
+        say(Step::Removing { user: None, appid: id });
         if !opts.dry_run {
             eval(ws, &format!("SteamClient.Apps.RemoveShortcut({id}), true"))?;
             // Steam leaves the custom artwork behind.
@@ -427,8 +457,8 @@ fn live(opts: &Opts, exe: &Path, users: &[PathBuf], ws: &str) -> Result<()> {
         return Ok(());
     }
     match existing {
-        Some(id) => println!("shortcut {id} already in the library; refreshing name and artwork"),
-        None => println!("adding {} -> {} (live, through the Steam client)", opts.name, exe.display()),
+        Some(id) => say(Step::Refreshing { user: None, appid: id }),
+        None => say(Step::Adding { user: None, appid: None, name: opts.name.clone(), exe: exe.to_path_buf() }),
     }
     if opts.dry_run {
         return Ok(());
@@ -467,11 +497,11 @@ fn live(opts: &Opts, exe: &Path, users: &[PathBuf], ws: &str) -> Result<()> {
     for (kind, _, bytes) in ART {
         eval(ws, &format!("SteamClient.Apps.SetCustomArtworkForApp({id}, '{}', 'png', {kind}).then(() => true)", b64(bytes)))?;
     }
-    println!("added as app {id} with capsule, wide, hero and logo artwork");
+    say(Step::Added { appid: id });
     Ok(())
 }
 
-pub fn run(opts: Opts) -> Result<()> {
+pub fn run(opts: Opts, say: &mut dyn FnMut(Step)) -> Result<()> {
     let root = steam_root();
     let users = users(&root);
     if users.is_empty() {
@@ -484,10 +514,10 @@ pub fn run(opts: Opts) -> Result<()> {
         Err(e) => return Err(e),
     };
     if !steam_running() {
-        return offline(&opts, &exe, &users);
+        return offline(&opts, &exe, &users, say);
     }
     match shared_js_ws() {
-        Ok(ws) => live(&opts, &exe, &users, &ws),
+        Ok(ws) => live(&opts, &exe, &users, &ws, say),
         Err(e) => bail!(
             "Steam is running, but its CEF debugger isn't reachable ({e:#}).\n\
              Either enable it (Decky does; or `touch {}/.cef-enable-remote-debugging` and restart Steam),\n\

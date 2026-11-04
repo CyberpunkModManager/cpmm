@@ -64,6 +64,12 @@ pub struct Fomod {
 
 pub type Choices = BTreeMap<String, Vec<String>>;
 
+/// For file conditions: is this game-relative file present (game dir or an enabled mod)?
+pub fn file_active<'a>(paths: &'a crate::state::Paths, st: &'a crate::state::State) -> impl Fn(&str) -> bool + 'a {
+    let own = crate::conflicts::ownership(paths, &st.mods, true);
+    move |f: &str| own.contains_key(&f.to_lowercase()) || paths.game.join(f).exists()
+}
+
 /// `fomod/ModuleConfig.xml` inside an extracted archive, if there is one.
 pub fn detect(extracted: &[String]) -> Option<String> {
     extracted.iter().filter(|p| p.to_lowercase().ends_with("fomod/moduleconfig.xml")).min_by_key(|p| p.matches('/').count()).cloned()
@@ -459,49 +465,46 @@ fn image_data(root: &Path, base: &str, rel: &str) -> Option<String> {
     Some(s)
 }
 
-/// Terminal prompts, one group at a time (Enter keeps the installer's suggestion).
-pub fn ask(f: &Fomod, fa: &dyn Fn(&str) -> bool) -> Result<Choices> {
-    use std::io::Write;
+/// One group of options to choose from, as an adapter asks it (the CLI in a terminal).
+pub struct Prompt<'a> {
+    pub step: &'a str,
+    pub group: &'a str,
+    /// SelectExactlyOne, SelectAny, …
+    pub kind: &'a str,
+    pub options: Vec<PromptOption<'a>>,
+}
+
+pub struct PromptOption<'a> {
+    pub name: &'a str,
+    /// Required, Recommended, Optional, … under the choices made so far
+    pub kind: String,
+    pub description: &'a str,
+    /// The installer's suggestion
+    pub default: bool,
+}
+
+/// Walk the installer one visible group at a time, in order, letting `pick` choose each
+/// group's options by name. Later steps see the flags the earlier choices set.
+pub fn choose(f: &Fomod, fa: &dyn Fn(&str) -> bool, pick: &mut dyn FnMut(&Prompt) -> Result<Vec<String>>) -> Result<Choices> {
     let mut choices = Choices::new();
     let mut flags = BTreeMap::new();
-    println!("\nFOMOD installer: {}", if f.name.is_empty() { "(unnamed)" } else { &f.name });
     for s in &f.steps {
         if s.visible.as_ref().is_some_and(|c| !eval(c, &flags, fa)) {
             continue;
         }
         for g in &s.groups {
             let def = default_for(g, &flags, fa);
-            println!("\n[{}] {} ({})", s.name, g.name, g.kind);
-            for (i, p) in g.plugins.iter().enumerate() {
-                let kind = plugin_kind(p, &flags, fa);
-                let first = p.description.lines().next().unwrap_or("");
-                println!(
-                    "  {}{} {}  [{}]  {}",
-                    if def.contains(&p.name) { "*" } else { " " },
-                    i + 1,
-                    p.name,
-                    kind,
-                    first.chars().take(90).collect::<String>()
-                );
-            }
-            let sel = loop {
-                print!("choose (numbers separated by spaces, Enter = *): ");
-                std::io::stdout().flush()?;
-                let mut l = String::new();
-                std::io::stdin().read_line(&mut l)?;
-                let l = l.trim();
-                if l.is_empty() {
-                    break def.clone();
-                }
-                let picked: Option<Vec<String>> = l
-                    .split_whitespace()
-                    .map(|n| n.parse::<usize>().ok().and_then(|n| g.plugins.get(n.wrapping_sub(1))).map(|p| p.name.clone()))
-                    .collect();
-                match picked {
-                    Some(v) => break v,
-                    None => println!("  numbers from 1 to {}", g.plugins.len()),
-                }
-            };
+            let options = g
+                .plugins
+                .iter()
+                .map(|p| PromptOption {
+                    name: &p.name,
+                    kind: plugin_kind(p, &flags, fa),
+                    description: &p.description,
+                    default: def.contains(&p.name),
+                })
+                .collect();
+            let sel = pick(&Prompt { step: &s.name, group: &g.name, kind: &g.kind, options })?;
             for p in g.plugins.iter().filter(|p| sel.contains(&p.name)) {
                 for (fl, v) in &p.flags {
                     flags.insert(fl.clone(), v.clone());

@@ -443,7 +443,7 @@ pub fn ingest_errors(paths: &Paths) -> (Option<ErrSnap>, ErrSnap) {
     (prev, latest)
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct ErrDiff {
     pub baseline: bool,
     pub latest_log: i64,

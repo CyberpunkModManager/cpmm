@@ -241,8 +241,15 @@ fn exec(cmd: &[String]) -> Result<()> {
     Err(anyhow::anyhow!("exec {}: {err}", cmd[0]))
 }
 
-/// `cpmm run -- %command%`: the Steam launch wrapper.
-pub fn run(paths: &Paths, mods: Option<&[Mod]>, saves: Option<&Path>, cmd: &[String]) -> Result<()> {
+/// `cpmm run -- %command%`: the Steam launch wrapper. `mounted` hears how many mod layers
+/// (None for a vanilla launch) are mounted, just before the command replaces this process.
+pub fn run(
+    paths: &Paths,
+    mods: Option<&[Mod]>,
+    saves: Option<&Path>,
+    cmd: &[String],
+    mounted: &mut dyn FnMut(Option<usize>),
+) -> Result<()> {
     if std::env::var_os("CPMM_NS").is_some() {
         return exec(cmd); // already inside (e.g. nested wrappers)
     }
@@ -250,13 +257,24 @@ pub fn run(paths: &Paths, mods: Option<&[Mod]>, saves: Option<&Path>, cmd: &[Str
         bail!("a cpmm session is already running (pid {pid}); two overlays sharing one upper dir would corrupt it");
     }
     let ls = enter_new(paths, mods, saves, cmd)?;
-    if mods.is_some() {
-        eprintln!("cpmm: overlay mounted with {} mod layers", ls.len());
-    }
-    if let Some(s) = saves {
-        eprintln!("cpmm: saves from {}", s.display());
-    }
+    mounted(mods.map(|_| ls.len()));
     exec(cmd)
+}
+
+/// True if a process whose program (argv[0]) is Cyberpunk2077.exe exists.
+pub fn game_running() -> bool {
+    fs::read_dir("/proc")
+        .map(|d| {
+            d.flatten().any(|e| {
+                fs::read(e.path().join("cmdline"))
+                    .map(|c| {
+                        let a0 = c.split(|b| *b == 0).next().unwrap_or(&[]);
+                        String::from_utf8_lossy(a0).to_lowercase().ends_with("cyberpunk2077.exe")
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// `cpmm exec -- cmd`: run a tool inside the game's view (joins a running session if any).

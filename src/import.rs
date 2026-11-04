@@ -29,8 +29,33 @@ fn read_json(p: &Path) -> Option<Value> {
     serde_json::from_slice(&fs::read(p).ok()?).ok()
 }
 
+/// What an import reports as it goes, one table row per mod.
+#[derive(Clone, Debug)]
+pub enum Progress {
+    /// Files the Steam depot manifest knows (vanilla); the table header follows.
+    Vanilla(usize),
+    Row {
+        id: String,
+        nexus: Option<u64>,
+        files: usize,
+        moved: usize,
+        copied: usize,
+        missing: usize,
+        name: String,
+    },
+    /// Mods found, and files claimed by more than one of them.
+    Summary {
+        mods: usize,
+        shared: usize,
+    },
+    /// The end: imported (`apply`) or a dry run.
+    Done {
+        applied: bool,
+    },
+}
+
 /// With `apply`, runs inside a change (which checks the game isn't running and saves).
-pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> Result<()> {
+pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool, say: &mut dyn FnMut(Progress)) -> Result<()> {
     if !state.mods.is_empty() && apply {
         bail!("cpmm already manages {} mods; import is meant to run once on a fresh state", state.mods.len());
     }
@@ -190,8 +215,7 @@ pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> 
         c.id = id;
     }
 
-    println!("vanilla manifest: {} files known", vanilla.len());
-    println!("{:<34} {:>6} {:>7} {:>6} {:>6} {:>7}  name", "id", "nexus", "files", "moved", "copied", "missing");
+    say(Progress::Vanilla(vanilla.len()));
     let mut journal = if apply {
         paths.ensure_dirs()?;
         Some(fs::OpenOptions::new().create(true).append(true).open(paths.data.join("import-journal.tsv"))?)
@@ -228,8 +252,15 @@ pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> 
             }
             if do_move { moved += 1 } else { copied += 1 }
         }
-        let nid = c.nexus.as_ref().map(|n| n.mod_id.to_string()).unwrap_or("-".into());
-        println!("{:<34} {:>6} {:>7} {:>6} {:>6} {:>7}  {}", c.id, nid, c.files.len(), moved, copied, missing, c.name);
+        say(Progress::Row {
+            id: c.id.clone(),
+            nexus: c.nexus.as_ref().map(|n| n.mod_id),
+            files: c.files.len(),
+            moved,
+            copied,
+            missing,
+            name: c.name.clone(),
+        });
         new_mods.push(Mod {
             id: c.id.clone(),
             name: c.name.clone(),
@@ -247,13 +278,11 @@ pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> 
         });
     }
     let shared = claims.values().filter(|v| v.len() > 1).count();
-    println!("\n{} mods, {} files claimed by more than one mod (each owner gets its own reflinked copy)", new_mods.len(), shared);
+    say(Progress::Summary { mods: new_mods.len(), shared });
     if apply {
         state.mods = new_mods;
-        println!("imported. Base game dir now holds only vanilla + unmanaged files; launch through `cpmm run`.");
-    } else {
-        println!("dry run; re-run with --apply to move files");
     }
+    say(Progress::Done { applied: apply });
     Ok(())
 }
 

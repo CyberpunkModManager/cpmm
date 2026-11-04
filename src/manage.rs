@@ -230,6 +230,60 @@ pub fn overwrite_clear(paths: &Paths, sel: &[String]) -> Result<(usize, std::pat
     Ok((n, t))
 }
 
+/// Copy every enabled mod's winning files, and overwrite/'s files, into the real game dir
+/// (`apply`; else only count them). Returns (mod files, overwrite entries).
+pub fn eject(paths: &Paths, st: &State, apply: bool) -> Result<(usize, usize)> {
+    crate::change::Idle::NoSession("game session running; quit first").check(paths)?;
+    let own = conflicts::ownership(paths, &st.mods, true);
+    let mut n = 0;
+    for (rel, owners) in own.values() {
+        let winner = owners.last().unwrap();
+        if apply {
+            let dst = paths.game.join(rel);
+            if dst.exists() {
+                fs::remove_file(&dst)?;
+            }
+            files::reflink_or_copy(&paths.mod_files(winner).join(rel), &dst)?;
+        }
+        n += 1;
+    }
+    let up = files::list_tree(&paths.upper());
+    if apply {
+        for rel in &up {
+            let src = paths.upper().join(rel);
+            if fs::symlink_metadata(&src).map(|m| m.file_type().is_file()).unwrap_or(false) {
+                let dst = paths.game.join(rel);
+                if dst.exists() {
+                    fs::remove_file(&dst)?;
+                }
+                files::reflink_or_copy(&src, &dst)?;
+            }
+        }
+    }
+    Ok((n, up.len()))
+}
+
+/// Empty trash/, tmp/ and the downloads folder (or, `dry_run`, only measure them). Returns
+/// the bytes they held.
+pub fn clean(paths: &Paths, dry_run: bool) -> Result<u64> {
+    let mut total = 0u64;
+    for d in [paths.trash(), paths.tmp(), paths.downloads()] {
+        let size: u64 = walkdir::WalkDir::new(&d)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.metadata().ok())
+            .filter(|m| m.is_file())
+            .map(|m| m.len())
+            .sum();
+        total += size;
+        if !dry_run && d.exists() {
+            fs::remove_dir_all(&d)?;
+            fs::create_dir_all(&d)?;
+        }
+    }
+    Ok(total)
+}
+
 #[derive(Debug, PartialEq)]
 pub struct NxmLink {
     pub mod_id: u64,

@@ -158,9 +158,18 @@ pub fn plan(extracted: &[String], slug: &str, root: Option<&str>, dest: Option<&
 }
 
 /// Build `mods/<id>/files` from an extracted tree; replaces any existing staged files
-/// (old ones go to trash). Returns the list of installed relative paths.
+/// (old ones go to trash, or to history for an installed mod). Returns the installed relative
+/// paths, and whether the installed version was kept in history.
 /// `batch` tags the replaced version's history entry (change::Edit::batch).
-pub fn stage(paths: &Paths, state: &State, id: &str, extracted_root: &Path, plan: &Plan, batch: Option<&str>) -> Result<Vec<String>> {
+pub fn stage(
+    paths: &Paths,
+    state: &State,
+    id: &str,
+    extracted_root: &Path,
+    plan: &Plan,
+    batch: Option<&str>,
+) -> Result<(Vec<String>, bool)> {
+    let mut kept = false;
     if paths.mods().join(id).exists() && crate::vfs::running(paths).is_some() {
         bail!("{id} is mounted by the running game session; quit the game before replacing its files");
     }
@@ -191,7 +200,7 @@ pub fn stage(paths: &Paths, state: &State, id: &str, extracted_root: &Path, plan
             Some(i) => {
                 let reason = format!("replaced by an install/update (was {})", state.mods[i].version);
                 crate::safety::archive_current(paths, &state.mods[i], &reason, batch)?;
-                eprintln!("previous version of {id} kept in history (cpmm rollback {id})");
+                kept = true;
             }
             None => {
                 let t = paths.trash_for(id);
@@ -201,7 +210,7 @@ pub fn stage(paths: &Paths, state: &State, id: &str, extracted_root: &Path, plan
     }
     fs::rename(&new_root, &final_dir)?;
     out.sort();
-    Ok(out)
+    Ok((out, kept))
 }
 
 pub fn tmp_extract_dir(paths: &Paths, id: &str) -> PathBuf {

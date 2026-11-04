@@ -7,10 +7,12 @@
 //! ```
 //!
 //! Callers run it inside a change (`change::Change::apply`), which owns the save, journal,
-//! update batch and sort policy; they pick a source and a [`Policy`], render the [`Event`]s as
-//! they happen ([`print`] is the CLI's rendering; the GUI reads its "installed X: N files"
-//! lines) and get a [`Report`] back. Nexus is reached through the [`Releases`] port
-//! (production adapter: the Nexus catalogue), so tests run the whole pipeline against a fake.
+//! update batch and sort policy; they pick a source and a [`Policy`] and get a [`Report`]
+//! back. The [`Event`]s go to the change's `Ui` as they happen ([`lines`] is their text, the
+//! same for the CLI and the GUI's job log), and a FOMOD installer without saved or explicit
+//! choices is asked through it when the policy says so. Nexus is reached through the
+//! [`Releases`] port (production adapter: the Nexus catalogue), so tests run the whole
+//! pipeline against a fake.
 
 mod stage;
 #[cfg(test)]
@@ -23,7 +25,8 @@ use crate::conflicts::{self, FileConflict};
 use crate::downloads::Download;
 use crate::fomod::{self, Choices};
 use crate::health::{self, Finding};
-use crate::nexus::{self, Catalogue, Manifest, ModInfo, Version};
+use crate::nexus::{self, Catalogue, Manifest, ModInfo, Transfer, Version};
+use crate::ops::Event as OpEvent;
 use crate::requirements::{self, Status};
 use crate::state::{Mod, NexusSource, Paths, ReqCheck, Requirement, State, now, short_name, slugify};
 use crate::{files, manage};
@@ -131,7 +134,6 @@ pub struct Done {
     /// Its files shadowed by game-written copies in overwrite/.
     pub shadowed: usize,
     /// Its requirements at install time and what was done about them.
-    #[allow(dead_code)] // part of the result; the CLI prints them as they happen instead
     pub requirements: Vec<Need>,
 }
 
@@ -198,14 +200,20 @@ pub enum Event<'a> {
         depth: usize,
         bytes: u64,
     },
+    /// How the download is getting on (large files).
+    Transfer(Transfer),
     Fomod {
         depth: usize,
         note: Note<'a>,
     },
+    /// The installed version of a mod was kept for rollback before its files were replaced.
+    Kept(&'a str),
     /// Files staged and the mod recorded (or found up to date).
     Staged(&'a Done),
     /// Saved, with hidden files re-hidden and new conflicts found.
     Settled(&'a Done),
+    /// After-install check of the staged files against the Nexus manifest.
+    Verified(&'a crate::verify::Verified),
     /// After-install doctor findings that mention the mod.
     Health(&'a [Finding]),
     /// The after-install command ran.
@@ -232,8 +240,15 @@ pub trait Releases {
     /// show, and the list to store on the mod.
     fn requires(&self, mod_id: u64, version_id: &str) -> Result<(Vec<nexus::Req>, Vec<Requirement>)>;
     /// The archive of a version in the Downloads list, downloading it first if needed
-    /// (`downloading` is told the size before that), and its manifest.
-    fn archive(&self, info: &ModInfo, mod_id: u64, ver: &Version, downloading: &mut dyn FnMut(u64)) -> Result<(PathBuf, Manifest)>;
+    /// (`progress` is told the size before that, then how it goes), and its manifest.
+    fn archive(&self, info: &ModInfo, mod_id: u64, ver: &Version, progress: &mut dyn FnMut(Fetch)) -> Result<(PathBuf, Manifest)>;
+}
+
+/// A download in progress, as [`Releases::archive`] reports it.
+pub enum Fetch {
+    /// About to download this many bytes.
+    Size(u64),
+    Transfer(Transfer),
 }
 
 impl Releases for Catalogue<'_> {
@@ -245,32 +260,25 @@ impl Releases for Catalogue<'_> {
         self.requirements(mod_id, version_id, false)
     }
 
-    fn archive(&self, info: &ModInfo, mod_id: u64, ver: &Version, downloading: &mut dyn FnMut(u64)) -> Result<(PathBuf, Manifest)> {
+    fn archive(&self, info: &ModInfo, mod_id: u64, ver: &Version, progress: &mut dyn FnMut(Fetch)) -> Result<(PathBuf, Manifest)> {
         let man = self.manifest(ver)?;
         if !self.archive_path(ver).exists() {
-            downloading(man.archive.size);
+            progress(Fetch::Size(man.archive.size));
         }
-        let arc = self.fetch_archive(ver, &man, None)?;
-        crate::record_download(&arc, &info.name, mod_id, ver, "nexus");
+        let arc = self.fetch_archive_with(ver, &man, None, &mut |t| progress(Fetch::Transfer(t)))?;
+        crate::downloads::record_nexus(&arc, &info.name, mod_id, ver, "nexus");
         Ok((arc, man))
     }
 }
 
-/// Install `source` under `policy` as part of the caller's change `cx`, telling `log` what
-/// happens as it happens. Each finished mod is saved and journalled through `cx`, replaced
-/// versions carry its update batch, and the requested mod's hooks use its sort step.
+/// Install `source` under `policy` as part of the caller's change `cx`, telling the change's
+/// `Ui` what happens as it happens. Each finished mod is saved and journalled through `cx`,
+/// replaced versions carry its update batch, and the requested mod's hooks use its sort step.
 ///
 /// Missing requirements are handled per `policy.missing` before anything of the mod is
 /// staged; each Nexus mod is installed at most once per call, so requirement cycles end.
 /// On error, mods finished before it (requirements) stay installed.
-pub fn run(
-    cx: &mut Edit,
-    st: &mut State,
-    nexus: &dyn Releases,
-    source: Source,
-    policy: &Policy,
-    mut log: impl FnMut(&Event),
-) -> Result<Report> {
+pub fn run(cx: &mut Edit, st: &mut State, nexus: &dyn Releases, source: Source, policy: &Policy) -> Result<Report> {
     let mut policy = policy.clone();
     let source = match source {
         Source::Download(d) => {
@@ -288,7 +296,7 @@ pub fn run(
         s => s,
     };
     let paths = cx.paths();
-    let mut r = Run { cx, paths, nexus, policy, visiting: BTreeSet::new(), log: &mut log, done: vec![] };
+    let mut r = Run { cx, paths, nexus, policy, visiting: BTreeSet::new(), done: vec![] };
     match source {
         Source::Nexus { mod_id, file } => r.nexus_mod(st, mod_id, file.as_deref(), 0)?,
         Source::Local { path, nexus } => r.local(st, &path, nexus)?,
@@ -297,18 +305,14 @@ pub fn run(
     Ok(Report { mods: r.done })
 }
 
-/// The CLI's rendering of an event, one or more lines on stdout.
-pub fn print(e: &Event) {
-    for l in lines(e) {
-        println!("{l}");
-    }
-}
-
 fn notes(r: &Requirement) -> String {
     if r.notes.is_empty() { String::new() } else { format!(" — {}", r.notes) }
 }
 
-fn lines(e: &Event) -> Vec<String> {
+/// The text of an event, one or more lines (the CLI prints them; the GUI's job log shows
+/// them). [`Event::Transfer`] is the exception: a percentage continues the current line,
+/// and its end closes it; [`Event::Kept`] goes to stderr.
+pub fn lines(e: &Event) -> Vec<String> {
     let ind = |d: usize| "  ".repeat(d);
     match e {
         Event::Release { depth, name, mod_id, version: v } => {
@@ -336,6 +340,9 @@ fn lines(e: &Event) -> Vec<String> {
             }
         }
         Event::Downloading { depth, bytes } => vec![format!("{}  downloading {:.1} MB", ind(*depth), *bytes as f64 / 1048576.0)],
+        Event::Transfer(Transfer::Percent(p)) => vec![format!(" {p}%")],
+        Event::Transfer(Transfer::Finished) => vec![String::new()],
+        Event::Kept(id) => vec![format!("previous version of {id} kept in history (cpmm rollback {id})")],
         Event::Fomod { depth, note } => {
             let i = ind(*depth);
             vec![match note {
@@ -379,6 +386,7 @@ fn lines(e: &Event) -> Vec<String> {
             }
             out
         }
+        Event::Verified(v) => v.lines(),
         Event::Health([]) => vec!["  health: no new risks".into()],
         Event::Health(hits) => hits.iter().map(|f| format!("  health: [{}] {}", f.severity, f.title)).collect(),
         Event::Command(Ok(s)) if s.success() => vec![],
@@ -396,7 +404,6 @@ struct Run<'r, 'e> {
     policy: Policy,
     /// Nexus mods this run has started; a requirement on one of them is not installed again.
     visiting: BTreeSet<u64>,
-    log: &'r mut dyn FnMut(&Event),
     done: Vec<Done>,
 }
 
@@ -409,7 +416,7 @@ struct Laid {
 
 impl Run<'_, '_> {
     fn emit(&mut self, e: &Event) {
-        (self.log)(e)
+        self.cx.emit(&OpEvent::Install(e))
     }
 
     fn nexus_mod(&mut self, st: &mut State, gid: u64, file: Option<&str>, depth: usize) -> Result<()> {
@@ -456,8 +463,11 @@ impl Run<'_, '_> {
         });
         let manifest_url = ver.manifest_url.clone().context("version has no manifest")?;
         self.paths.ensure_dirs()?;
-        let (paths, nexus, log) = (self.paths, self.nexus, &mut *self.log);
-        let (arc, man) = nexus.archive(&info, gid, &ver, &mut |bytes| log(&Event::Downloading { depth, bytes }))?;
+        let (paths, nexus, cx) = (self.paths, self.nexus, &mut *self.cx);
+        let (arc, man) = nexus.archive(&info, gid, &ver, &mut |f| match f {
+            Fetch::Size(bytes) => cx.emit(&OpEvent::Install(&Event::Downloading { depth, bytes })),
+            Fetch::Transfer(t) => cx.emit(&OpEvent::Install(&Event::Transfer(t))),
+        })?;
 
         let x = unpack(paths, &id, &arc)?;
         // per-file hash check against the manifest
@@ -595,7 +605,7 @@ impl Run<'_, '_> {
                 n.fix = Some(Fix::Upstream);
             }
             if n.status != Status::Missing || n.fix.is_some() {
-                (self.log)(&Event::Requirement { depth, label, need: n });
+                self.cx.emit(&OpEvent::Install(&Event::Requirement { depth, label, need: n }));
             }
         }
         let missing: Vec<usize> = (0..needs.len()).filter(|&i| needs[i].status == Status::Missing && needs[i].fix.is_none()).collect();
@@ -645,13 +655,17 @@ impl Run<'_, '_> {
             }
             _ => (stage::plan(&extracted, id, root.as_deref(), dest.as_deref())?, None),
         };
-        let staged = stage::stage(self.paths, st, id, x, &plan, self.cx.batch())?;
+        let (staged, kept) = stage::stage(self.paths, st, id, x, &plan, self.cx.batch())?;
+        if kept {
+            self.emit(&Event::Kept(id));
+        }
         let _ = fs::remove_dir_all(x);
         Ok(Laid { files: staged.len(), skipped: plan.skipped.len(), fomod: fomod_choices })
     }
 
     /// Plan an install from a FOMOD installer: explicit choices, else the mod's saved choices,
-    /// else ask in a terminal (if the policy says so), else the installer's defaults.
+    /// else ask through the change's `Ui` (if the policy says so and the adapter can ask),
+    /// else the installer's defaults.
     #[allow(clippy::too_many_arguments)]
     fn fomod_plan(
         &mut self,
@@ -664,17 +678,20 @@ impl Run<'_, '_> {
         depth: usize,
     ) -> Result<(stage::Plan, Choices)> {
         let f = fomod::parse(&fs::read(x.join(cfg))?, cfg)?;
-        let fa = crate::file_active(self.paths, st);
-        let tty = unsafe { libc::isatty(0) } == 1 && unsafe { libc::isatty(1) } == 1;
+        let fa = fomod::file_active(self.paths, st);
         let is_explicit = explicit.is_some();
-        let choices = match (explicit, saved) {
-            (Some(c), _) => c,
-            (None, Some(s)) => {
+        let asked = match (&explicit, &saved) {
+            (None, None) if self.policy.ask => self.cx.ui().choose_fomod(&f, &fa).transpose()?,
+            _ => None,
+        };
+        let choices = match (explicit, saved, asked) {
+            (Some(c), _, _) => c,
+            (None, Some(s), _) => {
                 self.emit(&Event::Fomod { depth, note: Note::Saved });
                 s
             }
-            (None, None) if tty && self.policy.ask => fomod::ask(&f, &fa)?,
-            _ => {
+            (None, None, Some(c)) => c,
+            (None, None, None) => {
                 self.emit(&Event::Fomod { depth, note: Note::Defaults });
                 Choices::new()
             }
@@ -737,8 +754,11 @@ impl Run<'_, '_> {
     fn after_install(&mut self, st: &mut State, id: &str) {
         let paths = self.paths;
         self.cx.sort(st);
-        if paths.cfg.after_install_verify {
-            let _ = crate::verify(paths, st, &[id.to_string()]);
+        if paths.cfg.after_install_verify
+            && let Some(i) = st.find(id)
+        {
+            let nx = Catalogue::open(paths);
+            let _ = crate::verify::verify(paths, st, &nx, &[i], &mut |v| self.emit(&Event::Verified(&v)));
         }
         if paths.cfg.after_install_doctor {
             let name = st.find(id).map(|i| st.mods[i].name.clone()).unwrap_or_default();

@@ -203,7 +203,7 @@ pub struct Edge {
     pub strength: &'static str,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct SortPlan {
     pub order: Vec<String>,
     pub moved: Vec<Moved>,
@@ -211,7 +211,7 @@ pub struct SortPlan {
     pub cycles: Vec<Vec<String>>,
     pub unresolved: Vec<Pair>,
 }
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct Moved {
     pub id: String,
     pub from: usize,

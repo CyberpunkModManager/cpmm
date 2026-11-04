@@ -108,6 +108,49 @@ fn parse(b: &[u8], out: &mut HashMap<String, VanillaFile>) {
     });
 }
 
+/// Base-game files that are neither vanilla nor managed, grouped by folder (three levels; six
+/// under CET's mods folder), and with `modified`, vanilla files whose content differs from
+/// Steam's copy.
+pub struct Unmanaged {
+    /// folder (or the file itself) -> files under it
+    pub groups: std::collections::BTreeMap<String, Vec<String>>,
+    pub edited: Vec<String>,
+}
+
+pub fn unmanaged(paths: &Paths, st: &crate::state::State, modified: bool) -> anyhow::Result<Unmanaged> {
+    let van = load(paths);
+    if van.is_empty() {
+        anyhow::bail!("no Steam depot manifest cached; can't tell vanilla files apart");
+    }
+    let owned: std::collections::BTreeSet<String> = crate::conflicts::ownership(paths, &st.mods, false).into_keys().collect();
+    let mut groups: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    let mut edited = vec![];
+    for f in crate::files::list_tree(&paths.game) {
+        let lf = f.to_lowercase();
+        if let Some(v) = van.get(&lf) {
+            if modified {
+                let p = paths.game.join(&f);
+                let size = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                let changed = size != v.size || (size < 64 << 20 && sha1_file(&p).is_some_and(|h| h != v.sha1));
+                if changed {
+                    edited.push(f);
+                }
+            }
+            continue;
+        }
+        if owned.contains(&lf) || protected_prefix(&lf) {
+            continue;
+        }
+        let key: String = f
+            .split('/')
+            .take(if lf.starts_with("bin/x64/plugins/cyber_engine_tweaks/mods/") { 6 } else { 3 })
+            .collect::<Vec<_>>()
+            .join("/");
+        groups.entry(key).or_default().push(f);
+    }
+    Ok(Unmanaged { groups, edited })
+}
+
 /// Paths that belong to depots whose manifests may not be cached; never treat them as mod files.
 pub fn protected_prefix(rel_lower: &str) -> bool {
     ["archive/pc/content/", "archive/pc/ep1/", "tools/redmod/", "engine/tools/"].iter().any(|p| rel_lower.starts_with(p))

@@ -168,6 +168,33 @@ pub fn add(paths: &Paths, src: &Path, mod_id: Option<u64>, source: &str, move_it
     Ok(dst)
 }
 
+/// Write the Downloads-list record for a Nexus archive, keeping when and how it first arrived
+/// (an nxm download stays "nxm" after installing).
+pub fn record_nexus(arc: &Path, name: &str, gid: u64, ver: &crate::nexus::Version, source: &str) {
+    let prev = read_meta(arc);
+    let keep = prev.as_ref().map(|m| m.downloaded_at.clone()).filter(|d| !d.is_empty());
+    let source = prev.map(|m| m.source).filter(|s| !s.is_empty()).unwrap_or_else(|| source.to_string());
+    let _ = write_meta(
+        arc,
+        &DlMeta {
+            name: name.to_string(),
+            mod_id: Some(gid),
+            file_id: ver.file.id.clone(),
+            version_gsid: ver.game_scoped_id.clone(),
+            version: ver.version.clone(),
+            file_name: ver.file.name.clone(),
+            uploaded_at: ver.uploaded_at.clone(),
+            source,
+            downloaded_at: keep.unwrap_or_else(crate::state::now),
+        },
+    );
+}
+
+/// Where the GUI's Nexus browser saves manual downloads before they join the list.
+pub fn incoming(paths: &Paths) -> PathBuf {
+    paths.downloads().join(".incoming")
+}
+
 pub fn remove(d: &Download) -> Result<()> {
     fs::remove_file(&d.path).with_context(|| format!("removing {}", d.path.display()))?;
     let _ = fs::remove_file(meta_path(&d.path));

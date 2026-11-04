@@ -22,9 +22,13 @@ fn quiet() -> Policy {
 fn install(paths: &Paths, st: &mut State, nx: &dyn Releases, source: Source, policy: &Policy) -> (Result<Report>, Vec<String>) {
     let _lock = Lock::acquire(paths).unwrap();
     let mut out = vec![];
-    let r = crate::change::Change::setup()
-        .idle(Idle::NotNeeded)
-        .apply(paths, st, |cx, st| run(cx, st, nx, source, policy, |e| out.extend(lines(e))));
+    // the install's lines on stdout (as the CLI prints them)
+    let mut ui = |e: &OpEvent| {
+        if let OpEvent::Install(_) = e {
+            out.extend(crate::ops::render::lines(e).into_iter().filter(|l| !l.err).map(|l| l.text))
+        }
+    };
+    let r = crate::change::Change::setup().idle(Idle::NotNeeded).apply(paths, st, &mut ui, |cx, st| run(cx, st, nx, source, policy));
     (r, out)
 }
 
@@ -112,7 +116,7 @@ impl Releases for FakeNexus {
         Ok((vec![], reqs))
     }
 
-    fn archive(&self, _: &ModInfo, gid: u64, _: &Version, _: &mut dyn FnMut(u64)) -> Result<(PathBuf, Manifest)> {
+    fn archive(&self, _: &ModInfo, gid: u64, _: &Version, _: &mut dyn FnMut(Fetch)) -> Result<(PathBuf, Manifest)> {
         let man = serde_json::from_value(serde_json::json!({"archive": {"size": 0, "hashes": {"SHA256": ""}}, "files": []}))?;
         Ok((self.mods.borrow()[&gid].archive.clone(), man))
     }

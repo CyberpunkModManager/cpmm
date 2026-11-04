@@ -43,6 +43,28 @@ struct RateLimit {
 }
 
 static LOW_QUOTA_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Quota warnings not yet shown (said once per process; the Operations module passes them on).
+static QUOTA_WARNINGS: std::sync::Mutex<Vec<QuotaLow>> = std::sync::Mutex::new(Vec::new());
+
+/// The daily API quota is used up: only the hourly allowance is left.
+#[derive(Clone, Debug)]
+pub struct QuotaLow {
+    pub daily_reset: Option<String>,
+    pub hourly_remaining: Option<i64>,
+    pub hourly_reset: Option<String>,
+}
+
+/// Quota warnings raised since the last call, oldest first.
+pub fn take_warnings() -> Vec<QuotaLow> {
+    QUOTA_WARNINGS.lock().map(|mut w| std::mem::take(&mut *w)).unwrap_or_default()
+}
+
+/// How a download is getting on: percent done (large files, every 10%), then finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Transfer {
+    Percent(u64),
+    Finished,
+}
 
 /// Start of the next UTC hour: when Nexus resets the hourly quota. A 429 means the hourly
 /// allowance is gone (the daily one may be too, after which hourly is all there is), so this
@@ -367,13 +389,16 @@ impl Nexus {
             rl.blocked_until = rl.hourly_reset.as_deref().and_then(parse_reset).filter(|&t| t > now).unwrap_or_else(|| next_hour(now));
         }
         // Daily quota spent: the 500/hour allowance is all that's left, so say so (once).
-        if rl.daily_remaining == Some(0) && r.status() != 429 && !LOW_QUOTA_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            eprintln!(
-                "warning: Nexus daily API quota used up (resets {}); {} requests left this hour (resets {}).",
-                rl.daily_reset.as_deref().unwrap_or("later"),
-                rl.hourly_remaining.map_or("?".into(), |n| n.to_string()),
-                rl.hourly_reset.as_deref().unwrap_or("on the hour")
-            );
+        if rl.daily_remaining == Some(0)
+            && r.status() != 429
+            && !LOW_QUOTA_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed)
+            && let Ok(mut w) = QUOTA_WARNINGS.lock()
+        {
+            w.push(QuotaLow {
+                daily_reset: rl.daily_reset.clone(),
+                hourly_remaining: rl.hourly_remaining,
+                hourly_reset: rl.hourly_reset.clone(),
+            });
         }
         let _ = fs::write(self.rate_path(), serde_json::to_vec(&rl).unwrap_or_default());
     }
@@ -634,7 +659,14 @@ impl Nexus {
     }
 
     /// Download one file version to `dest`, verifying the archive SHA-256 from its manifest.
-    pub fn download(&self, v: &Version, man: &Manifest, dest: &Path, nxm: Option<(&str, &str)>) -> Result<()> {
+    pub fn download(
+        &self,
+        v: &Version,
+        man: &Manifest,
+        dest: &Path,
+        nxm: Option<(&str, &str)>,
+        progress: &mut dyn FnMut(Transfer),
+    ) -> Result<()> {
         if dest.exists() && crate::files::sha256_file(dest)? == man.archive.hashes.sha256 {
             return Ok(()); // cached
         }
@@ -663,12 +695,12 @@ impl Nexus {
             got += n as u64;
             let pct = got * 100 / total;
             if total > 20 << 20 && pct >= last_pct + 10 {
-                eprint!(" {pct}%");
+                progress(Transfer::Percent(pct));
                 last_pct = pct;
             }
         }
         if last_pct > 0 {
-            eprintln!();
+            progress(Transfer::Finished);
         }
         drop(f);
         let h = crate::files::sha256_file(&part)?;

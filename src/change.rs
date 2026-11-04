@@ -14,6 +14,7 @@
 //! way, so a later failure keeps what was done.
 
 use crate::loadorder;
+use crate::ops::{Event, Note, Ui};
 use crate::safety::{self, JEntry};
 use crate::state::{Paths, State};
 use anyhow::{Result, bail};
@@ -27,25 +28,37 @@ thread_local! {
     static HELD: Cell<usize> = const { Cell::new(0) };
 }
 
-/// The cpmm lock: serialises commands that change state (two nxm clicks at once, etc.).
-/// Commands declare whether they change state; those take it before reading State.
+/// The cpmm lock: serialises operations that change state (two nxm clicks at once, the CLI
+/// and the GUI at the same time, etc.). It is an flock on `cpmm.lock` in the data dir, so it
+/// holds across processes and between threads of one process (each takes its own open file).
+/// Actions declare whether they change state; those take it before reading State. A thread
+/// that already holds it may take it again (the inner guard does nothing).
 pub struct Lock {
-    _file: fs::File,
+    _file: Option<fs::File>,
 }
 
 impl Lock {
+    /// Take the lock, waiting for whoever has it.
     pub fn acquire(paths: &Paths) -> Result<Lock> {
+        Self::acquire_noting(paths, &mut || {})
+    }
+    /// Take the lock; `waiting` is told once if someone else has it and this has to wait.
+    pub fn acquire_noting(paths: &Paths, waiting: &mut dyn FnMut()) -> Result<Lock> {
         use std::os::fd::AsRawFd;
+        if Self::held() {
+            HELD.with(|h| h.set(h.get() + 1));
+            return Ok(Lock { _file: None });
+        }
         fs::create_dir_all(&paths.data)?;
         let f = fs::OpenOptions::new().create(true).truncate(false).write(true).open(paths.data.join("cpmm.lock"))?;
         if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            eprintln!("waiting for another cpmm command to finish…");
+            waiting();
             if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
                 bail!("flock: {}", std::io::Error::last_os_error());
             }
         }
         HELD.with(|h| h.set(h.get() + 1));
-        Ok(Lock { _file: f })
+        Ok(Lock { _file: Some(f) })
     }
     fn held() -> bool {
         HELD.with(|h| h.get() > 0)
@@ -80,11 +93,11 @@ impl Idle {
     pub fn check(&self, paths: &Paths) -> Result<()> {
         let session = || crate::vfs::running(paths).is_some();
         match self {
-            Idle::Required if session() || crate::game_running() => {
+            Idle::Required if session() || crate::vfs::game_running() => {
                 bail!("the game (or a cpmm session) is running and has these files mounted; quit it first")
             }
             Idle::NoSession(msg) if session() => bail!("{msg}"),
-            Idle::NoGame(msg) if crate::game_running() => bail!("{msg}"),
+            Idle::NoGame(msg) if crate::vfs::game_running() => bail!("{msg}"),
             _ => Ok(()),
         }
     }
@@ -151,32 +164,41 @@ impl Change {
 
     /// Run the change. Fails before the edit if the cpmm lock isn't held or something that
     /// must not run is running. If the edit fails, nothing after its last [`Edit::save`] is
-    /// saved or journalled.
-    pub fn apply<T>(self, paths: &Paths, st: &mut State, edit: impl FnOnce(&mut Edit, &mut State) -> Result<T>) -> Result<T> {
+    /// saved or journalled. The edit tells `ui` what happens through [`Edit::emit`]; the
+    /// change adds its own notices (auto-sort, a running session).
+    pub fn apply<T>(
+        self,
+        paths: &Paths,
+        st: &mut State,
+        ui: &mut dyn Ui,
+        edit: impl FnOnce(&mut Edit, &mut State) -> Result<T>,
+    ) -> Result<T> {
         if !Lock::held() {
-            bail!("internal error: changing the mod setup without the cpmm lock (declare the command in Cmd::changes_state)");
+            bail!("internal error: changing the mod setup without the cpmm lock (declare the action in Action::changes_state)");
         }
         self.idle.check(paths)?;
         if let Some(reason) = &self.snapshot {
             safety::auto_snapshot(paths, reason);
         }
-        let mut cx = Edit { paths, batch: self.batch.as_deref(), sort: self.sort, pending: vec![] };
+        let mut cx = Edit { paths, ui, batch: self.batch.as_deref(), sort: self.sort, pending: vec![] };
         let out = edit(&mut cx, st)?;
         cx.save(st)?;
         cx.sort(st);
         if self.game_facing {
             let _ = loadorder::write_modlist(paths, st);
             if crate::vfs::running(paths).is_some() {
-                eprintln!("note: a game session is running; changes apply on next launch");
+                cx.note(Note::SessionRunning);
             }
         }
         Ok(out)
     }
 }
 
-/// The edit's view of its change: where things live, the batch tag, and the journal.
+/// The edit's view of its change: where things live, the batch tag, the journal, and the
+/// adapter's [`Ui`] (progress goes there).
 pub struct Edit<'a> {
     paths: &'a Paths,
+    ui: &'a mut dyn Ui,
     batch: Option<&'a str>,
     sort: Sort,
     pending: Vec<JEntry>,
@@ -185,6 +207,16 @@ pub struct Edit<'a> {
 impl<'a> Edit<'a> {
     pub fn paths(&self) -> &'a Paths {
         self.paths
+    }
+    /// The adapter the change reports to (and asks, for interactive choices).
+    pub fn ui(&mut self) -> &mut dyn Ui {
+        &mut *self.ui
+    }
+    pub fn emit(&mut self, e: &Event) {
+        self.ui.event(e)
+    }
+    pub fn note(&mut self, n: Note) {
+        self.ui.event(&Event::Note(n))
     }
     /// The update batch this change's replaced versions belong to.
     pub fn batch(&self) -> Option<&'a str> {
@@ -218,7 +250,7 @@ impl<'a> Edit<'a> {
             loadorder::apply(st, &p.order);
             if self.save(st).is_ok() {
                 let _ = loadorder::write_modlist(self.paths, st);
-                println!("  auto-sorted the load order ({} moves)", p.moved.len());
+                self.note(Note::AutoSorted(p.moved.len()));
             }
         }
     }
@@ -262,6 +294,10 @@ mod tests {
         s
     }
 
+    fn quiet() -> impl FnMut(&Event) {
+        |_: &Event| {}
+    }
+
     fn order(paths: &Paths) -> Vec<String> {
         State::load(paths).unwrap().mods.iter().map(|m| m.id.clone()).collect()
     }
@@ -274,7 +310,7 @@ mod tests {
     fn refuses_without_the_lock() {
         let p = paths("nolock");
         let mut st = state();
-        let r = Change::records().apply(&p, &mut st, |_, _| Ok(()));
+        let r = Change::records().apply(&p, &mut st, &mut quiet(), |_, _| Ok(()));
         assert!(r.unwrap_err().to_string().contains("without the cpmm lock"));
         assert!(!p.state_file().exists());
         let _ = fs::remove_dir_all(&p.data);
@@ -288,7 +324,7 @@ mod tests {
         Change::setup()
             .idle(Idle::NotNeeded)
             .keep_order()
-            .apply(&p, &mut st, |cx, st| {
+            .apply(&p, &mut st, &mut quiet(), |cx, st| {
                 st.mods[0].enabled = false;
                 cx.journal("disable", &["c".into()], "");
                 Ok(())
@@ -304,7 +340,7 @@ mod tests {
         let p = paths("fails");
         let _l = Lock::acquire(&p).unwrap();
         let mut st = state();
-        let r = Change::setup().idle(Idle::NotNeeded).apply(&p, &mut st, |cx, st| -> Result<()> {
+        let r = Change::setup().idle(Idle::NotNeeded).apply(&p, &mut st, &mut quiet(), |cx, st| -> Result<()> {
             st.mods[0].name = "first".into();
             cx.journal("install", &["c".into()], "1.0");
             cx.save(st)?;
@@ -325,18 +361,18 @@ mod tests {
         let p = paths("sort");
         let _l = Lock::acquire(&p).unwrap();
         let noop = |_: &mut Edit, _: &mut State| Ok(());
-        Change::setup().idle(Idle::NotNeeded).keep_order().apply(&p, &mut state(), noop).unwrap();
+        Change::setup().idle(Idle::NotNeeded).keep_order().apply(&p, &mut state(), &mut quiet(), noop).unwrap();
         assert_eq!(order(&p), ["c", "a"]);
-        Change::records().apply(&p, &mut state(), noop).unwrap();
+        Change::records().apply(&p, &mut state(), &mut quiet(), noop).unwrap();
         assert_eq!(order(&p), ["c", "a"]);
-        Change::setup().idle(Idle::NotNeeded).apply(&p, &mut state(), noop).unwrap();
+        Change::setup().idle(Idle::NotNeeded).apply(&p, &mut state(), &mut quiet(), noop).unwrap();
         assert_eq!(order(&p), ["a", "c"], "auto_sort is on by default");
 
         let mut off = p.clone();
         off.cfg.auto_sort = false;
-        Change::setup().idle(Idle::NotNeeded).apply(&off, &mut state(), noop).unwrap();
+        Change::setup().idle(Idle::NotNeeded).apply(&off, &mut state(), &mut quiet(), noop).unwrap();
         assert_eq!(order(&p), ["c", "a"]);
-        Change::setup().idle(Idle::NotNeeded).always_sort().apply(&off, &mut state(), noop).unwrap();
+        Change::setup().idle(Idle::NotNeeded).always_sort().apply(&off, &mut state(), &mut quiet(), noop).unwrap();
         assert_eq!(order(&p), ["a", "c"]);
         let _ = fs::remove_dir_all(&p.data);
     }
@@ -350,9 +386,9 @@ mod tests {
         fs::create_dir_all(arc.parent().unwrap()).unwrap();
         fs::write(&arc, b"").unwrap();
         let list = loadorder::generated_root(&p).join("files/archive/pc/mod/modlist.txt");
-        Change::records().apply(&p, &mut st, |_, _| Ok(())).unwrap();
+        Change::records().apply(&p, &mut st, &mut quiet(), |_, _| Ok(())).unwrap();
         assert!(!list.exists());
-        Change::setup().idle(Idle::NotNeeded).keep_order().apply(&p, &mut st, |_, _| Ok(())).unwrap();
+        Change::setup().idle(Idle::NotNeeded).keep_order().apply(&p, &mut st, &mut quiet(), |_, _| Ok(())).unwrap();
         assert_eq!(fs::read_to_string(&list).unwrap(), "a.archive\r\n");
         let _ = fs::remove_dir_all(&p.data);
     }
@@ -369,8 +405,8 @@ mod tests {
             fs::create_dir_all(cx.paths().mod_files("c"))?;
             Ok(())
         };
-        Change::setup().idle(Idle::NotNeeded).batch("update-1").apply(&p, &mut st, replace).unwrap();
-        Change::setup().idle(Idle::NotNeeded).apply(&p, &mut st, replace).unwrap();
+        Change::setup().idle(Idle::NotNeeded).batch("update-1").apply(&p, &mut st, &mut quiet(), replace).unwrap();
+        Change::setup().idle(Idle::NotNeeded).apply(&p, &mut st, &mut quiet(), replace).unwrap();
         let tags: Vec<Option<String>> = safety::list_history(&p, "c").into_iter().map(|h| h.meta.batch).collect();
         assert_eq!(tags, [None, Some("update-1".into())]); // newest first
         let _ = fs::remove_dir_all(&p.data);
@@ -386,16 +422,16 @@ mod tests {
         fs::write(p.run_file(), run.to_string()).unwrap();
         let mut st = state();
         let mut ran = false;
-        let r = Change::setup().apply(&p, &mut st, |_, _| {
+        let r = Change::setup().apply(&p, &mut st, &mut quiet(), |_, _| {
             ran = true;
             Ok(())
         });
         assert!(r.unwrap_err().to_string().contains("quit it first"));
-        let r = Change::setup().idle(Idle::NoSession("session running")).apply(&p, &mut st, |_, _| Ok(()));
+        let r = Change::setup().idle(Idle::NoSession("session running")).apply(&p, &mut st, &mut quiet(), |_, _| Ok(()));
         assert_eq!(r.unwrap_err().to_string(), "session running");
         assert!(!ran && !p.state_file().exists());
         // allowed while running: applied (the notice goes to stderr)
-        Change::setup().idle(Idle::NotNeeded).apply(&p, &mut st, |_, _| Ok(())).unwrap();
+        Change::setup().idle(Idle::NotNeeded).apply(&p, &mut st, &mut quiet(), |_, _| Ok(())).unwrap();
         assert!(p.state_file().exists());
         let _ = fs::remove_dir_all(&p.data);
     }

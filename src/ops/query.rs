@@ -1,0 +1,526 @@
+//! Queries: read-only views of the mod setup, for `cpmm api …` (JSON for the GUI and
+//! scripts) and the CLI's own listings. None of them take the cpmm lock or change State
+//! (`api safety` records the game-log baseline, as `cpmm errors` does).
+
+use crate::nexus::{self, Catalogue};
+use crate::requirements::{self, Status};
+use crate::state::{Mod, NexusSource, Paths, State};
+use crate::{conflicts, downloads, files, fomod, health, install, loadorder, manage, modio, safety, settings, steam};
+use anyhow::{Context, Result};
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
+
+fn nexus_url(id: u64) -> String {
+    format!("https://www.nexusmods.com/cyberpunk2077/mods/{id}")
+}
+
+pub fn state(paths: &Paths, st: &State) -> Result<Value> {
+    let own = conflicts::ownership(paths, &st.mods, true);
+    let mut wins: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut loses: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, owners) in own.values() {
+        if owners.len() > 1 {
+            let w = owners.last().unwrap();
+            *wins.entry(w.as_str()).or_default() += 1;
+            for o in &owners[..owners.len() - 1] {
+                *loses.entry(o.as_str()).or_default() += 1;
+            }
+        }
+    }
+    let mods: Vec<Value> = st
+        .mods
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let checks = requirements::of(st, m);
+            let problems = if m.enabled { checks.iter().filter(|c| c.status.is_problem()).count() } else { 0 };
+            let reqs: Vec<Value> = checks
+                .iter()
+                .map(|c| {
+                    let r = c.req;
+                    json!({"mod_id": r.mod_id, "name": r.name, "notes": r.notes, "optional": r.optional,
+                           "status": c.status.as_str(), "installed_as": c.dep.map(|d| d.id.clone()), "url": nexus_url(r.mod_id)})
+                })
+                .collect();
+            json!({
+                "priority": i + 1,
+                "id": m.id, "name": m.name, "enabled": m.enabled, "version": m.version,
+                "installed_at": m.installed_at, "notes": m.notes,
+                "nexus": m.nexus.as_ref().map(|n| json!({"mod_id": n.mod_id, "file_name": n.file_name, "file_id": n.file_id,
+                    "version_gsid": n.version_gsid, "uploaded_at": n.uploaded_at, "url": nexus_url(n.mod_id)})),
+                "fomod": m.fomod,
+                "files": files::list_tree(&paths.mod_files(&m.id)).len(),
+                "hidden": files::list_tree(&paths.mods().join(&m.id).join("hidden")).len(),
+                "wins": wins.get(m.id.as_str()).copied().unwrap_or(0),
+                "loses": loses.get(m.id.as_str()).copied().unwrap_or(0),
+                "requires": reqs,
+                "dep_problems": problems,
+            })
+        })
+        .collect();
+    let session = crate::vfs::running(paths).map(|(info, pid)| json!({"pid": pid, "started": info.started, "layers": info.layers.len()}));
+    let modio: Vec<Value> = crate::modio::list(paths)
+        .into_iter()
+        .map(|m| json!({"id": m.id, "name": m.name, "author": m.author, "version": m.version}))
+        .collect();
+    let overwrite = crate::manage::overwrite_entries(paths).len();
+    Ok(json!({
+        "game_dir": paths.game, "data_dir": paths.data,
+        "game_running": crate::vfs::game_running(),
+        "session": session, "mods": mods, "modio": modio, "overwrite_count": overwrite,
+        "nxm_handler": crate::manage::current_nxm_handler() == "cpmm-nxm.desktop",
+        "active_profile": st.active_profile,
+        "profiles": st.synced_profiles().iter().map(|p| json!({"name": p.name, "enabled": p.enabled.len(), "active": p.name == st.active_profile, "created_at": p.created_at,
+            "own_saves": p.own_saves, "saves": crate::profiles::count_saves(&p.own_saves_dir(paths).unwrap_or_else(|| crate::safety::shared_saves_dir(paths)))})).collect::<Vec<_>>(),
+    }))
+}
+
+pub fn info(paths: &Paths, st: &State, key: &str) -> Result<Value> {
+    let i = st.get(key)?;
+    let m = &st.mods[i];
+    let own = conflicts::ownership(paths, &st.mods, false);
+    let files: Vec<Value> = files::list_tree(&paths.mod_files(&m.id))
+        .into_iter()
+        .map(|f| {
+            let owners = own.get(&f.to_lowercase()).map(|(_, o)| o.clone()).unwrap_or_default();
+            let enabled_owners: Vec<&String> = owners.iter().filter(|o| st.mods.iter().any(|x| &x.id == *o && x.enabled)).collect();
+            let winner = enabled_owners.last().map(|s| s.as_str()).unwrap_or("");
+            let others: Vec<&String> = owners.iter().filter(|o| **o != m.id).collect();
+            json!({"path": f, "others": others, "winner": winner, "wins": winner == m.id})
+        })
+        .collect();
+    let hidden = files::list_tree(&paths.mods().join(&m.id).join("hidden"));
+    Ok(json!({"id": m.id, "name": m.name, "files": files, "hidden": hidden, "ignored_reqs": m.ignored_reqs}))
+}
+
+pub fn conflicts(paths: &Paths, st: &State) -> Result<Value> {
+    let fc = conflicts::file_conflicts(paths, &st.mods, true);
+    let files: Vec<Value> = fc
+        .iter()
+        .filter(|c| c.mods.len() > 1)
+        .map(|c| json!({"path": c.path, "mods": c.mods, "winner": c.mods.last(), "identical": c.identical, "overrides_base": c.overrides_base}))
+        .collect();
+    let base = fc.iter().filter(|c| c.overrides_base).count();
+    let scripts: Vec<Value> = conflicts::redscript_conflicts(paths, &st.mods)
+        .into_iter()
+        .map(|c| json!({"kind": c.kind, "target": c.target, "mods": c.mods, "severe": c.kind.starts_with("REPLACE") || c.kind.starts_with("duplicate")}))
+        .collect();
+    Ok(json!({"files": files, "scripts": scripts, "base_overrides": base}))
+}
+
+pub fn updates(paths: &Paths, st: &State, refresh: bool) -> Result<Value> {
+    let res = check_updates(paths, st, refresh);
+    Ok(Value::Array(
+        res.into_iter()
+            .map(|u| {
+                json!({"id": u.id, "status": u.status, "update": u.newer.as_ref().map(|v| json!({"version": v.version, "uploaded_at": v.uploaded_at, "gsid": v.game_scoped_id}))})
+            })
+            .collect(),
+    ))
+}
+
+pub fn overwrite(paths: &Paths, st: &State) -> Result<Value> {
+    Ok(Value::Array(
+        crate::manage::overwrite_files(paths, st)
+            .into_iter()
+            .map(|e| json!({"path": e.rel, "kind": e.kind.as_str(), "shadows": e.shadows}))
+            .collect(),
+    ))
+}
+
+pub fn tracked(paths: &Paths, st: &State) -> Result<Value> {
+    let nx = crate::nexus::Catalogue::open(paths);
+    let nx = nx.gate();
+    let ids = nx.tracked()?;
+    Ok(Value::Array(
+        ids.into_iter()
+            .map(|gid| {
+                let name = nx.mod_info(gid).map(|i| i.name).unwrap_or_default();
+                json!({"mod_id": gid, "name": name, "installed_as": st.by_nexus(gid).map(|m| m.id.clone()), "url": nexus_url(gid)})
+            })
+            .collect(),
+    ))
+}
+
+pub fn lookup(paths: &Paths, source: &str) -> Result<Value> {
+    search_info(paths, nexus::catalogue::mod_id(source).context("not a Nexus mod id or URL")?)
+}
+
+fn search_info(paths: &Paths, gid: u64) -> Result<Value> {
+    let nx = crate::nexus::Catalogue::open(paths);
+    let nx = nx.gate();
+    let info = nx.mod_info(gid)?;
+    let reqs = nx.requirements(&[gid], false)?.into_iter().next().map(|x| x.2).unwrap_or_default();
+    let mut files = vec![];
+    for f in nx.mod_files(&info.id)?.into_iter().filter(|f| f.is_active) {
+        if let Some(v) = nx.versions(&f.id)?.into_iter().next() {
+            files.push(json!({"gsid": v.game_scoped_id, "name": f.name, "version": v.version, "category": v.category, "uploaded_at": v.uploaded_at}));
+        }
+    }
+    Ok(json!({
+        "mod_id": gid, "name": info.name, "version": info.version, "author": info.author, "url": nexus_url(gid),
+        "files": files,
+        "requires": reqs.iter().map(|r| json!({"mod_id": r.mod_id, "name": r.name, "notes": r.notes, "optional": r.optional(), "external": r.external})).collect::<Vec<_>>(),
+    }))
+}
+
+pub fn loadorder(paths: &Paths, st: &State) -> Result<Value> {
+    let p = loadorder::plan(paths, st);
+    Ok(json!({"plan": p, "rules": st.rules, "modlist": loadorder::modlist(paths, st)}))
+}
+
+pub fn doctor(paths: &Paths, st: &State) -> Result<Value> {
+    Ok(serde_json::to_value(health::check(paths, st))?)
+}
+
+pub fn downloads(paths: &Paths, st: &State) -> Result<Value> {
+    Ok(serde_json::to_value(downloads::list(paths, st))?)
+}
+
+pub fn onboarding(paths: &Paths, st: &State, ui: &dyn super::Ui) -> Result<Value> {
+    let exe = super::installed_exe(ui).unwrap_or_default();
+    let lo = steam::read_launch_options();
+    Ok(json!({
+        "game_dir": paths.game,
+        "game_found": paths.game.join("bin/x64/Cyberpunk2077.exe").is_file(),
+        "api_key": paths.api_key().is_ok(),
+        "launch_options": lo,
+        "launch_ok": lo.as_deref().is_some_and(steam::launch_options_ok),
+        "launch_suggested": steam::with_cpmm(lo.as_deref().unwrap_or(""), &exe),
+        "steam_running": steam::is_running(),
+        "steam_cef": steam::cef_available(),
+        "nxm_handler": manage::current_nxm_handler() == "cpmm-nxm.desktop",
+        "onboarded": paths.cfg.onboarded,
+        "mods_installed": st.mods.len(),
+    }))
+}
+
+/// A mod's Nexus changelog, entries newer than the installed version marked.
+pub struct Changelog<'a> {
+    pub m: &'a Mod,
+    pub entries: Vec<nexus::ChangelogEntry>,
+}
+
+pub fn changelog<'a>(paths: &Paths, st: &'a State, key: &str) -> Result<Changelog<'a>> {
+    let m = &st.mods[st.get(key)?];
+    let gid = m.nexus.as_ref().map(|n| n.mod_id).context("not a Nexus mod")?;
+    let entries = nexus::changelog_entries(Catalogue::open(paths).gate().changelog(gid)?, &m.version);
+    Ok(Changelog { m, entries })
+}
+
+pub fn changelog_json(paths: &Paths, st: &State, key: &str) -> Result<Value> {
+    let c = changelog(paths, st, key)?;
+    Ok(json!({"id": c.m.id, "name": c.m.name, "installed": c.m.version, "entries": c.entries}))
+}
+
+pub fn modio(paths: &Paths, st: &State) -> Result<Value> {
+    Ok(json!({
+        "mods": modio::list(paths).into_iter().map(|m| json!({"id": m.id, "name": m.name, "author": m.author, "version": m.version, "files": m.files.len()})).collect::<Vec<_>>(),
+        "changes": modio::changes(paths),
+        "conflicts": modio::conflicts(paths, st),
+    }))
+}
+
+/// The archive for a source: a Nexus mod (downloaded into the Downloads list if needed), a
+/// path, or a name or number from the Downloads list.
+fn fetch_archive(paths: &Paths, ui: &mut dyn super::Ui, source: &str, file: Option<&str>) -> Result<PathBuf> {
+    match nexus::catalogue::mod_id(source) {
+        Some(gid) => super::act::fetch_nexus(paths, &Catalogue::open(paths), ui, gid, file, None, "nexus"),
+        None => {
+            let p = files::expand_home(source);
+            if p.exists() {
+                return Ok(p);
+            }
+            let st = State::load(paths)?;
+            Ok(downloads::find(paths, &st, source)?.path)
+        }
+    }
+}
+
+/// A FOMOD installer's options for the given choices (see `fomod::describe`), or
+/// `{"fomod": false}`. The archive is downloaded first if needed.
+pub fn fomod(
+    paths: &Paths,
+    st: &State,
+    ui: &mut dyn super::Ui,
+    source: &str,
+    file: Option<&str>,
+    choices: Option<&fomod::Choices>,
+) -> Result<Value> {
+    let arc = fetch_archive(paths, ui, source, file)?;
+    let x = paths.tmp().join("fomod-inspect");
+    if x.exists() {
+        fs::remove_dir_all(&x)?;
+    }
+    install::extract(&arc, &x)?;
+    let extracted = files::list_tree(&x);
+    let v = match fomod::detect(&extracted) {
+        None => json!({"fomod": false}),
+        Some(cfg) => {
+            let f = fomod::parse(&fs::read(x.join(&cfg))?, &cfg)?;
+            let fa = fomod::file_active(paths, st);
+            let mut d = fomod::describe(&f, choices.unwrap_or(&Default::default()), &x, &fa);
+            d["fomod"] = true.into();
+            d["archive"] = json!(arc);
+            d
+        }
+    };
+    let _ = fs::remove_dir_all(&x);
+    Ok(v)
+}
+
+fn coll_status(st: &State, m: &crate::collections::CollMod) -> &'static str {
+    let same = st.mods.iter().filter(|x| x.nexus.as_ref().is_some_and(|n| n.mod_id == m.mod_id)).collect::<Vec<_>>();
+    if m.source != "nexus" {
+        if m.source == "bundle" { "bundled" } else { "manual" }
+    } else if same.iter().any(|x| x.nexus.as_ref().is_some_and(|n| n.version_gsid == m.file_id)) {
+        "installed"
+    } else if same.is_empty() {
+        "missing"
+    } else {
+        "other version"
+    }
+}
+
+pub fn collection(paths: &Paths, st: &State, reference: &str) -> Result<Value> {
+    let (slug, rv, man, _) = Catalogue::open(paths).collection(reference)?;
+    Ok(json!({
+        "slug": slug,
+        "revision": rv["revisionNumber"],
+        "name": rv.pointer("/collection/name").cloned().unwrap_or(json!(man.name)),
+        "author": rv.pointer("/collection/user/name").cloned().unwrap_or(json!(man.author)),
+        "summary": rv.pointer("/collection/summary"),
+        "total_size": rv["totalSize"].as_str().and_then(|s| s.parse::<f64>().ok()).or(rv["totalSize"].as_f64()).unwrap_or(0.0),
+        "instructions": man.instructions.chars().take(2000).collect::<String>(),
+        "rules": man.rules.len(),
+        "optional": man.mods.iter().filter(|m| m.optional).count(),
+        "installed": st.collections.iter().any(|c| c.slug == slug),
+        "mods": man.mods.iter().map(|m| json!({
+            "name": m.name, "version": m.version, "mod_id": m.mod_id, "file_id": m.file_id, "optional": m.optional,
+            "phase": m.phase, "source": m.source, "fomod": m.choices.is_some(), "patches": m.has_patches,
+            "status": coll_status(st, m),
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+pub fn settings(paths: &Paths) -> Result<Value> {
+    Ok(json!({
+        "values": paths.cfg,
+        "schema": settings::schema(),
+        "resolved": {
+            "staging_dir": paths.mods(),
+            "download_dir": paths.downloads(),
+            "data_dir": paths.data,
+            "game_dir": paths.game,
+        },
+        "api_key": paths.api_key().is_ok(),
+    }))
+}
+
+pub fn safety(paths: &Paths, st: &State) -> Result<Value> {
+    let nx = Catalogue::open(paths);
+    Ok(json!({
+        "crashes": safety::crashes(paths, 5),
+        "errors": safety::error_diff(paths),
+        "patch": safety::patch_status(paths, st, Some(nx.gate())),
+        "snapshots": safety::list_snapshots(paths),
+        "save_risks": safety::save_risks(paths, st),
+        "batches": safety::batches(paths, st),
+        "sessions": safety::sessions(paths).len(),
+    }))
+}
+
+pub fn history(paths: &Paths, st: &State, key: &str) -> Result<Value> {
+    let i = st.get(key)?;
+    Ok(serde_json::to_value(safety::list_history(paths, &st.mods[i].id))?)
+}
+
+pub fn archives(paths: &Paths, st: &State) -> Result<Value> {
+    let ids: Vec<String> = st.mods.iter().map(|m| m.id.clone()).collect();
+    Ok(serde_json::to_value(loadorder::archive_conflicts(paths, st, &ids))?)
+}
+
+/* ------------------------------------------------------------------ the CLI's listings */
+
+/// One row of `cpmm list`.
+pub struct ListRow<'a> {
+    pub m: &'a Mod,
+    /// With `long`: (files, conflicts won, conflicts lost)
+    pub counts: Option<(usize, usize, usize)>,
+}
+
+/// The managed mods in priority order; with `long`, file and conflict counts (slower).
+pub fn list<'a>(paths: &Paths, st: &'a State, long: bool) -> Vec<ListRow<'a>> {
+    let owners = if long { Some(conflicts::ownership(paths, &st.mods, true)) } else { None };
+    st.mods
+        .iter()
+        .map(|m| {
+            let counts = owners.as_ref().map(|o| {
+                let mine: Vec<&Vec<String>> = o.values().map(|(_, v)| v).filter(|v| v.contains(&m.id)).collect();
+                let lost = mine.iter().filter(|v| v.last() != Some(&m.id)).count();
+                let won = mine.iter().filter(|v| v.len() > 1 && v.last() == Some(&m.id)).count();
+                (files::list_tree(&paths.mod_files(&m.id)).len(), won, lost)
+            });
+            ListRow { m, counts }
+        })
+        .collect()
+}
+
+/// `cpmm info`: one mod with its requirements, hidden and staged files.
+pub struct Detail<'a> {
+    pub m: &'a Mod,
+    pub requires: Vec<requirements::Check<'a>>,
+    pub hidden: Vec<String>,
+    pub files: Vec<String>,
+}
+
+pub fn detail<'a>(paths: &Paths, st: &'a State, key: &str) -> Result<Detail<'a>> {
+    let m = &st.mods[st.get(key)?];
+    Ok(Detail {
+        m,
+        requires: requirements::of(st, m),
+        hidden: files::list_tree(&paths.mods().join(&m.id).join("hidden")),
+        files: files::list_tree(&paths.mod_files(&m.id)),
+    })
+}
+
+/// `cpmm conflicts`: file overwrites between enabled mods (last listed wins) and against the
+/// base game, and redscript conflicts; with `only`, those involving that mod.
+pub struct ConflictReport {
+    pub files: Vec<conflicts::FileConflict>,
+    pub scripts: Vec<conflicts::ScriptConflict>,
+}
+
+pub fn conflict_report(paths: &Paths, st: &State, only: Option<&str>, hash: bool) -> Result<ConflictReport> {
+    let only = only.map(|k| st.get(k).map(|i| st.mods[i].id.clone())).transpose()?;
+    let files =
+        conflicts::file_conflicts(paths, &st.mods, hash).into_iter().filter(|c| only.as_ref().is_none_or(|o| c.mods.contains(o))).collect();
+    let scripts = conflicts::redscript_conflicts(paths, &st.mods)
+        .into_iter()
+        .filter(|c| only.as_ref().is_none_or(|o| c.mods.iter().any(|m| m.ends_with(o.as_str()))))
+        .collect();
+    Ok(ConflictReport { files, scripts })
+}
+
+/// One installed Nexus file's update check.
+pub struct UpdateStatus {
+    pub id: String,
+    pub status: String,
+    pub newer: Option<nexus::Version>,
+}
+
+pub fn check_updates(paths: &Paths, st: &State, refresh: bool) -> Vec<UpdateStatus> {
+    use nexus::catalogue::Update;
+    let nx = Catalogue::open(paths);
+    let nx = if refresh { nx.uncached() } else { nx };
+    let work: Vec<&Mod> = st.mods.iter().filter(|m| m.nexus.is_some()).collect();
+    let sources: Vec<&NexusSource> = work.iter().filter_map(|m| m.nexus.as_ref()).collect();
+    work.iter()
+        .zip(nx.updates(&sources))
+        .map(|(m, r)| {
+            let mod_id = m.nexus.as_ref().map_or(0, |n| n.mod_id);
+            let (status, newer) = match r {
+                Ok(Update::PageStatus(s)) => (format!("mod page status: {s}"), None),
+                Ok(Update::FileUnknown { page_version }) => (format!("file unknown; page version {page_version}"), None),
+                Ok(Update::NoVersions) => ("no versions".into(), None),
+                Ok(Update::Archived { page_version }) => {
+                    (format!("file archived by author; page version {page_version} — check `cpmm install {mod_id} --file`"), None)
+                }
+                Ok(Update::UpToDate) => ("up to date".into(), None),
+                Ok(Update::Available(v)) => {
+                    (format!("UPDATE {} -> {} ({})", m.version, v.version, v.uploaded_at.get(..10).unwrap_or("")), Some(*v))
+                }
+                Err(e) => (format!("error: {e}"), None),
+            };
+            UpdateStatus { id: m.id.clone(), status, newer }
+        })
+        .collect()
+}
+
+/// Compare staged files to the Nexus manifest (all mods, or the named ones), one at a time.
+pub fn verify(paths: &Paths, st: &State, keys: &[String], each: &mut dyn FnMut(crate::verify::Verified)) -> Result<()> {
+    let sel: Vec<usize> =
+        if keys.is_empty() { (0..st.mods.len()).collect() } else { keys.iter().map(|k| st.get(k)).collect::<Result<_>>()? };
+    crate::verify::verify(paths, st, &Catalogue::open(paths), &sel, each)
+}
+
+/// Unmet requirements of the enabled mods, as `cpmm deps` lists them.
+#[derive(Clone, Debug, Default)]
+pub struct Unmet {
+    pub rows: Vec<UnmetRow>,
+    /// Unmet hard requirements
+    pub problems: usize,
+    /// Requirements the user chose to do without
+    pub ignored: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct UnmetRow {
+    pub id: String,
+    pub req: crate::state::Requirement,
+    /// The installed but disabled mod that provides it
+    pub disabled: Option<String>,
+    /// A hard requirement (else an optional one, listed for information)
+    pub problem: bool,
+}
+
+pub fn unmet(st: &State) -> Unmet {
+    let mut u = Unmet::default();
+    for m in st.mods.iter().filter(|m| m.enabled) {
+        for c in requirements::of(st, m) {
+            let disabled = match (c.status, c.dep) {
+                (Status::Ok, _) => continue,
+                (Status::Ignored, _) => {
+                    u.ignored += 1;
+                    continue;
+                }
+                (Status::Disabled | Status::OptionalDisabled, Some(d)) => Some(d.id.clone()),
+                _ => None,
+            };
+            let problem = c.status.is_problem();
+            u.problems += problem as usize;
+            u.rows.push(UnmetRow { id: m.id.clone(), req: c.req.clone(), disabled, problem });
+        }
+    }
+    u
+}
+
+/// Is a cpmm game session running (with when it started, its pid and layers)?
+pub fn session(paths: &Paths) -> Option<(crate::vfs::RunInfo, u32)> {
+    crate::vfs::running(paths)
+}
+
+/// The Nexus API key: none, set, or (with `check`) validated against Nexus.
+pub enum KeyStatus {
+    Missing,
+    Set(PathBuf),
+    Valid { name: String, premium: bool },
+}
+
+pub fn nexus_key(paths: &Paths, check: bool) -> Result<KeyStatus> {
+    Ok(match paths.api_key() {
+        Ok(k) if check => {
+            let (name, premium) = Catalogue::with_key(paths, Some(k)).gate().validate()?;
+            KeyStatus::Valid { name, premium }
+        }
+        Ok(_) => KeyStatus::Set(nexus::key_file()),
+        Err(_) => KeyStatus::Missing,
+    })
+}
+
+/// Steam's launch options for the game and what they'd be with cpmm in them.
+pub struct LaunchOptions {
+    pub current: Option<String>,
+    pub ok: bool,
+    pub with_cpmm: String,
+}
+
+pub fn launch_options(ui: &dyn super::Ui) -> Result<LaunchOptions> {
+    let exe = super::installed_exe(ui)?;
+    let current = steam::read_launch_options();
+    let ok = current.as_deref().is_some_and(steam::launch_options_ok);
+    let with_cpmm = steam::with_cpmm(current.as_deref().unwrap_or(""), &exe);
+    Ok(LaunchOptions { current, ok, with_cpmm })
+}
