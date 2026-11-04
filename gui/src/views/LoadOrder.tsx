@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
-import { ArrowRight, CheckCircle2, CircleAlert, Gauge, HeartPulse, Info, ListOrdered, ShieldAlert, Trash2, Wand2, EyeOff } from "lucide-react";
+import { ArrowRight, CheckCircle2, CircleAlert, EyeOff, Gauge, HeartPulse, Info, ListOrdered, ShieldAlert, Trash2, Wand2 } from "lucide-react";
 import { useState } from "react";
-import { api2, ownerLabel, type AppState, type Finding } from "../lib/cpmm";
-import { useJobs } from "../lib/jobs";
 import { Badge, Button, Card, Empty, ErrorBox, PageHeader, Spinner, Stat } from "../components/ui";
+import { type AppState, api2, type Finding, ownerLabel } from "../lib/cpmm";
+import { useJobs } from "../lib/jobs";
 import { SafetyPanel } from "./Safety";
 
 const sev: Record<Finding["severity"], { tone: "red" | "amber" | "violet" | "muted" | "cyan"; label: string; icon: typeof CircleAlert }> = {
@@ -33,7 +33,12 @@ export function HealthView({ state }: { state: AppState }) {
         title="Health & load order"
         subtitle="Crash and stutter risks, and an automatic load order: requirements and patches win over what they modify, your rules are enforced, everything else stays put."
         actions={
-          <Button variant="primary" icon={<Wand2 className="size-4" />} disabled={busy || !plan || plan.moved.length === 0} onClick={() => run("Sort load order", ["sort", "--apply"])}>
+          <Button
+            variant="primary"
+            icon={<Wand2 className="size-4" />}
+            disabled={busy || !plan || plan.moved.length === 0}
+            onClick={() => run("Sort load order", ["sort", "--apply"])}
+          >
             {plan && plan.moved.length > 0 ? `Sort (${plan.moved.length} moves)` : "Load order OK"}
           </Button>
         }
@@ -76,7 +81,13 @@ export function HealthView({ state }: { state: AppState }) {
                     {f.actions.length > 0 && f.severity !== "acked" && (
                       <div className="mt-3 flex flex-wrap gap-2">
                         {f.actions.map((a) => (
-                          <Button key={a.label} size="sm" variant={a.style === "primary" ? "primary" : "secondary"} disabled={busy} onClick={() => run(a.label, a.args)}>
+                          <Button
+                            key={a.label}
+                            size="sm"
+                            variant={a.style === "primary" ? "primary" : "secondary"}
+                            disabled={busy}
+                            onClick={() => run(a.label, a.args)}
+                          >
                             {a.label}
                           </Button>
                         ))}
@@ -88,7 +99,14 @@ export function HealthView({ state }: { state: AppState }) {
                       Restore
                     </Button>
                   ) : (
-                    <Button size="sm" variant="ghost" icon={<EyeOff className="size-3.5" />} disabled={busy} onClick={() => run("Accept finding", ["doctor", "--ack", f.title])} title="Known and fine: stop warning">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon={<EyeOff className="size-3.5" />}
+                      disabled={busy}
+                      onClick={() => run("Accept finding", ["doctor", "--ack", f.title])}
+                      title="Known and fine: stop warning"
+                    >
                       Accept
                     </Button>
                   )}
@@ -124,7 +142,9 @@ export function HealthView({ state }: { state: AppState }) {
               ))}
             </div>
           ))}
-        {plan && plan.cycles.length > 0 && <p className="mt-2 text-sm text-neon-amber">Circular constraints left in current order: {plan.cycles.map((c) => c.join(" → ")).join("; ")}</p>}
+        {plan && plan.cycles.length > 0 && (
+          <p className="mt-2 text-sm text-neon-amber">Circular constraints left in current order: {plan.cycles.map((c) => c.join(" → ")).join("; ")}</p>
+        )}
         {plan && plan.unresolved.length > 0 && (
           <div className="mt-4">
             <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-400">Unrelated mods replacing the same resources</div>
@@ -162,21 +182,42 @@ export function HealthView({ state }: { state: AppState }) {
               <div key={r.mod + r.after} className="flex items-center gap-2 text-sm">
                 <span className="text-neon-lime">{name(r.mod)}</span> <span className="text-ink-400">wins over</span> {name(r.after)}
                 <div className="flex-1" />
-                <button className="rounded-lg p-1.5 text-ink-400 hover:bg-ink-800 hover:text-neon-red cursor-pointer" aria-label="Remove rule" onClick={() => run("Remove rule", ["rule", r.mod, "--after", r.after, "--remove"])}>
+                <button
+                  type="button"
+                  className="rounded-lg p-1.5 text-ink-400 hover:bg-ink-800 hover:text-neon-red cursor-pointer"
+                  aria-label="Remove rule"
+                  onClick={() => run("Remove rule", ["rule", r.mod, "--after", r.after, "--remove"])}
+                >
                   <Trash2 className="size-4" />
                 </button>
               </div>
             ))}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <select value={ruleA} onChange={(e) => setRuleA(e.target.value)} className="h-10 min-w-0 flex-1 rounded-lg border border-ink-700 bg-ink-900 px-2 text-sm">
+            <select
+              value={ruleA}
+              onChange={(e) => setRuleA(e.target.value)}
+              className="h-10 min-w-0 flex-1 rounded-lg border border-ink-700 bg-ink-900 px-2 text-sm"
+            >
               <option value="">Winner…</option>
-              {state.mods.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              {state.mods.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
             </select>
             <span className="text-xs text-ink-400">wins over</span>
-            <select value={ruleB} onChange={(e) => setRuleB(e.target.value)} className="h-10 min-w-0 flex-1 rounded-lg border border-ink-700 bg-ink-900 px-2 text-sm">
+            <select
+              value={ruleB}
+              onChange={(e) => setRuleB(e.target.value)}
+              className="h-10 min-w-0 flex-1 rounded-lg border border-ink-700 bg-ink-900 px-2 text-sm"
+            >
               <option value="">Loser…</option>
-              {state.mods.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              {state.mods.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
             </select>
             <Button size="sm" disabled={busy || !ruleA || !ruleB || ruleA === ruleB} onClick={() => run("Add rule", ["rule", ruleA, "--after", ruleB])}>
               Add
@@ -185,7 +226,10 @@ export function HealthView({ state }: { state: AppState }) {
         </Card>
         <Card className="p-5">
           <h2 className="mb-1 font-semibold">Generated modlist.txt</h2>
-          <p className="mb-3 text-xs text-ink-400">Archive load order the game uses (first wins). Regenerated at every launch from the priority list; lives in cpmm's overlay layer, not the game folder.</p>
+          <p className="mb-3 text-xs text-ink-400">
+            Archive load order the game uses (first wins). Regenerated at every launch from the priority list; lives in cpmm's overlay layer, not the game
+            folder.
+          </p>
           <ol className="max-h-64 overflow-y-auto font-mono text-xs leading-5 text-ink-300">
             {lo.data?.modlist.map((a, i) => (
               <li key={a}>

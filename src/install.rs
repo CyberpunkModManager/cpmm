@@ -51,7 +51,10 @@ pub struct Plan {
 /// Work out where each extracted file goes. `root` strips a prefix, `dest` prepends one.
 pub fn plan(extracted: &[String], slug: &str, root: Option<&str>, dest: Option<&str>) -> Result<Plan> {
     let mut skipped = vec![];
-    if root.is_none() && dest.is_none() && extracted.iter().any(|p| p.to_lowercase().starts_with("fomod/") || p.to_lowercase().contains("/fomod/")) {
+    if root.is_none()
+        && dest.is_none()
+        && extracted.iter().any(|p| p.to_lowercase().starts_with("fomod/") || p.to_lowercase().contains("/fomod/"))
+    {
         let tops: BTreeSet<&str> = extracted.iter().filter_map(|p| p.split('/').next()).collect();
         bail!(
             "this is a FOMOD installer; pick the option folder with --root <dir> (top-level entries: {})",
@@ -63,11 +66,7 @@ pub fn plan(extracted: &[String], slug: &str, root: Option<&str>, dest: Option<&
         let d = dest.unwrap_or("").trim_matches('/');
         let mut moves = vec![];
         for p in extracted {
-            let rest = if r.is_empty() {
-                Some(p.as_str())
-            } else {
-                p.strip_prefix(r).and_then(|x| x.strip_prefix('/'))
-            };
+            let rest = if r.is_empty() { Some(p.as_str()) } else { p.strip_prefix(r).and_then(|x| x.strip_prefix('/')) };
             match rest {
                 Some(x) if !(d.is_empty() && is_junk(x) && !x.contains('/')) => {
                     moves.push((p.clone(), if d.is_empty() { x.to_string() } else { format!("{d}/{x}") }))
@@ -110,7 +109,9 @@ pub fn plan(extracted: &[String], slug: &str, root: Option<&str>, dest: Option<&
         for p in extracted {
             let rest = if pre.is_empty() { Some(p.as_str()) } else { p.strip_prefix(&format!("{pre}/")) };
             match rest {
-                Some(r) if KNOWN_TOPS.contains(&r.split('/').next().unwrap_or("").to_lowercase().as_str()) => moves.push((p.clone(), r.to_string())),
+                Some(r) if KNOWN_TOPS.contains(&r.split('/').next().unwrap_or("").to_lowercase().as_str()) => {
+                    moves.push((p.clone(), r.to_string()))
+                }
                 _ => skipped.push(p.clone()),
             }
         }
@@ -128,7 +129,11 @@ pub fn plan(extracted: &[String], slug: &str, root: Option<&str>, dest: Option<&
     let base = |p: &str| p.rsplit('/').next().unwrap_or(p).to_string();
     let strip_single_top = |p: &str| -> String {
         let tops: BTreeSet<&str> = real.iter().map(|x| x.split('/').next().unwrap_or("")).collect();
-        if tops.len() == 1 && real.iter().all(|x| x.contains('/')) { p.split_once('/').map(|x| x.1.to_string()).unwrap_or(p.into()) } else { p.into() }
+        if tops.len() == 1 && real.iter().all(|x| x.contains('/')) {
+            p.split_once('/').map(|x| x.1.to_string()).unwrap_or(p.into())
+        } else {
+            p.into()
+        }
     };
     let moves: Vec<(String, String)> = if all_in(&["archive", "xl"]) {
         real.iter().map(|p| ((*p).clone(), format!("archive/pc/mod/{}", base(p)))).collect()
@@ -219,9 +224,15 @@ mod tests {
 
     #[test]
     fn loose_files_by_extension() {
-        assert_eq!(dests(&plan(&p(&["x.archive", "x.archive.xl"]), "m", None, None).unwrap()), ["archive/pc/mod/x.archive", "archive/pc/mod/x.archive.xl"]);
+        assert_eq!(
+            dests(&plan(&p(&["x.archive", "x.archive.xl"]), "m", None, None).unwrap()),
+            ["archive/pc/mod/x.archive", "archive/pc/mod/x.archive.xl"]
+        );
         assert_eq!(dests(&plan(&p(&["Foo/a.reds"]), "m", None, None).unwrap()), ["r6/scripts/m/a.reds"]);
-        assert_eq!(dests(&plan(&p(&["MyMod/init.lua"]), "m", None, None).unwrap()), ["bin/x64/plugins/cyber_engine_tweaks/mods/MyMod/init.lua"]);
+        assert_eq!(
+            dests(&plan(&p(&["MyMod/init.lua"]), "m", None, None).unwrap()),
+            ["bin/x64/plugins/cyber_engine_tweaks/mods/MyMod/init.lua"]
+        );
     }
 
     #[test]

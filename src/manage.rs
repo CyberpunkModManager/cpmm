@@ -235,7 +235,10 @@ pub fn register_nxm(exe: &Path) -> Result<std::path::PathBuf> {
         ),
     )?;
     let _ = std::process::Command::new("update-desktop-database").arg(&apps).status();
-    let st = std::process::Command::new("xdg-mime").args(["default", "cpmm-nxm.desktop", "x-scheme-handler/nxm"]).status().context("running xdg-mime")?;
+    let st = std::process::Command::new("xdg-mime")
+        .args(["default", "cpmm-nxm.desktop", "x-scheme-handler/nxm"])
+        .status()
+        .context("running xdg-mime")?;
     if !st.success() {
         bail!("xdg-mime failed");
     }
@@ -246,7 +249,12 @@ pub fn register_nxm(exe: &Path) -> Result<std::path::PathBuf> {
 /// notification daemon and notify-send would block for ~25 s waiting for one.
 pub fn notify(summary: &str, body: &str) {
     use std::process::{Command, Stdio};
-    let _ = Command::new("notify-send").args(["-a", "cpmm", summary, body]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    let _ = Command::new("notify-send")
+        .args(["-a", "cpmm", summary, body])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 pub fn current_nxm_handler() -> String {

@@ -101,10 +101,12 @@ function scrollTarget(): HTMLElement | null {
   const root = layer instanceof HTMLElement ? layer : document.querySelector("main");
   if (!root) return null;
   const all = [root as HTMLElement, ...Array.from((root as HTMLElement).querySelectorAll<HTMLElement>("*"))];
-  return all.find((el) => {
-    const oy = getComputedStyle(el).overflowY;
-    return (oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 4;
-  }) ?? null;
+  return (
+    all.find((el) => {
+      const oy = getComputedStyle(el).overflowY;
+      return (oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 4;
+    }) ?? null
+  );
 }
 function scrollBy(dx: number, dy: number) {
   const t = scrollTarget();
@@ -119,7 +121,16 @@ function cursorEl(): HTMLElement {
     el = document.createElement("div");
     el.id = "vcursor";
     el.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24"><path d="M4 2 L4 19 L8.6 14.6 L11.6 21.5 L14.4 20.3 L11.4 13.5 L18 13.5 Z" fill="#22d3ee" stroke="#07060c" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
-    Object.assign(el.style, { position: "fixed", left: "0", top: "0", zIndex: "9999", pointerEvents: "none", filter: "drop-shadow(0 0 6px rgb(34 211 238 / .6))", transition: "opacity .25s", opacity: "0" });
+    Object.assign(el.style, {
+      position: "fixed",
+      left: "0",
+      top: "0",
+      zIndex: "9999",
+      pointerEvents: "none",
+      filter: "drop-shadow(0 0 6px rgb(34 211 238 / .6))",
+      transition: "opacity .25s",
+      opacity: "0",
+    });
     document.body.appendChild(el);
   }
   return el;
@@ -213,7 +224,9 @@ export function useSpatialNav(onSection: (delta: number) => void, onBack: () => 
       else if (a === "rb") onSection(1);
       if (logged++ < 300) {
         const el = document.activeElement as HTMLElement | null;
-        invoke("gui_log", { msg: `${a}${wasPointer ? " (after pointer)" : ""} -> ${what || "ok"}; focus=${el?.tagName}${el?.getAttribute("aria-label") ? "[" + el.getAttribute("aria-label") + "]" : ""} visible=${document.visibilityState} hasFocus=${document.hasFocus()}` }).catch(() => {});
+        invoke("gui_log", {
+          msg: `${a}${wasPointer ? " (after pointer)" : ""} -> ${what || "ok"}; focus=${el?.tagName}${el?.getAttribute("aria-label") ? `[${el.getAttribute("aria-label")}]` : ""} visible=${document.visibilityState} hasFocus=${document.hasFocus()}`,
+        }).catch(() => {});
       }
     });
     return () => {

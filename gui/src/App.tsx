@@ -1,18 +1,37 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import clsx from "clsx";
 import { invoke } from "@tauri-apps/api/core";
-import { Activity, ArrowDownToLine, Globe, HeartPulse, LogOut, Play, CheckCircle2, CircleAlert, Cpu, Download, Gamepad2, GitMerge, Layers, Loader2, Network, PackagePlus, RefreshCw, Save, X } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { api } from "./lib/cpmm";
+import clsx from "clsx";
+import {
+  Activity,
+  ArrowDownToLine,
+  CheckCircle2,
+  CircleAlert,
+  Cpu,
+  Download,
+  Gamepad2,
+  GitMerge,
+  Globe,
+  HeartPulse,
+  Layers,
+  Loader2,
+  LogOut,
+  Network,
+  PackagePlus,
+  Play,
+  RefreshCw,
+  Save,
+  X,
+} from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { ErrorBox, IconButton, Spinner } from "./components/ui";
+import { api, api2 } from "./lib/cpmm";
 import { useSpatialNav } from "./lib/gamepad";
 import { useJobs } from "./lib/jobs";
 import { openNexus, useNexusBridge } from "./lib/nexus";
-import { ErrorBox, IconButton, Spinner } from "./components/ui";
-import { ModsView } from "./views/Mods";
 import { HealthView } from "./views/LoadOrder";
-import { api2 } from "./lib/cpmm";
-import { ProfileButton } from "./views/Profiles";
+import { ModsView } from "./views/Mods";
 import { ConflictsView, DepsView, InstallView, OverwriteView, SystemView, UpdatesView } from "./views/Panels";
+import { ProfileButton } from "./views/Profiles";
 
 const SECTIONS = [
   { key: "mods", label: "Mods", icon: Layers },
@@ -81,6 +100,7 @@ export default function App() {
         <nav className="flex flex-1 flex-col gap-1">
           {SECTIONS.map(({ key, label, icon: Icon }) => (
             <button
+              type="button"
               key={key}
               onClick={() => setSection(key)}
               className={clsx(
@@ -90,7 +110,16 @@ export default function App() {
             >
               <Icon className="size-4.5" />
               <span className="flex-1 text-left">{label}</span>
-              {badge[key] && <span className={clsx("rounded-md px-1.5 text-xs tabular-nums", key === "deps" || key === "health" ? "bg-neon-red/20 text-neon-red" : "bg-ink-700 text-ink-300")}>{badge[key]}</span>}
+              {badge[key] && (
+                <span
+                  className={clsx(
+                    "rounded-md px-1.5 text-xs tabular-nums",
+                    key === "deps" || key === "health" ? "bg-neon-red/20 text-neon-red" : "bg-ink-700 text-ink-300",
+                  )}
+                >
+                  {badge[key]}
+                </span>
+              )}
             </button>
           ))}
         </nav>
@@ -104,12 +133,14 @@ export default function App() {
           <div className="pl-5">In Nexus: Y keyboard · Start back</div>
         </div>
         <button
+          type="button"
           onClick={() => openNexus().catch((e) => alert(String(e)))}
           className="mt-4 flex h-11 items-center gap-3 rounded-xl border border-neon-cyan/30 px-3 text-sm text-neon-cyan hover:bg-neon-cyan/12 cursor-pointer"
         >
           <Globe className="size-4.5" /> Browse Nexus
         </button>
         <button
+          type="button"
           onClick={() => invoke("quit")}
           className="mt-1 flex h-11 items-center gap-3 rounded-xl px-3 text-sm text-ink-300 hover:bg-neon-red/10 hover:text-neon-red cursor-pointer"
         >
@@ -135,9 +166,16 @@ export default function App() {
           )}
           <div className="flex-1" />
           <button
+            type="button"
             disabled={!s || s.game_running || !!s.session || busy}
             onClick={() => invoke("launch_game").catch((e) => alert(String(e)))}
-            title={s?.game_running || s?.session ? "Cyberpunk is already running" : busy ? "Wait for running actions to finish" : "Launch Cyberpunk 2077 through Steam (cpmm closes)"}
+            title={
+              s?.game_running || s?.session
+                ? "Cyberpunk is already running"
+                : busy
+                  ? "Wait for running actions to finish"
+                  : "Launch Cyberpunk 2077 through Steam (cpmm closes)"
+            }
             className="inline-flex h-9 items-center gap-2 rounded-lg bg-neon-cyan px-4 text-sm font-semibold text-ink-950 glow-cyan hover:bg-cyan-300 disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
           >
             <Play className="size-4" /> Launch Cyberpunk
@@ -146,8 +184,12 @@ export default function App() {
             <RefreshCw className={clsx("size-4", state.isFetching && "animate-spin")} />
           </IconButton>
           <button
+            type="button"
             onClick={() => setLogOpen((v) => !v)}
-            className={clsx("inline-flex h-9 items-center gap-2 rounded-lg px-3 text-sm cursor-pointer", logOpen ? "bg-ink-800 text-ink-100" : "text-ink-300 hover:bg-ink-800")}
+            className={clsx(
+              "inline-flex h-9 items-center gap-2 rounded-lg px-3 text-sm cursor-pointer",
+              logOpen ? "bg-ink-800 text-ink-100" : "text-ink-300 hover:bg-ink-800",
+            )}
           >
             {busy ? <Loader2 className="size-4 animate-spin text-neon-cyan" /> : <Activity className="size-4" />} Activity
             {jobs.length > 0 && <span className="text-xs text-ink-400">{jobs.length}</span>}
@@ -186,7 +228,7 @@ function ActivityPanel({ onClose }: { onClose: () => void }) {
       <div className="flex h-12 items-center justify-between border-b border-ink-800 px-4">
         <div className="text-sm font-semibold">Activity</div>
         <div className="flex items-center gap-1">
-          <button onClick={clearFinished} className="h-8 rounded-lg px-2 text-xs text-ink-400 hover:bg-ink-800 cursor-pointer">
+          <button type="button" onClick={clearFinished} className="h-8 rounded-lg px-2 text-xs text-ink-400 hover:bg-ink-800 cursor-pointer">
             Clear
           </button>
           <IconButton label="Close activity" onClick={onClose}>
@@ -210,7 +252,15 @@ function ActivityPanel({ onClose }: { onClose: () => void }) {
               <span className="font-mono text-[10px] text-ink-400">cpmm {j.args[0]}</span>
             </div>
             <pre className="max-h-64 overflow-y-auto px-3 py-2 font-mono text-[11px] leading-4 whitespace-pre-wrap select-text">
-              {j.lines.length === 0 ? <span className="text-ink-400">…</span> : j.lines.map((l, i) => <div key={i} className={l.err ? "text-neon-amber" : "text-ink-300"}>{l.text}</div>)}
+              {j.lines.length === 0 ? (
+                <span className="text-ink-400">…</span>
+              ) : (
+                j.lines.map((l, i) => (
+                  <div key={i} className={l.err ? "text-neon-amber" : "text-ink-300"}>
+                    {l.text}
+                  </div>
+                ))
+              )}
             </pre>
           </div>
         ))}
@@ -234,7 +284,13 @@ function Toasts() {
             t.kind === "info" && "border-ink-700 bg-ink-850/95",
           )}
         >
-          {t.kind === "ok" ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-neon-lime" /> : t.kind === "error" ? <CircleAlert className="mt-0.5 size-4 shrink-0 text-neon-red" /> : <Download className="mt-0.5 size-4 shrink-0" />}
+          {t.kind === "ok" ? (
+            <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-neon-lime" />
+          ) : t.kind === "error" ? (
+            <CircleAlert className="mt-0.5 size-4 shrink-0 text-neon-red" />
+          ) : (
+            <Download className="mt-0.5 size-4 shrink-0" />
+          )}
           <span className="break-words">{t.text}</span>
         </div>
       ))}

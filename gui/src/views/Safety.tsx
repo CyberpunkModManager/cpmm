@@ -2,9 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import { Bug, Camera, FileWarning, History, RotateCcw, ShieldCheck, Undo2, Wrench } from "lucide-react";
 import { useState } from "react";
-import { api3, when, type AppState } from "../lib/cpmm";
-import { useJobs } from "../lib/jobs";
 import { Badge, Button, Card, Confirm, ErrorBox, Spinner } from "../components/ui";
+import { type AppState, api3, when } from "../lib/cpmm";
+import { useJobs } from "../lib/jobs";
 
 /** Crash triage, new log errors, the game-patch guard, save snapshots and undoable update runs. */
 export function SafetyPanel({ state }: { state: AppState }) {
@@ -56,11 +56,19 @@ export function SafetyPanel({ state }: { state: AppState }) {
               <p className="mt-2 text-sm text-neon-lime">The game updated and every native framework has released since.</p>
             )
           ) : (
-            <p className="mt-2 text-sm text-ink-400">No game update since cpmm started watching. If Steam updates Cyberpunk, cpmm checks RED4ext, redscript, CET and the other native mods before your next launch.</p>
+            <p className="mt-2 text-sm text-ink-400">
+              No game update since cpmm started watching. If Steam updates Cyberpunk, cpmm checks RED4ext, redscript, CET and the other native mods before your
+              next launch.
+            </p>
           )}
           {s.patch.red4ext_errors.length > 0 && <p className="mt-2 font-mono text-xs text-neon-red">{s.patch.red4ext_errors[0]}</p>}
           <div className="mt-4 flex items-center gap-2">
-            <Button size="sm" variant={s.patch.vanilla ? "primary" : "secondary"} disabled={busy} onClick={() => run(s.patch.vanilla ? "Modded launch" : "Vanilla launch", ["vanilla", s.patch.vanilla ? "off" : "on"])}>
+            <Button
+              size="sm"
+              variant={s.patch.vanilla ? "primary" : "secondary"}
+              disabled={busy}
+              onClick={() => run(s.patch.vanilla ? "Modded launch" : "Vanilla launch", ["vanilla", s.patch.vanilla ? "off" : "on"])}
+            >
               {s.patch.vanilla ? "Next launch: vanilla (tap to cancel)" : "Launch vanilla next time"}
             </Button>
           </div>
@@ -75,7 +83,8 @@ export function SafetyPanel({ state }: { state: AppState }) {
             <p className="text-sm text-ink-400">Baseline recorded from your last session's logs. From the next launch, only new errors show up here.</p>
           ) : (
             <p className="text-sm text-ink-300">
-              <span className={newCount ? "text-neon-amber" : "text-neon-lime"}>{newCount} new</span> · {fixedCount} gone · logs from {when(s.errors.latest_log)}
+              <span className={newCount ? "text-neon-amber" : "text-neon-lime"}>{newCount} new</span> · {fixedCount} gone · logs from{" "}
+              {when(s.errors.latest_log)}
             </p>
           )}
           <div className="mt-3 flex flex-wrap gap-1.5">
@@ -111,19 +120,27 @@ export function SafetyPanel({ state }: { state: AppState }) {
               <div key={c.report} className={clsx("rounded-xl border px-4 py-3", i === 0 ? "border-neon-red/30 bg-neon-red/5" : "border-ink-700")}>
                 <div className="flex flex-wrap items-center gap-2 text-sm">
                   <span className="font-medium">{when(c.ts)}</span>
-                  {c.seconds_in !== null && <Badge>{Math.floor(c.seconds_in / 60)}m {c.seconds_in % 60}s in</Badge>}
+                  {c.seconds_in !== null && (
+                    <Badge>
+                      {Math.floor(c.seconds_in / 60)}m {c.seconds_in % 60}s in
+                    </Badge>
+                  )}
                   <Badge tone="red">
                     {c.module} {c.offset}
                   </Badge>
                 </div>
                 <div className="mt-1 text-xs text-ink-400">{c.message}</div>
                 {c.session_start === null ? (
-                  <div className="mt-2 text-xs text-ink-400">Before cpmm recorded sessions; future crashes show what changed since your last clean session.</div>
+                  <div className="mt-2 text-xs text-ink-400">
+                    Before cpmm recorded sessions; future crashes show what changed since your last clean session.
+                  </div>
                 ) : c.changes.length ? (
                   <div className="mt-2 text-xs">
                     <div className="text-ink-300">Changed since the last clean session ({when(c.last_good ?? 0)}):</div>
                     <ul className="mt-1 list-inside list-disc text-ink-400">
-                      {c.changes.map((x) => <li key={x}>{x}</li>)}
+                      {c.changes.map((x) => (
+                        <li key={x}>{x}</li>
+                      ))}
                     </ul>
                   </div>
                 ) : (
@@ -132,7 +149,13 @@ export function SafetyPanel({ state }: { state: AppState }) {
                 {c.suspects.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-2">
                     {c.suspects.slice(0, 5).map((m) => (
-                      <Button key={m} size="sm" icon={<RotateCcw className="size-3.5" />} disabled={busy || locked} onClick={() => run(`Roll back ${name(m)}`, ["rollback", m])}>
+                      <Button
+                        key={m}
+                        size="sm"
+                        icon={<RotateCcw className="size-3.5" />}
+                        disabled={busy || locked}
+                        onClick={() => run(`Roll back ${name(m)}`, ["rollback", m])}
+                      >
                         Roll back {name(m)}
                       </Button>
                     ))}
@@ -174,7 +197,9 @@ export function SafetyPanel({ state }: { state: AppState }) {
               Snapshot now
             </Button>
           </div>
-          <p className="mb-3 text-xs text-ink-400">Taken automatically before disabling, uninstalling, updating or rolling back mods. Copy-on-write: no extra disk space.</p>
+          <p className="mb-3 text-xs text-ink-400">
+            Taken automatically before disabling, uninstalling, updating or rolling back mods. Copy-on-write: no extra disk space.
+          </p>
           {s.save_risks.map((r) => (
             <p key={r.save} className="mb-2 text-xs text-neon-amber">
               {r.save} was saved with {r.missing.join(", ")}, which {r.missing.length > 1 ? "are" : "is"} now off.
@@ -221,11 +246,19 @@ export function ModHistory({ id, locked }: { id: string; locked: boolean }) {
         <div key={h.ts} className="flex items-center gap-3 rounded-xl border border-ink-700 bg-ink-850 px-3 py-2 text-sm">
           <div className="min-w-0 flex-1">
             <div>
-              v{h.version || "?"} <span className="text-xs text-ink-400">· {h.files} files · {when(h.ts)}</span>
+              v{h.version || "?"}{" "}
+              <span className="text-xs text-ink-400">
+                · {h.files} files · {when(h.ts)}
+              </span>
             </div>
             <div className="truncate text-xs text-ink-400">{h.reason}</div>
           </div>
-          <Button size="sm" icon={<RotateCcw className="size-3.5" />} disabled={busy || locked} onClick={() => run(`Roll back to v${h.version}`, ["rollback", id, "--to", String(h.ts)])}>
+          <Button
+            size="sm"
+            icon={<RotateCcw className="size-3.5" />}
+            disabled={busy || locked}
+            onClick={() => run(`Roll back to v${h.version}`, ["rollback", id, "--to", String(h.ts)])}
+          >
             Roll back
           </Button>
         </div>

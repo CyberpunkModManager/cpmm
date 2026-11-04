@@ -66,7 +66,11 @@ pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> 
                 ver: b["ver"].as_str().unwrap_or("").to_string(),
                 up: b["up"].as_str().unwrap_or("").to_string(),
                 paths: b["paths"].as_array().cloned().unwrap_or_default().iter().filter_map(|p| p.as_str().map(String::from)).collect(),
-                all: vs.iter().flat_map(|v| v["paths"].as_array().cloned().unwrap_or_default()).filter_map(|p| p.as_str().map(|s| s.to_lowercase())).collect(),
+                all: vs
+                    .iter()
+                    .flat_map(|v| v["paths"].as_array().cloned().unwrap_or_default())
+                    .filter_map(|p| p.as_str().map(|s| s.to_lowercase()))
+                    .collect(),
             });
         }
     }
@@ -97,7 +101,8 @@ pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> 
         }
         let stem = p.file_stem().unwrap().to_string_lossy().to_string();
         let mtime = e.metadata()?.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_secs();
-        let fl: Vec<String> = fs::read_to_string(&p)?.lines().map(|l| l.trim().replace('\\', "/")).filter(|l| !l.is_empty() && !l.ends_with('/')).collect();
+        let fl: Vec<String> =
+            fs::read_to_string(&p)?.lines().map(|l| l.trim().replace('\\', "/")).filter(|l| !l.is_empty() && !l.ends_with('/')).collect();
         lists.push((stem, mtime, fl));
     }
     let mut taken: BTreeSet<u64> = BTreeSet::new();
@@ -130,19 +135,36 @@ pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> 
             if present.is_empty() {
                 continue;
             }
-            cands.push(Cand { id: slugify(short_name(&b.name)), name: b.name.clone(), nexus: Some(source_for(b)), version: b.ver.clone(), files: present, order_key: (0, 0) });
+            cands.push(Cand {
+                id: slugify(short_name(&b.name)),
+                name: b.name.clone(),
+                nexus: Some(source_for(b)),
+                version: b.ver.clone(),
+                files: present,
+                order_key: (0, 0),
+            });
         }
     }
     for (li, (stem, mtime, fl)) in lists.iter().enumerate() {
         let (id, name, nexus, version) = match list_gid.get(&li) {
-            Some(&bi) => (slugify(short_name(&bests[bi].name)), bests[bi].name.clone(), Some(source_for(&bests[bi])), bests[bi].ver.clone()),
+            Some(&bi) => {
+                (slugify(short_name(&bests[bi].name)), bests[bi].name.clone(), Some(source_for(&bests[bi])), bests[bi].ver.clone())
+            }
             None => {
                 // Extra file (e.g. an add-on) from a Nexus page already paired with another list:
                 // keep the mod id for requirements, but the exact file is unknown.
                 let set: BTreeSet<String> = fl.iter().map(|x| x.to_lowercase()).collect();
-                let sib = bests.iter().filter(|b| set.iter().any(|p| b.all.contains(p))).max_by_key(|b| set.iter().filter(|p| b.all.contains(*p)).count());
+                let sib = bests
+                    .iter()
+                    .filter(|b| set.iter().any(|p| b.all.contains(p)))
+                    .max_by_key(|b| set.iter().filter(|p| b.all.contains(*p)).count());
                 match sib {
-                    Some(b) => (slugify(stem), format!("{} ({stem})", b.name), Some(NexusSource { mod_id: b.gid, ..Default::default() }), String::new()),
+                    Some(b) => (
+                        slugify(stem),
+                        format!("{} ({stem})", b.name),
+                        Some(NexusSource { mod_id: b.gid, ..Default::default() }),
+                        String::new(),
+                    ),
                     None => (slugify(stem), stem.clone(), None, String::new()),
                 }
             }
@@ -171,7 +193,7 @@ pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> 
     }
 
     println!("vanilla manifest: {} files known", vanilla.len());
-    println!("{:<34} {:>6} {:>7} {:>6} {:>6} {:>7}  {}", "id", "nexus", "files", "moved", "copied", "missing", "name");
+    println!("{:<34} {:>6} {:>7} {:>6} {:>6} {:>7}  name", "id", "nexus", "files", "moved", "copied", "missing");
     let mut journal = if apply {
         paths.ensure_dirs()?;
         Some(fs::OpenOptions::new().create(true).append(true).open(paths.data.join("import-journal.tsv"))?)
@@ -219,7 +241,7 @@ pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> 
             requires: vec![],
             reqs_checked: None,
             hidden: vec![],
-                ignored_reqs: vec![],
+            ignored_reqs: vec![],
             installed_at: now(),
             notes: "imported".into(),
         });
@@ -249,7 +271,8 @@ pub fn adopt(paths: &Paths, state: &mut State, id: &str, name: &str, rels: &[Str
     for r in rels {
         let r = r.trim_matches('/');
         let src = paths.game.join(r);
-        let list: Vec<String> = if src.is_dir() { files::list_tree(&src).into_iter().map(|f| format!("{r}/{f}")).collect() } else { vec![r.to_string()] };
+        let list: Vec<String> =
+            if src.is_dir() { files::list_tree(&src).into_iter().map(|f| format!("{r}/{f}")).collect() } else { vec![r.to_string()] };
         for f in list {
             let s = paths.game.join(&f);
             let d = paths.mod_files(id).join(&f);
@@ -271,7 +294,7 @@ pub fn adopt(paths: &Paths, state: &mut State, id: &str, name: &str, rels: &[Str
         requires: vec![],
         reqs_checked: None,
         hidden: vec![],
-                ignored_reqs: vec![],
+        ignored_reqs: vec![],
         installed_at: now(),
         notes: "adopted".into(),
     });

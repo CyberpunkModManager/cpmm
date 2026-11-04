@@ -173,9 +173,20 @@ impl Req {
     /// Nexus has no optional flag; authors write it in the notes.
     pub fn optional(&self) -> bool {
         let n = self.notes.to_lowercase();
-        ["optional", "recommended", "not required", "only if", "only needed if", "if you want", "if you use", "if using", "compatibility patch", "not needed"]
-            .iter()
-            .any(|k| n.contains(k))
+        [
+            "optional",
+            "recommended",
+            "not required",
+            "only if",
+            "only needed if",
+            "if you want",
+            "if you use",
+            "if using",
+            "compatibility patch",
+            "not needed",
+        ]
+        .iter()
+        .any(|k| n.contains(k))
     }
 }
 
@@ -246,16 +257,10 @@ impl Nexus {
     /// The outer `Result` is the local gate (nothing was sent); the inner one is the HTTP outcome.
     fn api_call(&self, method: &str, url: &str, auth: bool, body: Body) -> Result<std::result::Result<ureq::Response, ureq::Error>> {
         self.rate_gate()?;
-        let mut req = self
-            .agent
-            .request(method, url)
-            .set("User-Agent", UA)
-            .set("Application-Name", APP_NAME)
-            .set("Application-Version", APP_VERSION);
-        if auth {
-            if let Some(k) = &self.key {
-                req = req.set("apikey", k);
-            }
+        let mut req =
+            self.agent.request(method, url).set("User-Agent", UA).set("Application-Name", APP_NAME).set("Application-Version", APP_VERSION);
+        if auth && let Some(k) = &self.key {
+            req = req.set("apikey", k);
         }
         let res = match body {
             Body::None => req.call(),
@@ -276,10 +281,8 @@ impl Nexus {
                 None => true,
                 Some(t) => md.modified().ok().and_then(|m| SystemTime::now().duration_since(m).ok()).is_some_and(|age| age < t),
             };
-            if fresh {
-                if let Ok(v) = serde_json::from_slice(&fs::read(&cp)?) {
-                    return Ok(v);
-                }
+            if fresh && let Ok(v) = serde_json::from_slice(&fs::read(&cp)?) {
+                return Ok(v);
             }
         }
         let mut last = None;
@@ -389,7 +392,11 @@ impl Nexus {
         for &id in ids {
             let f = dir.join(format!("{id}.json"));
             let fresh = !force
-                && fs::metadata(&f).ok().and_then(|m| m.modified().ok()).and_then(|m| SystemTime::now().duration_since(m).ok()).is_some_and(|age| age < TTL);
+                && fs::metadata(&f)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|m| SystemTime::now().duration_since(m).ok())
+                    .is_some_and(|age| age < TTL);
             match fresh.then(|| fs::read(&f).ok().and_then(|b| serde_json::from_slice::<(u64, String, Vec<Req>)>(&b).ok())).flatten() {
                 Some(hit) => out.push(hit),
                 None => need.push(id),
@@ -399,7 +406,8 @@ impl Nexus {
             let q = "query($ids:[CompositeDomainWithIdInput!]!){ legacyModsByDomain(ids:$ids){ nodes { modId name modRequirements { nexusRequirements { nodes { modId modName url notes externalRequirement } } } } } }";
             let vars = json!({"ids": chunk.iter().map(|i| json!({"gameDomain": GAME, "modId": i})).collect::<Vec<_>>()});
             let body = json!({"query": q, "variables": vars});
-            let r: Value = self.api_call("POST", GQL, false, Body::Json(body))?.map_err(|e| anyhow::anyhow!("GraphQL: {e}"))?.into_json()?;
+            let r: Value =
+                self.api_call("POST", GQL, false, Body::Json(body))?.map_err(|e| anyhow::anyhow!("GraphQL: {e}"))?.into_json()?;
             if let Some(e) = r.get("errors") {
                 bail!("GraphQL errors: {}", e.to_string().chars().take(500).collect::<String>());
             }
@@ -436,8 +444,13 @@ impl Nexus {
             return Ok(()); // cached
         }
         let q = nxm.map(|(k, e)| format!("?key={k}&expires={e}")).unwrap_or_default();
-        let links = self.get_json(&format!("{V3}/games/{GAME}/mod-file-versions/{}/download-link{q}", v.game_scoped_id), true, Some(Duration::ZERO))?;
-        let url = links.pointer("/data/links/0/url").and_then(Value::as_str).context("no download link (premium required for API downloads)")?;
+        let links = self.get_json(
+            &format!("{V3}/games/{GAME}/mod-file-versions/{}/download-link{q}", v.game_scoped_id),
+            true,
+            Some(Duration::ZERO),
+        )?;
+        let url =
+            links.pointer("/data/links/0/url").and_then(Value::as_str).context("no download link (premium required for API downloads)")?;
         let url = url.replace(' ', "%20");
         let r = self.agent.get(&url).set("User-Agent", UA).call().map_err(|e| anyhow::anyhow!("download: {e}"))?;
         let part = dest.with_extension("part");
@@ -551,7 +564,7 @@ mod tests {
     /// installed by `update --all`, crashing the game on car summon.
     #[test]
     fn newest_is_latest_current_upload_not_position() {
-        let mut vs = vec![
+        let mut vs = [
             v("1awaw", "archived", "2026-10-26T03:18:20Z", "9"),
             v("1.0.1", "main", "2026-10-27T14:01:38Z", "3"),
             v("1.0.0", "old_version", "2026-10-26T05:04:58Z", "2"),

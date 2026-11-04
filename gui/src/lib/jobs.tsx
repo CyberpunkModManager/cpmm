@@ -1,5 +1,5 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { createContext, type ReactNode, useCallback, useContext, useMemo, useRef, useState } from "react";
 import { runCpmm } from "./cpmm";
 
 export interface Job {
@@ -47,8 +47,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     async (label: string, args: string[]) => {
       const local = seq.current++;
       setJobs((j) => [{ id: local, label, args, lines: [], status: "running" as const, startedAt: Date.now() } satisfies Job, ...j].slice(0, 30));
-      const push = (text: string, err: boolean) =>
-        setJobs((js) => js.map((j) => (j.id === local ? { ...j, lines: [...j.lines, { text, err }] } : j)));
+      const push = (text: string, err: boolean) => setJobs((js) => js.map((j) => (j.id === local ? { ...j, lines: [...j.lines, { text, err }] } : j)));
       try {
         const r = await runCpmm(args, (l) => push(l.line, l.stderr));
         const ok = r.code === 0;

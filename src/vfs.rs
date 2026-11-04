@@ -3,8 +3,8 @@
 //!
 //! Layering (top wins): overwrite/ (upper, catches every write) > enabled mods by priority
 //! > the real game directory. No root needed: since Linux 5.11 overlayfs can be mounted in
-//! a user namespace with `userxattr`. We use the new mount API so the number of layers is
-//! not limited by the 4 KiB legacy option string (`lowerdir+`, Linux 6.8+).
+//! > a user namespace with `userxattr`. We use the new mount API so the number of layers is
+//! > not limited by the 4 KiB legacy option string (`lowerdir+`, Linux 6.8+).
 //!
 //! Namespace dance: create userns#1 mapping our uid to 0, which gives us CAP_SYS_ADMIN over
 //! a fresh mount namespace; mount the overlay; then create userns#2 mapping our uid back
@@ -13,9 +13,9 @@
 use crate::state::{Mod, Paths};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::os::unix::ffi::OsStrExt;
 use std::ffi::CString;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -44,12 +44,16 @@ fn bind_mount(src: &Path, dst: &Path) -> Result<()> {
 pub fn layers(paths: &Paths, mods: &[Mod]) -> Vec<(String, PathBuf)> {
     // highest priority first; cpmm's generated files (modlist.txt) sit above every mod
     let generated = crate::loadorder::generated_root(paths).join("files");
-    let top = fs::read_dir(&generated).map(|mut d| d.next().is_some()).unwrap_or(false).then(|| ("(cpmm generated)".to_string(), generated));
-    top.into_iter().chain(mods.iter()
-        .rev()
-        .filter(|m| m.enabled)
-        .map(|m| (m.id.clone(), paths.mod_files(&m.id)))
-        .filter(|(_, p)| fs::read_dir(p).map(|mut d| d.next().is_some()).unwrap_or(false)))
+    let top =
+        fs::read_dir(&generated).map(|mut d| d.next().is_some()).unwrap_or(false).then(|| ("(cpmm generated)".to_string(), generated));
+    top.into_iter()
+        .chain(
+            mods.iter()
+                .rev()
+                .filter(|m| m.enabled)
+                .map(|m| (m.id.clone(), paths.mod_files(&m.id)))
+                .filter(|(_, p)| fs::read_dir(p).map(|mut d| d.next().is_some()).unwrap_or(false)),
+        )
         .collect()
 }
 
@@ -96,7 +100,11 @@ fn fsconfig(fd: i32, cmd: libc::c_uint, key: Option<&str>, val: Option<&CString>
         )
     };
     if r != 0 {
-        return Err(cerr(&format!("fsconfig {}={}", key.unwrap_or("create"), val.map(|v| v.to_string_lossy().into_owned()).unwrap_or_default())));
+        return Err(cerr(&format!(
+            "fsconfig {}={}",
+            key.unwrap_or("create"),
+            val.map(|v| v.to_string_lossy().into_owned()).unwrap_or_default()
+        )));
     }
     Ok(())
 }

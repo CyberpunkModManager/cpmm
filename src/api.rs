@@ -62,7 +62,10 @@ pub fn state(paths: &Paths, st: &State) -> Result<Value> {
         })
         .collect();
     let session = crate::vfs::running(paths).map(|(info, pid)| json!({"pid": pid, "started": info.started, "layers": info.layers.len()}));
-    let modio: Vec<Value> = crate::modio_mods(paths).into_iter().map(|(id, name, by, ver)| json!({"id": id, "name": name, "author": by, "version": ver})).collect();
+    let modio: Vec<Value> = crate::modio_mods(paths)
+        .into_iter()
+        .map(|(id, name, by, ver)| json!({"id": id, "name": name, "author": by, "version": ver}))
+        .collect();
     let overwrite = crate::manage::overwrite_entries(paths).len();
     Ok(json!({
         "game_dir": paths.game, "data_dir": paths.data,

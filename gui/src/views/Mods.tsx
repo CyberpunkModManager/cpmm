@@ -7,9 +7,9 @@ import {
   ChevronsUp,
   CircleAlert,
   Crown,
-  EyeOff,
   ExternalLink,
   Eye,
+  EyeOff,
   Layers,
   PackageSearch,
   Search,
@@ -17,10 +17,10 @@ import {
   Trash2,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { api, timeAgo, type AppState, type ModRow } from "../lib/cpmm";
+import { Badge, Button, Confirm, Drawer, Empty, ErrorBox, IconButton, Input, PageHeader, Spinner, Switch } from "../components/ui";
+import { type AppState, api, type ModRow, timeAgo } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 import { openLink } from "../lib/nexus";
-import { Badge, Button, Confirm, Drawer, Empty, ErrorBox, IconButton, Input, PageHeader, Spinner, Switch } from "../components/ui";
 import { ModHistory } from "./Safety";
 
 type Filter = "all" | "enabled" | "disabled" | "problems" | "conflicts" | "manual";
@@ -86,10 +86,17 @@ export function ModsView({ state }: { state: AppState }) {
         }
       />
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <Input icon={<Search className="size-4" />} placeholder="Search name, id or Nexus id…" value={q} onChange={(e) => setQ(e.target.value)} className="w-80" />
+        <Input
+          icon={<Search className="size-4" />}
+          placeholder="Search name, id or Nexus id…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          className="w-80"
+        />
         <div className="flex flex-wrap gap-1.5">
           {(Object.keys(counts) as Filter[]).map((f) => (
             <button
+              type="button"
               key={f}
               onClick={() => setFilter(f)}
               className={clsx(
@@ -113,6 +120,7 @@ export function ModsView({ state }: { state: AppState }) {
             <div
               key={m.id}
               tabIndex={0}
+              role="button"
               onClick={() => setOpen(m.id)}
               onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && setOpen(m.id)}
               className={clsx(
@@ -122,7 +130,12 @@ export function ModsView({ state }: { state: AppState }) {
               )}
             >
               <div className="w-8 text-right font-mono text-xs text-ink-400 tabular-nums">{m.priority}</div>
-              <Switch checked={m.enabled} label={m.enabled ? `Disable ${m.name}` : `Enable ${m.name}`} disabled={busy} onChange={(v) => run(`${v ? "Enable" : "Disable"} ${m.name}`, [v ? "enable" : "disable", m.id])} />
+              <Switch
+                checked={m.enabled}
+                label={m.enabled ? `Disable ${m.name}` : `Enable ${m.name}`}
+                disabled={busy}
+                onChange={(v) => run(`${v ? "Enable" : "Disable"} ${m.name}`, [v ? "enable" : "disable", m.id])}
+              />
               <div className="min-w-0 flex-1">
                 <div className="truncate font-medium">{m.name}</div>
                 <div className="truncate font-mono text-xs text-ink-400">
@@ -172,7 +185,17 @@ export function ModsView({ state }: { state: AppState }) {
   );
 }
 
-function ModDrawer({ mod, state, onClose, onOrder }: { mod: ModRow | null; state: AppState; onClose: () => void; onOrder: (m: ModRow, how: "up" | "down" | "top" | "bottom") => void }) {
+function ModDrawer({
+  mod,
+  state,
+  onClose,
+  onOrder,
+}: {
+  mod: ModRow | null;
+  state: AppState;
+  onClose: () => void;
+  onOrder: (m: ModRow, how: "up" | "down" | "top" | "bottom") => void;
+}) {
   const { run, busy } = useJobs();
   const [confirm, setConfirm] = useState(false);
   const info = useQuery({ queryKey: ["info", mod?.id], queryFn: () => api.info(mod!.id), enabled: !!mod });
@@ -237,7 +260,12 @@ function ModDrawer({ mod, state, onClose, onOrder }: { mod: ModRow | null; state
                 {r.notes && <div className="truncate text-xs text-ink-400">{r.notes}</div>}
               </div>
               {(r.status === "missing" || r.status === "optional-missing") && (
-                <Button size="sm" variant={r.status === "missing" ? "primary" : "secondary"} disabled={busy} onClick={() => run(`Install ${r.name}`, ["install", String(r.mod_id), "--with-deps"])}>
+                <Button
+                  size="sm"
+                  variant={r.status === "missing" ? "primary" : "secondary"}
+                  disabled={busy}
+                  onClick={() => run(`Install ${r.name}`, ["install", String(r.mod_id), "--with-deps"])}
+                >
                   Install
                 </Button>
               )}
@@ -252,7 +280,12 @@ function ModDrawer({ mod, state, onClose, onOrder }: { mod: ModRow | null; state
                 </Button>
               )}
               {r.status === "ignored" && (
-                <Button size="sm" variant="ghost" disabled={busy} onClick={() => run(`Stop ignoring ${r.name}`, ["deps", "--unignore", mod.id, String(r.mod_id)])}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => run(`Stop ignoring ${r.name}`, ["deps", "--unignore", mod.id, String(r.mod_id)])}
+                >
                   Unignore
                 </Button>
               )}
@@ -277,7 +310,8 @@ function ModDrawer({ mod, state, onClose, onOrder }: { mod: ModRow | null; state
                 <div className="truncate font-mono text-xs">{f.path}</div>
                 {f.others.length > 0 && (
                   <div className="truncate text-xs text-ink-400">
-                    also in {f.others.join(", ")} · {f.wins ? <span className="text-neon-lime">wins</span> : <span className="text-neon-amber">loses to {f.winner || "?"}</span>}
+                    also in {f.others.join(", ")} ·{" "}
+                    {f.wins ? <span className="text-neon-lime">wins</span> : <span className="text-neon-amber">loses to {f.winner || "?"}</span>}
                   </div>
                 )}
               </div>
@@ -323,5 +357,9 @@ export function ReqBadge({ status }: { status: ModRow["requires"][number]["statu
     missing: ["red", "missing"],
   } as const;
   const [tone, text] = map[status];
-  return <Badge tone={tone} className="w-20 justify-center">{text}</Badge>;
+  return (
+    <Badge tone={tone} className="w-20 justify-center">
+      {text}
+    </Badge>
+  );
 }

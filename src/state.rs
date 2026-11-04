@@ -21,22 +21,34 @@ pub struct Paths {
 
 impl Paths {
     pub fn load() -> Result<Self> {
-        let data = std::env::var_os("CPMM_DATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home().join(".local/share/cpmm"));
+        let data = std::env::var_os("CPMM_DATA").map(PathBuf::from).unwrap_or_else(|| home().join(".local/share/cpmm"));
         let game = match fs::read_to_string(data.join("game_dir")) {
             Ok(s) => PathBuf::from(s.trim()),
             Err(_) => home().join(".local/share/Steam/steamapps/common/Cyberpunk 2077"),
         };
         Ok(Self { data, game })
     }
-    pub fn state_file(&self) -> PathBuf { self.data.join("state.json") }
-    pub fn mods(&self) -> PathBuf { self.data.join("mods") }
-    pub fn mod_files(&self, id: &str) -> PathBuf { self.mods().join(id).join("files") }
-    pub fn upper(&self) -> PathBuf { self.data.join("overwrite") }
-    pub fn work(&self) -> PathBuf { self.data.join("work") }
-    pub fn tmp(&self) -> PathBuf { self.data.join("tmp") }
-    pub fn trash(&self) -> PathBuf { self.data.join("trash") }
+    pub fn state_file(&self) -> PathBuf {
+        self.data.join("state.json")
+    }
+    pub fn mods(&self) -> PathBuf {
+        self.data.join("mods")
+    }
+    pub fn mod_files(&self, id: &str) -> PathBuf {
+        self.mods().join(id).join("files")
+    }
+    pub fn upper(&self) -> PathBuf {
+        self.data.join("overwrite")
+    }
+    pub fn work(&self) -> PathBuf {
+        self.data.join("work")
+    }
+    pub fn tmp(&self) -> PathBuf {
+        self.data.join("tmp")
+    }
+    pub fn trash(&self) -> PathBuf {
+        self.data.join("trash")
+    }
     /// A fresh, unused trash path for `name` (timestamped, suffixed if needed).
     pub fn trash_for(&self, name: &str) -> PathBuf {
         let base = format!("{name}-{}", now().replace(':', ""));
@@ -48,10 +60,16 @@ impl Paths {
         }
         p
     }
-    pub fn downloads(&self) -> PathBuf { self.data.join("downloads") }
-    pub fn run_file(&self) -> PathBuf { self.data.join("run.json") }
+    pub fn downloads(&self) -> PathBuf {
+        self.data.join("downloads")
+    }
+    pub fn run_file(&self) -> PathBuf {
+        self.data.join("run.json")
+    }
     /// Save folders of profiles that don't use the game's shared one.
-    pub fn profile_saves(&self) -> PathBuf { self.data.join("profile-saves") }
+    pub fn profile_saves(&self) -> PathBuf {
+        self.data.join("profile-saves")
+    }
     pub fn cache(&self) -> PathBuf {
         std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".cache")).join("cpmm")
     }
@@ -169,7 +187,8 @@ impl State {
                 Ok(st)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut st = State { version: 1, mods: vec![], rules: vec![], acked: vec![], profiles: vec![], active_profile: String::new() };
+                let mut st =
+                    State { version: 1, mods: vec![], rules: vec![], acked: vec![], profiles: vec![], active_profile: String::new() };
                 st.ensure_profiles();
                 Ok(st)
             }
@@ -192,10 +211,10 @@ impl State {
         if let Some(i) = self.mods.iter().position(|m| m.id == key) {
             return Some(i);
         }
-        if let Ok(n) = key.parse::<u64>() {
-            if let Some(i) = self.mods.iter().position(|m| m.nexus.as_ref().is_some_and(|x| x.mod_id == n)) {
-                return Some(i);
-            }
+        if let Ok(n) = key.parse::<u64>()
+            && let Some(i) = self.mods.iter().position(|m| m.nexus.as_ref().is_some_and(|x| x.mod_id == n))
+        {
+            return Some(i);
         }
         let lk = key.to_lowercase();
         let hits: Vec<usize> = (0..self.mods.len()).filter(|&i| self.mods[i].name.to_lowercase().contains(&lk)).collect();
@@ -257,11 +276,10 @@ pub fn now() -> String {
 pub fn short_name(n: &str) -> &str {
     // "- House of Vesna - Actually Black Hair": leading dashes are decoration, and a series
     // prefix before " - " is not a useful short name when what follows names the mod.
-    let n = n.trim_start_matches(|c: char| c == '-' || c == ' ');
+    let n = n.trim_start_matches(['-', ' ']);
     if let Some(rest) = n.strip_prefix("House of Vesna - ") {
         return rest;
     }
     let cut = [" - ", " | ", " – ", " ("].iter().filter_map(|s| n.find(s)).min().unwrap_or(n.len());
     if cut >= 4 { &n[..cut] } else { n }
 }
-

@@ -271,10 +271,7 @@ fn save_shortcuts(user: &Path, root: &[(String, Val)]) -> Result<()> {
 }
 
 fn art_files(grid: &Path, appid: u32) -> Vec<PathBuf> {
-    ART.iter()
-        .map(|(_, suf, _)| grid.join(format!("{appid}{suf}.png")))
-        .chain([grid.join(format!("{appid}_icon.png"))])
-        .collect()
+    ART.iter().map(|(_, suf, _)| grid.join(format!("{appid}{suf}.png"))).chain([grid.join(format!("{appid}_icon.png"))]).collect()
 }
 
 fn offline(opts: &Opts, exe: &Path, users: &[PathBuf]) -> Result<()> {
@@ -337,10 +334,7 @@ fn offline(opts: &Opts, exe: &Path, users: &[PathBuf]) -> Result<()> {
 // ---- live: Steam's client API over the CEF debugger ----
 
 fn shared_js_ws() -> Result<String> {
-    let targets: serde_json::Value = ureq::get(&format!("{CEF}/json"))
-        .timeout(std::time::Duration::from_secs(3))
-        .call()?
-        .into_json()?;
+    let targets: serde_json::Value = ureq::get(&format!("{CEF}/json")).timeout(std::time::Duration::from_secs(3)).call()?.into_json()?;
     targets
         .as_array()
         .into_iter()

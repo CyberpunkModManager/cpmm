@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: System deps + toolchain
+        run: ./scripts/ci-deps.sh gui
+      - name: Tests
+        run: cargo test --locked
+      - name: Build cpmm
+        run: cargo build --release --locked
+      - name: Build cpmm-gui
+        working-directory: gui
+        run: |
+          npm ci --no-audit --no-fund
+          npx tauri build --no-bundle
+      - name: Package
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          D="cpmm-${VER}-linux-x86_64"
+          mkdir -p "dist/$D"
+          cp target/release/cpmm gui/src-tauri/target/release/cpmm-gui README.md "dist/$D/"
+          cp gui/src-tauri/icons/128x128@2x.png "dist/$D/cpmm.png"
+          mkdir -p dist/release
+          tar -C dist -czf "dist/release/$D.tar.gz" "$D"
+          (cd dist/release && sha256sum "$D.tar.gz" > "$D.tar.gz.sha256")
+          ls -la dist/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpmm-linux-x86_64
+          path: dist/release/*
+      - name: Publish release (GitHub)
+        if: startsWith(github.ref, 'refs/tags/') && github.server_url == 'https://github.com'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/release/*
+      - name: Publish release (Forgejo)
+        if: startsWith(github.ref, 'refs/tags/') && github.server_url != 'https://github.com'
+        uses: https://code.forgejo.org/actions/forgejo-release@v2
+        with:
+          direction: upload
+          url: ${{ github.server_url }}
+          repo: ${{ github.repository }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref_name }}
+          release-dir: dist/release

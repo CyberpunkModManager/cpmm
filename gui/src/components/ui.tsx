@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { Loader2, X } from "lucide-react";
-import { useEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type Ref } from "react";
+import { type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type Ref, useEffect, useRef } from "react";
 
 type Tone = "cyan" | "violet" | "pink" | "lime" | "amber" | "red" | "muted";
 
@@ -25,7 +25,15 @@ const toneBg: Record<Tone, string> = {
 
 export function Badge({ tone = "muted", children, className, title }: { tone?: Tone; children: ReactNode; className?: string; title?: string }) {
   return (
-    <span title={title} className={clsx("inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium whitespace-nowrap", toneBg[tone], toneText[tone], className)}>
+    <span
+      title={title}
+      className={clsx(
+        "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium whitespace-nowrap",
+        toneBg[tone],
+        toneText[tone],
+        className,
+      )}
+    >
       {children}
     </span>
   );
@@ -48,9 +56,16 @@ export function Button({
   children,
   ref,
   ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: BtnVariant; size?: "sm" | "md" | "lg"; loading?: boolean; icon?: ReactNode; ref?: Ref<HTMLButtonElement> }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: BtnVariant;
+  size?: "sm" | "md" | "lg";
+  loading?: boolean;
+  icon?: ReactNode;
+  ref?: Ref<HTMLButtonElement>;
+}) {
   return (
     <button
+      type="button"
       ref={ref}
       {...rest}
       disabled={rest.disabled || loading}
@@ -72,10 +87,14 @@ export function Button({
 export function IconButton({ label, children, className, ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
   return (
     <button
+      type="button"
       {...rest}
       aria-label={label}
       title={label}
-      className={clsx("inline-flex size-9 items-center justify-center rounded-lg text-ink-300 hover:bg-ink-800 hover:text-ink-100 disabled:opacity-30 cursor-pointer", className)}
+      className={clsx(
+        "inline-flex size-9 items-center justify-center rounded-lg text-ink-300 hover:bg-ink-800 hover:text-ink-100 disabled:opacity-30 cursor-pointer",
+        className,
+      )}
     >
       {children}
     </button>
@@ -85,6 +104,7 @@ export function IconButton({ label, children, className, ...rest }: ButtonHTMLAt
 export function Switch({ checked, onChange, label, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
   return (
     <button
+      type="button"
       role="switch"
       aria-checked={checked}
       aria-label={label}
@@ -149,7 +169,9 @@ export function Spinner({ label }: { label?: string }) {
 }
 
 export function ErrorBox({ error }: { error: unknown }) {
-  return <div className="rounded-xl border border-neon-red/30 bg-neon-red/10 px-4 py-3 font-mono text-sm text-neon-red whitespace-pre-wrap">{String(error)}</div>;
+  return (
+    <div className="rounded-xl border border-neon-red/30 bg-neon-red/10 px-4 py-3 font-mono text-sm text-neon-red whitespace-pre-wrap">{String(error)}</div>
+  );
 }
 
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: ReactNode; actions?: ReactNode }) {
@@ -165,7 +187,19 @@ export function PageHeader({ title, subtitle, actions }: { title: string; subtit
 }
 
 /** Side drawer; it is a navigation layer, so gamepad focus stays inside it. */
-export function Drawer({ open, onClose, title, children, width = "max-w-2xl" }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; width?: string }) {
+export function Drawer({
+  open,
+  onClose,
+  title,
+  children,
+  width = "max-w-2xl",
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: ReactNode;
+  children: ReactNode;
+  width?: string;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (open) setTimeout(() => ref.current?.querySelector<HTMLElement>("button, input")?.focus(), 30);

@@ -2,11 +2,11 @@
 
 mod api;
 mod archive;
-mod loadorder;
 mod conflicts;
 mod files;
 mod import;
 mod install;
+mod loadorder;
 mod manage;
 mod nexus;
 mod profiles;
@@ -340,8 +340,13 @@ enum ProfileCmd {
     },
     /// Make a profile the active one (takes effect at the next launch)
     #[command(visible_alias = "use")]
-    Switch { name: String },
-    Rename { old: String, new: String },
+    Switch {
+        name: String,
+    },
+    Rename {
+        old: String,
+        new: String,
+    },
     /// Own save folder for a profile (`own`), or back to the game's shared one (`shared`).
     /// Turning it off keeps the profile's saves for later.
     Saves {
@@ -353,7 +358,9 @@ enum ProfileCmd {
         copy: bool,
     },
     /// Delete a profile (not the active one); mods stay installed
-    Delete { name: String },
+    Delete {
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -361,7 +368,9 @@ enum ApiCmd {
     /// Everything the main view needs
     State,
     /// Files of one mod with conflict info
-    Info { r#mod: String },
+    Info {
+        r#mod: String,
+    },
     Conflicts,
     Updates {
         #[arg(long)]
@@ -370,7 +379,9 @@ enum ApiCmd {
     Overwrite,
     Tracked,
     /// Nexus mod details before installing (files, requirements)
-    Lookup { source: String },
+    Lookup {
+        source: String,
+    },
     /// Sort plan + archive conflicts
     Loadorder,
     Doctor,
@@ -378,16 +389,23 @@ enum ApiCmd {
     Archives,
     /// Crashes, new log errors, patch guard, saves and undoable update runs
     Safety,
-    History { r#mod: String },
+    History {
+        r#mod: String,
+    },
 }
 
 #[derive(Subcommand)]
 enum OwCmd {
     List,
     /// Move files (default: all) into a mod; a new manual mod is created if the name is new.
-    Move { to: String, paths: Vec<String> },
+    Move {
+        to: String,
+        paths: Vec<String>,
+    },
     /// Move files (default: all, including deletion markers) to trash.
-    Clear { paths: Vec<String> },
+    Clear {
+        paths: Vec<String>,
+    },
 }
 
 /// True if a process whose program (argv[0]) is Cyberpunk2077.exe exists.
@@ -487,7 +505,22 @@ fn real_main() -> Result<()> {
         _ => {}
     }
     let _lock = match cli.cmd {
-        Cmd::List { .. } | Cmd::Profile { action: None | Some(ProfileCmd::List) } | Cmd::Info { .. } | Cmd::Status | Cmd::LaunchOptions | Cmd::SteamShortcut { .. } | Cmd::RegisterHandler { .. } | Cmd::Api(_) | Cmd::Archives { .. } | Cmd::Doctor { ack: None, unack: None, .. } | Cmd::History { .. } | Cmd::Crashes { .. } | Cmd::Patch | Cmd::Conflicts { .. } | Cmd::Updates { .. } | Cmd::Unmanaged { .. } => None,
+        Cmd::List { .. }
+        | Cmd::Profile { action: None | Some(ProfileCmd::List) }
+        | Cmd::Info { .. }
+        | Cmd::Status
+        | Cmd::LaunchOptions
+        | Cmd::SteamShortcut { .. }
+        | Cmd::RegisterHandler { .. }
+        | Cmd::Api(_)
+        | Cmd::Archives { .. }
+        | Cmd::Doctor { ack: None, unack: None, .. }
+        | Cmd::History { .. }
+        | Cmd::Crashes { .. }
+        | Cmd::Patch
+        | Cmd::Conflicts { .. }
+        | Cmd::Updates { .. }
+        | Cmd::Unmanaged { .. } => None,
         _ => Some(lock(&paths)?),
     };
     if let Cmd::Nxm { url: Some(_), .. } = &cli.cmd {
@@ -584,7 +617,12 @@ fn real_main() -> Result<()> {
             let i = st.get(&r#mod)?;
             let id = st.mods[i].id.clone();
             if let Some(nid) = st.mods[i].nexus.as_ref().map(|n| n.mod_id) {
-                let users: Vec<String> = st.mods.iter().filter(|m| m.enabled && m.requires.iter().any(|r| r.mod_id == nid && !r.optional)).map(|m| m.id.clone()).collect();
+                let users: Vec<String> = st
+                    .mods
+                    .iter()
+                    .filter(|m| m.enabled && m.requires.iter().any(|r| r.mod_id == nid && !r.optional))
+                    .map(|m| m.id.clone())
+                    .collect();
                 if !users.is_empty() && !force {
                     bail!("{id} is required by {}; --force to remove anyway", users.join(", "));
                 }
@@ -594,7 +632,10 @@ fn real_main() -> Result<()> {
             }
             let elsewhere = st.profiles_enabling(&id);
             if !elsewhere.is_empty() {
-                println!("note: also removes it from profile(s) {} where it is enabled (disable it instead to keep it there)", elsewhere.join(", "));
+                println!(
+                    "note: also removes it from profile(s) {} where it is enabled (disable it instead to keep it there)",
+                    elsewhere.join(", ")
+                );
             }
             let _ = safety::snapshot_saves(&paths, &format!("before uninstalling {id}"));
             safety::journal(&paths, "uninstall", std::slice::from_ref(&id), &st.mods[i].version);
@@ -668,7 +709,18 @@ fn real_main() -> Result<()> {
                         done.push(gid);
                     }
                     None if install => {
-                        let o = InstallOpts { file: None, id: None, name: None, root: None, dest: None, with_deps: true, ignore_deps: false, disabled: false, keep_archive: false, nxm: None };
+                        let o = InstallOpts {
+                            file: None,
+                            id: None,
+                            name: None,
+                            root: None,
+                            dest: None,
+                            with_deps: true,
+                            ignore_deps: false,
+                            disabled: false,
+                            keep_archive: false,
+                            nxm: None,
+                        };
                         let mut visiting = BTreeSet::new();
                         match install_nexus(&paths, &mut st, &nx, gid, &o, 0, &mut visiting) {
                             Ok(()) => done.push(gid),
@@ -759,7 +811,14 @@ fn real_main() -> Result<()> {
             OwCmd::Move { to, paths: sel } => {
                 let (id, moved, skipped) = manage::overwrite_move(&paths, &mut st, &to, &sel)?;
                 st.save(&paths)?;
-                println!("moved {moved} files into {id}{}", if skipped > 0 { format!(" ({skipped} deletion markers left; `cpmm overwrite clear` drops them)") } else { String::new() });
+                println!(
+                    "moved {moved} files into {id}{}",
+                    if skipped > 0 {
+                        format!(" ({skipped} deletion markers left; `cpmm overwrite clear` drops them)")
+                    } else {
+                        String::new()
+                    }
+                );
             }
             OwCmd::Clear { paths: sel } => {
                 let (n, t) = manage::overwrite_clear(&paths, &sel)?;
@@ -818,7 +877,13 @@ fn real_main() -> Result<()> {
             if !p.unresolved.is_empty() {
                 println!("unrelated mods replacing the same resources (current order kept; pin with `cpmm rule`):");
                 for u in &p.unresolved {
-                    println!("  {} vs {}: {} resources, winner {}", u.a.label(), u.b.label(), u.shared - u.identical, u.winner.clone().unwrap_or("game order".into()));
+                    println!(
+                        "  {} vs {}: {} resources, winner {}",
+                        u.a.label(),
+                        u.b.label(),
+                        u.shared - u.identical,
+                        u.winner.clone().unwrap_or("game order".into())
+                    );
                 }
             }
             if apply && !p.moved.is_empty() {
@@ -832,15 +897,9 @@ fn real_main() -> Result<()> {
             }
         }
         Cmd::Rule { r#mod, after, remove, list } => {
-            if list || r#mod.is_none() {
-                if st.rules.is_empty() {
-                    println!("no rules");
-                }
-                for r in &st.rules {
-                    println!("  {} after {}", r.r#mod, r.after);
-                }
-            } else {
-                let a = st.mods[st.get(&r#mod.unwrap())?].id.clone();
+            let target = r#mod.filter(|_| !list);
+            if let Some(target) = target {
+                let a = st.mods[st.get(&target)?].id.clone();
                 let b = st.mods[st.get(&after.context("give --after <mod>")?)?].id.clone();
                 if a == b {
                     bail!("a mod can't load after itself");
@@ -862,6 +921,13 @@ fn real_main() -> Result<()> {
                 st.save(&paths)?;
                 println!("load order updated; {} archives in modlist.txt", loadorder::write_modlist(&paths, &st)?);
                 warn_if_running(&paths);
+            } else {
+                if st.rules.is_empty() {
+                    println!("no rules");
+                }
+                for r in &st.rules {
+                    println!("  {} after {}", r.r#mod, r.after);
+                }
             }
         }
         Cmd::Archives { all } => {
@@ -872,7 +938,12 @@ fn real_main() -> Result<()> {
                 n += 1;
                 println!(
                     "  {} ({}) vs {} ({}): {} shared, {} identical{}  winner: {}",
-                    p.a.label(), p.archive_a, p.b.label(), p.archive_b, p.shared, p.identical,
+                    p.a.label(),
+                    p.archive_a,
+                    p.b.label(),
+                    p.archive_b,
+                    p.shared,
+                    p.identical,
                     if p.related { ", related by requirements" } else { "" },
                     p.winner.clone().unwrap_or("game order".into())
                 );
@@ -881,8 +952,16 @@ fn real_main() -> Result<()> {
         }
         Cmd::Doctor { ack, unack, all } => {
             if let Some(k) = ack.or(unack.clone()) {
-                let titles: Vec<String> = loadorder::doctor(&paths, &st).into_iter().map(|f| f.title).filter(|t| t.to_lowercase().contains(&k.to_lowercase())).collect();
-                let titles = if unack.is_some() { st.acked.iter().filter(|t| t.to_lowercase().contains(&k.to_lowercase())).cloned().collect() } else { titles };
+                let titles: Vec<String> = loadorder::doctor(&paths, &st)
+                    .into_iter()
+                    .map(|f| f.title)
+                    .filter(|t| t.to_lowercase().contains(&k.to_lowercase()))
+                    .collect();
+                let titles = if unack.is_some() {
+                    st.acked.iter().filter(|t| t.to_lowercase().contains(&k.to_lowercase())).cloned().collect()
+                } else {
+                    titles
+                };
                 if titles.len() != 1 {
                     bail!("{:?} matches {} findings; be more specific", k, titles.len());
                 }
@@ -893,9 +972,16 @@ fn real_main() -> Result<()> {
                 st.save(&paths)?;
                 println!("{} {:?}", if unack.is_none() { "acknowledged" } else { "un-acknowledged" }, titles[0]);
             }
-            let fs_: Vec<loadorder::Finding> = loadorder::doctor(&paths, &st).into_iter().filter(|f| all || f.severity != "acked").collect();
+            let fs_: Vec<loadorder::Finding> =
+                loadorder::doctor(&paths, &st).into_iter().filter(|f| all || f.severity != "acked").collect();
             for f in &fs_ {
-                let tag = match f.severity { "crash" => "CRASH RISK", "warning" => "WARNING", "perf" => "PERF", "acked" => "acked", _ => "info" };
+                let tag = match f.severity {
+                    "crash" => "CRASH RISK",
+                    "warning" => "WARNING",
+                    "perf" => "PERF",
+                    "acked" => "acked",
+                    _ => "info",
+                };
                 println!("[{tag}] {}", f.title);
                 if !f.detail.is_empty() {
                     println!("    {}", f.detail);
@@ -904,7 +990,11 @@ fn real_main() -> Result<()> {
                     println!("    fix: {x}");
                 }
                 for a in &f.actions {
-                    println!("    {}: cpmm {}", a.label, a.args.iter().map(|x| if x.contains(' ') { format!("{x:?}") } else { x.clone() }).collect::<Vec<_>>().join(" "));
+                    println!(
+                        "    {}: cpmm {}",
+                        a.label,
+                        a.args.iter().map(|x| if x.contains(' ') { format!("{x:?}") } else { x.clone() }).collect::<Vec<_>>().join(" ")
+                    );
                 }
             }
             println!("{} findings ({} crash risks)", fs_.len(), fs_.iter().filter(|f| f.severity == "crash").count());
@@ -916,7 +1006,15 @@ fn real_main() -> Result<()> {
                 println!("no earlier versions of {} kept", st.mods[i].id);
             }
             for e in h {
-                println!("  {}  {}  v{}  {} files  {}{}", e.meta.ts, safety::iso(e.meta.ts), e.meta.version, e.files, e.meta.reason, e.meta.batch.map(|b| format!("  [{b}]")).unwrap_or_default());
+                println!(
+                    "  {}  {}  v{}  {} files  {}{}",
+                    e.meta.ts,
+                    safety::iso(e.meta.ts),
+                    e.meta.version,
+                    e.files,
+                    e.meta.reason,
+                    e.meta.batch.map(|b| format!("  [{b}]")).unwrap_or_default()
+                );
             }
         }
         Cmd::Rollback { r#mod, to } => {
@@ -949,7 +1047,9 @@ fn real_main() -> Result<()> {
             for c in cs {
                 println!("{}  {}  in {} {}", safety::iso(c.ts), c.message, c.module, c.offset);
                 match (c.seconds_in, c.last_good) {
-                    (Some(s), Some(g)) => println!("    {}m{}s into the session; changes since the last good session ({}):", s / 60, s % 60, safety::iso(g)),
+                    (Some(s), Some(g)) => {
+                        println!("    {}m{}s into the session; changes since the last good session ({}):", s / 60, s % 60, safety::iso(g))
+                    }
                     (Some(s), None) => println!("    {}m{}s into the session (no earlier clean session recorded)", s / 60, s % 60),
                     _ => println!("    before cpmm started recording sessions"),
                 }
@@ -976,11 +1076,20 @@ fn real_main() -> Result<()> {
         }
         Cmd::Patch => {
             let p = safety::patch_status(&paths, &st, Some(&nexus(&paths)));
-            println!("game build {} (last updated {})", p.build_id, if p.patched_at > 0 { safety::iso(p.patched_at) } else { "unknown".into() });
+            println!(
+                "game build {} (last updated {})",
+                p.build_id,
+                if p.patched_at > 0 { safety::iso(p.patched_at) } else { "unknown".into() }
+            );
             if p.patch_detected {
                 println!("the game updated since cpmm last saw it (was build {})", p.previous_build.unwrap_or_default());
                 for f in &p.at_risk {
-                    println!("  {:<30} {}{}", f.name, if f.released_since_patch { "" } else { "no release since the patch" }, if f.update_available { " - update available" } else { "" });
+                    println!(
+                        "  {:<30} {}{}",
+                        f.name,
+                        if f.released_since_patch { "" } else { "no release since the patch" },
+                        if f.update_available { " - update available" } else { "" }
+                    );
                 }
             } else {
                 println!("no game update since cpmm started tracking");
@@ -1024,7 +1133,13 @@ fn real_main() -> Result<()> {
         Cmd::Clean { dry_run } => {
             let mut total = 0u64;
             for d in [paths.trash(), paths.tmp(), paths.downloads()] {
-                let size: u64 = walkdir::WalkDir::new(&d).into_iter().flatten().filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).sum();
+                let size: u64 = walkdir::WalkDir::new(&d)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.metadata().ok())
+                    .filter(|m| m.is_file())
+                    .map(|m| m.len())
+                    .sum();
                 total += size;
                 if !dry_run && d.exists() {
                     fs::remove_dir_all(&d)?;
@@ -1077,7 +1192,14 @@ fn profile(paths: &Paths, st: &mut State, action: ProfileCmd) -> Result<()> {
         }
         ProfileCmd::Create { name, from, empty, own_saves, copy_saves, switch } => {
             let name = st.create_profile(&name, from.as_deref(), empty)?;
-            println!("created profile {name:?} ({})", if empty { "empty: every mod disabled".to_string() } else { format!("copy of {:?}", from.unwrap_or(st.active_profile.clone())) });
+            println!(
+                "created profile {name:?} ({})",
+                if empty {
+                    "empty: every mod disabled".to_string()
+                } else {
+                    format!("copy of {:?}", from.unwrap_or(st.active_profile.clone()))
+                }
+            );
             if own_saves {
                 set_profile_saves(paths, st, &name, true, copy_saves)?;
             }
@@ -1100,7 +1222,7 @@ fn profile(paths: &Paths, st: &mut State, action: ProfileCmd) -> Result<()> {
             if !new.is_empty() {
                 println!("{} mod(s) new to this profile, added disabled: {}", new.len(), new.join(", "));
             }
-            safety::journal(paths, "profile", &[p.name.clone()], &format!("from {from}"));
+            safety::journal(paths, "profile", std::slice::from_ref(&p.name), &format!("from {from}"));
             println!("takes effect at the next launch; `cpmm deps` / `cpmm doctor` check this list");
         }
         ProfileCmd::Rename { old, new } => {
@@ -1134,7 +1256,10 @@ fn set_profile_saves(paths: &Paths, st: &mut State, name: &str, own: bool, copy:
     let dir = st.set_own_saves(paths, &name, own)?;
     if !own {
         let n = profiles::count_saves(&dir);
-        println!("{name:?} now uses the game's shared saves{}", if n > 0 { format!(" (its {n} own saves stay in {})", dir.display()) } else { String::new() });
+        println!(
+            "{name:?} now uses the game's shared saves{}",
+            if n > 0 { format!(" (its {n} own saves stay in {})", dir.display()) } else { String::new() }
+        );
         return Ok(());
     }
     let have = profiles::count_saves(&dir);
@@ -1198,7 +1323,7 @@ fn list(paths: &Paths, st: &State, long: bool) -> Result<()> {
     if st.profiles.len() > 1 {
         println!("profile: {} (cpmm profile list)", st.active_profile);
     }
-    println!("{:>3} {:<3} {:<34} {:<12} {:>6}  {}", "#", "on", "id", "version", "nexus", "name");
+    println!("{:>3} {:<3} {:<34} {:<12} {:>6}  name", "#", "on", "id", "version", "nexus");
     for (i, m) in st.mods.iter().enumerate() {
         let nid = m.nexus.as_ref().map(|n| n.mod_id.to_string()).unwrap_or("-".into());
         let extra = match &owners {
@@ -1206,11 +1331,25 @@ fn list(paths: &Paths, st: &State, long: bool) -> Result<()> {
                 let mine: Vec<&Vec<String>> = o.values().map(|(_, v)| v).filter(|v| v.contains(&m.id)).collect();
                 let lost = mine.iter().filter(|v| v.last() != Some(&m.id)).count();
                 let won = mine.iter().filter(|v| v.len() > 1 && v.last() == Some(&m.id)).count();
-                format!("  [{} files{}{}]", files::list_tree(&paths.mod_files(&m.id)).len(), if won > 0 { format!(", wins {won}") } else { "".into() }, if lost > 0 { format!(", loses {lost}") } else { "".into() })
+                format!(
+                    "  [{} files{}{}]",
+                    files::list_tree(&paths.mod_files(&m.id)).len(),
+                    if won > 0 { format!(", wins {won}") } else { "".into() },
+                    if lost > 0 { format!(", loses {lost}") } else { "".into() }
+                )
             }
             None => String::new(),
         };
-        println!("{:>3} {:<3} {:<34} {:<12} {:>6}  {}{}", i + 1, if m.enabled { "x" } else { "" }, m.id, m.version.chars().take(12).collect::<String>(), nid, m.name, extra);
+        println!(
+            "{:>3} {:<3} {:<34} {:<12} {:>6}  {}{}",
+            i + 1,
+            if m.enabled { "x" } else { "" },
+            m.id,
+            m.version.chars().take(12).collect::<String>(),
+            nid,
+            m.name,
+            extra
+        );
     }
     let mio = modio_mods(paths);
     if !mio.is_empty() {
@@ -1226,11 +1365,21 @@ fn info(paths: &Paths, st: &State, key: &str) -> Result<()> {
     let m = &st.mods[st.get(key)?];
     println!("{}  ({})\n  enabled: {}\n  version: {}\n  installed: {}", m.name, m.id, m.enabled, m.version, m.installed_at);
     if let Some(n) = &m.nexus {
-        println!("  nexus: https://www.nexusmods.com/cyberpunk2077/mods/{}  file {:?} (id {}, version id {}, uploaded {})", n.mod_id, n.file_name, n.file_id, n.version_id, n.uploaded_at);
+        println!(
+            "  nexus: https://www.nexusmods.com/cyberpunk2077/mods/{}  file {:?} (id {}, version id {}, uploaded {})",
+            n.mod_id, n.file_name, n.file_id, n.version_id, n.uploaded_at
+        );
     }
     for r in &m.requires {
         let have = st.by_nexus(r.mod_id).map(|x| if x.enabled { "ok" } else { "DISABLED" }).unwrap_or("MISSING");
-        println!("  requires {} {} [{}]{}{}", r.mod_id, r.name, have, if r.optional { " (optional)" } else { "" }, if r.notes.is_empty() { String::new() } else { format!(" — {}", r.notes) });
+        println!(
+            "  requires {} {} [{}]{}{}",
+            r.mod_id,
+            r.name,
+            have,
+            if r.optional { " (optional)" } else { "" },
+            if r.notes.is_empty() { String::new() } else { format!(" — {}", r.notes) }
+        );
     }
     let hid = files::list_tree(&paths.mods().join(&m.id).join("hidden"));
     if !hid.is_empty() {
@@ -1255,7 +1404,12 @@ fn set_enabled(paths: &Paths, st: &mut State, keys: &[String], on: bool) -> Resu
         println!("{} {}", if on { "enabled" } else { "disabled" }, st.mods[i].id);
         if !on {
             if let Some(nid) = st.mods[i].nexus.as_ref().map(|n| n.mod_id) {
-                let users: Vec<&str> = st.mods.iter().filter(|m| m.enabled && m.requires.iter().any(|r| r.mod_id == nid && !r.optional)).map(|m| m.id.as_str()).collect();
+                let users: Vec<&str> = st
+                    .mods
+                    .iter()
+                    .filter(|m| m.enabled && m.requires.iter().any(|r| r.mod_id == nid && !r.optional))
+                    .map(|m| m.id.as_str())
+                    .collect();
                 if !users.is_empty() {
                     eprintln!("  warning: still required by {}", users.join(", "));
                 }
@@ -1282,10 +1436,10 @@ fn show_conflicts(paths: &Paths, st: &State, only: Option<&str>, hash: bool, bas
     let mut same = 0;
     println!("== file overwrites (last listed wins)");
     for c in &fc {
-        if let Some(o) = &only {
-            if !c.mods.contains(o) {
-                continue;
-            }
+        if let Some(o) = &only
+            && !c.mods.contains(o)
+        {
+            continue;
         }
         if c.mods.len() > 1 {
             if c.identical {
@@ -1297,7 +1451,8 @@ fn show_conflicts(paths: &Paths, st: &State, only: Option<&str>, hash: bool, bas
         }
     }
     println!("  {real} differing, {same} identical copies (harmless)");
-    let based: Vec<&conflicts::FileConflict> = fc.iter().filter(|c| c.overrides_base && only.as_ref().is_none_or(|o| c.mods.contains(o))).collect();
+    let based: Vec<&conflicts::FileConflict> =
+        fc.iter().filter(|c| c.overrides_base && only.as_ref().is_none_or(|o| c.mods.contains(o))).collect();
     if base {
         println!("== overriding base-game files");
         for c in &based {
@@ -1310,10 +1465,10 @@ fn show_conflicts(paths: &Paths, st: &State, only: Option<&str>, hash: bool, bas
     let sc = conflicts::redscript_conflicts(paths, &st.mods, &unmanaged_reds(paths, st));
     let mut n = 0;
     for c in sc {
-        if let Some(o) = &only {
-            if !c.mods.iter().any(|m| m.ends_with(o.as_str())) {
-                continue;
-            }
+        if let Some(o) = &only
+            && !c.mods.iter().any(|m| m.ends_with(o.as_str()))
+        {
+            continue;
         }
         n += 1;
         println!("  {} {}: {}", c.kind, c.target, c.mods.join(", "));
@@ -1371,7 +1526,10 @@ fn pick_file(nx: &Nexus, info: &nexus::ModInfo, sel: Option<&str>) -> Result<nex
             return Ok(v);
         }
         let ls = s.to_lowercase();
-        let hits: Vec<&nexus::Version> = cands.iter().filter(|c| c.file.id == s || c.file.name.to_lowercase().contains(&ls) || c.name.to_lowercase().contains(&ls)).collect();
+        let hits: Vec<&nexus::Version> = cands
+            .iter()
+            .filter(|c| c.file.id == s || c.file.name.to_lowercase().contains(&ls) || c.name.to_lowercase().contains(&ls))
+            .collect();
         if hits.len() == 1 {
             return Ok(hits[0].clone());
         }
@@ -1382,32 +1540,53 @@ fn pick_file(nx: &Nexus, info: &nexus::ModInfo, sel: Option<&str>) -> Result<nex
     if mains.len() == 1 {
         return Ok(mains[0].clone());
     }
-    if let Some(p) = cands.iter().find(|c| c.id == primary) {
-        if mains.is_empty() || mains.iter().any(|m| m.id == p.id) {
-            return Ok(p.clone());
-        }
+    if let Some(p) = cands.iter().find(|c| c.id == primary)
+        && (mains.is_empty() || mains.iter().any(|m| m.id == p.id))
+    {
+        return Ok(p.clone());
     }
     let mut msg = format!("{} has several files; choose one with --file <gsid>:\n", info.name);
     for c in &cands {
-        msg += &format!("  {:>7}  {:<9} v{:<10} {}  {}\n", c.game_scoped_id, c.category, c.version, &c.uploaded_at.get(..10).unwrap_or(""), c.file.name);
+        msg += &format!(
+            "  {:>7}  {:<9} v{:<10} {}  {}\n",
+            c.game_scoped_id,
+            c.category,
+            c.version,
+            c.uploaded_at.get(..10).unwrap_or(""),
+            c.file.name
+        );
     }
     bail!(msg)
 }
 
 fn to_reqs(rs: &[nexus::Req]) -> Vec<Requirement> {
-    rs.iter().filter(|r| !r.external && r.mod_id != 0).map(|r| Requirement { mod_id: r.mod_id, name: r.name.clone(), notes: r.notes.clone(), optional: r.optional() }).collect()
+    rs.iter()
+        .filter(|r| !r.external && r.mod_id != 0)
+        .map(|r| Requirement { mod_id: r.mod_id, name: r.name.clone(), notes: r.notes.clone(), optional: r.optional() })
+        .collect()
 }
 
 /// Everything a Nexus mod requires: its mod page's list (GraphQL) plus the file-level
 /// dependencies of the installed file version (v3), if known. Returns the external
 /// (non-Nexus) requirements for display, and the list to store on the mod.
-fn fetch_requirements(nx: &Nexus, gid: u64, version_id: &str, force_page: bool, force_files: bool) -> Result<(Vec<nexus::Req>, Vec<Requirement>)> {
+fn fetch_requirements(
+    nx: &Nexus,
+    gid: u64,
+    version_id: &str,
+    force_page: bool,
+    force_files: bool,
+) -> Result<(Vec<nexus::Req>, Vec<Requirement>)> {
     let reqs = nx.requirements(&[gid], force_page)?.into_iter().next().map(|x| x.2).unwrap_or_default();
     let mut stored = to_reqs(&reqs);
     if !version_id.is_empty() {
         for (dgid, dname, minv) in nx.file_deps(version_id, force_files).unwrap_or_default() {
             if dgid != 0 && dgid != gid && !stored.iter().any(|r| r.mod_id == dgid) {
-                stored.push(Requirement { mod_id: dgid, name: dname, notes: format!("file dependency, min version {minv}"), optional: false });
+                stored.push(Requirement {
+                    mod_id: dgid,
+                    name: dname,
+                    notes: format!("file dependency, min version {minv}"),
+                    optional: false,
+                });
             }
         }
     }
@@ -1422,7 +1601,17 @@ fn req_notes(r: &Requirement) -> String {
 /// (--with-deps), refused (default), or, with --ignore-deps (updates), reported with the fix.
 /// Requirements the user chose to do without for this mod (`ignored`) are skipped.
 #[allow(clippy::too_many_arguments)]
-fn resolve_requirements(paths: &Paths, st: &mut State, nx: &Nexus, label: &str, stored: &[Requirement], ignored: &[u64], o: &InstallOpts, depth: usize, visiting: &mut BTreeSet<u64>) -> Result<()> {
+fn resolve_requirements(
+    paths: &Paths,
+    st: &mut State,
+    nx: &Nexus,
+    label: &str,
+    stored: &[Requirement],
+    ignored: &[u64],
+    o: &InstallOpts,
+    depth: usize,
+    visiting: &mut BTreeSet<u64>,
+) -> Result<()> {
     let ind = "  ".repeat(depth);
     let mut missing = vec![];
     for r in stored {
@@ -1462,7 +1651,15 @@ fn resolve_requirements(paths: &Paths, st: &mut State, nx: &Nexus, label: &str, 
     Ok(())
 }
 
-fn install_nexus(paths: &Paths, st: &mut State, nx: &Nexus, gid: u64, o: &InstallOpts, depth: usize, visiting: &mut BTreeSet<u64>) -> Result<()> {
+fn install_nexus(
+    paths: &Paths,
+    st: &mut State,
+    nx: &Nexus,
+    gid: u64,
+    o: &InstallOpts,
+    depth: usize,
+    visiting: &mut BTreeSet<u64>,
+) -> Result<()> {
     if !visiting.insert(gid) {
         return Ok(());
     }
@@ -1492,7 +1689,8 @@ fn install_nexus(paths: &Paths, st: &mut State, nx: &Nexus, gid: u64, o: &Instal
             return Ok(());
         }
     }
-    let id = if depth == 0 { o.id.clone() } else { None }.or(existing.clone()).unwrap_or_else(|| st.unique_id(&slugify(short_name(&info.name))));
+    let id =
+        if depth == 0 { o.id.clone() } else { None }.or(existing.clone()).unwrap_or_else(|| st.unique_id(&slugify(short_name(&info.name))));
     let manifest_url = ver.manifest_url.clone().context("version has no manifest")?;
     let man = nx.manifest(&manifest_url)?;
     paths.ensure_dirs()?;
@@ -1559,7 +1757,11 @@ fn install_nexus(paths: &Paths, st: &mut State, nx: &Nexus, gid: u64, o: &Instal
                 notes: String::new(),
             });
             safety::journal(paths, "install", std::slice::from_ref(&id), &ver.version);
-            println!("{ind}  installed {id}: {} files{}", staged.len(), if plan.skipped.is_empty() { String::new() } else { format!(" ({} docs skipped)", plan.skipped.len()) });
+            println!(
+                "{ind}  installed {id}: {} files{}",
+                staged.len(),
+                if plan.skipped.is_empty() { String::new() } else { format!(" ({} docs skipped)", plan.skipped.len()) }
+            );
         }
     }
     let rh = manage::reapply_hidden(paths, st, &id)?;
@@ -1573,7 +1775,8 @@ fn install_nexus(paths: &Paths, st: &mut State, nx: &Nexus, gid: u64, o: &Instal
 
 fn report_new_conflicts(paths: &Paths, st: &State, id: &str, ind: &str) {
     let fc = conflicts::file_conflicts(paths, &st.mods, true);
-    let mine: Vec<&conflicts::FileConflict> = fc.iter().filter(|c| c.mods.len() > 1 && !c.identical && c.mods.iter().any(|m| m == id)).collect();
+    let mine: Vec<&conflicts::FileConflict> =
+        fc.iter().filter(|c| c.mods.len() > 1 && !c.identical && c.mods.iter().any(|m| m == id)).collect();
     for c in mine.iter().take(15) {
         println!("{ind}  conflict: {}  {}", c.path, c.mods.join(" < "));
     }
@@ -1591,7 +1794,11 @@ fn report_new_conflicts(paths: &Paths, st: &State, id: &str, ind: &str) {
 fn install_local(paths: &Paths, st: &mut State, arc: &std::path::Path, nid: Option<u64>, o: &InstallOpts) -> Result<()> {
     let stem = arc.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("mod".into());
     let name = o.name.clone().unwrap_or(stem.clone());
-    let existing = o.id.clone().map(|i| slugify(&i)).filter(|i| st.find(i).is_some()).or_else(|| nid.and_then(|g| st.by_nexus(g)).map(|m| m.id.clone()));
+    let existing =
+        o.id.clone()
+            .map(|i| slugify(&i))
+            .filter(|i| st.find(i).is_some())
+            .or_else(|| nid.and_then(|g| st.by_nexus(g)).map(|m| m.id.clone()));
     let id = existing.clone().unwrap_or_else(|| o.id.clone().map(|i| slugify(&i)).unwrap_or_else(|| st.unique_id(&slugify(&name))));
     // Tagged with a Nexus mod: check its requirements before anything is staged.
     let mut checked = None;
@@ -1690,14 +1897,24 @@ fn check_updates(paths: &Paths, st: &State, refresh: bool) -> Vec<UpdateStatus> 
                                 }
                                 let vs = nx.versions(&n.file_id)?;
                                 let Some(newest) = vs.first() else { return Ok(("no versions".into(), None)) };
-                                let ours = vs.iter().find(|v| v.id == n.version_id || (n.version_id.is_empty() && v.uploaded_at == n.uploaded_at));
+                                let ours =
+                                    vs.iter().find(|v| v.id == n.version_id || (n.version_id.is_empty() && v.uploaded_at == n.uploaded_at));
                                 if ours.is_some_and(|o| o.id == newest.id) {
                                     if newest.category == "archived" {
-                                        return Ok((format!("file archived by author; page version {} — check `cpmm install {} --file`", info.version, n.mod_id), None));
+                                        return Ok((
+                                            format!(
+                                                "file archived by author; page version {} — check `cpmm install {} --file`",
+                                                info.version, n.mod_id
+                                            ),
+                                            None,
+                                        ));
                                     }
                                     return Ok(("up to date".into(), None));
                                 }
-                                Ok((format!("UPDATE {} -> {} ({})", m.version, newest.version, newest.uploaded_at.get(..10).unwrap_or("")), Some(newest.clone())))
+                                Ok((
+                                    format!("UPDATE {} -> {} ({})", m.version, newest.version, newest.uploaded_at.get(..10).unwrap_or("")),
+                                    Some(newest.clone()),
+                                ))
                             })();
                             match r {
                                 Ok((s, v)) => UpdateStatus { id: m.id.clone(), status: s, newer: v },
@@ -1725,7 +1942,11 @@ fn updates(paths: &Paths, st: &State, refresh: bool) -> Result<()> {
         }
     }
     let manual = st.mods.iter().filter(|m| m.nexus.is_none()).count();
-    println!("{} checked, {n} updates, {} up to date, {manual} manual mods not checked", res.len(), res.iter().filter(|u| u.status == "up to date").count());
+    println!(
+        "{} checked, {n} updates, {} up to date, {manual} manual mods not checked",
+        res.len(),
+        res.iter().filter(|u| u.status == "up to date").count()
+    );
     Ok(())
 }
 
@@ -1769,7 +1990,18 @@ fn update(paths: &Paths, st: &mut State, keys: &[String], all: bool) -> Result<(
             continue;
         }
         let newest = nx.versions(&n.file_id)?.into_iter().next().context("no versions")?;
-        let o = InstallOpts { file: Some(newest.game_scoped_id.clone()), id: Some(id.clone()), name: None, root: None, dest: None, with_deps: false, ignore_deps: true, disabled: false, keep_archive: false, nxm: None };
+        let o = InstallOpts {
+            file: Some(newest.game_scoped_id.clone()),
+            id: Some(id.clone()),
+            name: None,
+            root: None,
+            dest: None,
+            with_deps: false,
+            ignore_deps: true,
+            disabled: false,
+            keep_archive: false,
+            nxm: None,
+        };
         let mut visiting = BTreeSet::new();
         if let Err(e) = install_nexus(paths, st, &nx, n.mod_id, &o, 0, &mut visiting) {
             println!("{id}: {e:#}");
@@ -1795,11 +2027,11 @@ fn deps(paths: &Paths, st: &mut State, refresh: bool) -> Result<()> {
     // Requirements stored before check stamps existed were fetched at install: keep them.
     let mut migrated = false;
     for m in st.mods.iter_mut() {
-        if let (None, Some(n)) = (&m.reqs_checked, &m.nexus) {
-            if !m.requires.is_empty() {
-                m.reqs_checked = Some(ReqCheck { at: m.installed_at.clone(), version_id: n.version_id.clone() });
-                migrated = true;
-            }
+        if let (None, Some(n)) = (&m.reqs_checked, &m.nexus)
+            && !m.requires.is_empty()
+        {
+            m.reqs_checked = Some(ReqCheck { at: m.installed_at.clone(), version_id: n.version_id.clone() });
+            migrated = true;
         }
     }
     let stale = stale_requirements(st, refresh);
@@ -1844,7 +2076,13 @@ fn deps(paths: &Paths, st: &mut State, refresh: bool) -> Result<()> {
                 println!("  {:<34} optional {} {} {s}", m.id, r.mod_id, r.name);
             } else {
                 problems += 1;
-                println!("  {:<34} requires {} {} {s}{}", m.id, r.mod_id, r.name, if r.notes.is_empty() { String::new() } else { format!(" — {}", r.notes) });
+                println!(
+                    "  {:<34} requires {} {} {s}{}",
+                    m.id,
+                    r.mod_id,
+                    r.name,
+                    if r.notes.is_empty() { String::new() } else { format!(" — {}", r.notes) }
+                );
             }
         }
     }
@@ -1877,7 +2115,18 @@ fn deps_fix(paths: &Paths, st: &mut State) -> Result<()> {
     if !missing.is_empty() {
         manage::ensure_idle(paths)?;
         let nx = nexus(paths);
-        let o = InstallOpts { file: None, id: None, name: None, root: None, dest: None, with_deps: true, ignore_deps: false, disabled: false, keep_archive: false, nxm: None };
+        let o = InstallOpts {
+            file: None,
+            id: None,
+            name: None,
+            root: None,
+            dest: None,
+            with_deps: true,
+            ignore_deps: false,
+            disabled: false,
+            keep_archive: false,
+            nxm: None,
+        };
         let mut visiting = BTreeSet::new();
         for gid in missing {
             if let Err(e) = install_nexus(paths, st, &nx, gid, &o, 0, &mut visiting) {
@@ -1890,7 +2139,8 @@ fn deps_fix(paths: &Paths, st: &mut State) -> Result<()> {
 
 fn verify(paths: &Paths, st: &State, keys: &[String]) -> Result<()> {
     let nx = nexus(paths);
-    let sel: Vec<usize> = if keys.is_empty() { (0..st.mods.len()).collect() } else { keys.iter().map(|k| st.get(k)).collect::<Result<_>>()? };
+    let sel: Vec<usize> =
+        if keys.is_empty() { (0..st.mods.len()).collect() } else { keys.iter().map(|k| st.get(k)).collect::<Result<_>>()? };
     for i in sel {
         let m = &st.mods[i];
         let Some(url) = m.nexus.as_ref().map(|n| n.manifest_url.clone()).filter(|u| !u.is_empty()) else {
@@ -1898,14 +2148,19 @@ fn verify(paths: &Paths, st: &State, keys: &[String]) -> Result<()> {
             continue;
         };
         let man = nx.manifest(&url)?;
-        let by_suffix: Vec<(String, String)> = man.files.iter().map(|f| (f.file_path.to_lowercase(), f.file_hashes.sha256.clone())).collect();
+        let by_suffix: Vec<(String, String)> =
+            man.files.iter().map(|f| (f.file_path.to_lowercase(), f.file_hashes.sha256.clone())).collect();
         let root = paths.mod_files(&m.id);
         let (mut ok, mut modified, mut extra) = (0, vec![], 0);
         for f in files::list_tree(&root) {
             let lf = f.to_lowercase();
             match by_suffix.iter().find(|(p, _)| *p == lf || p.ends_with(&format!("/{lf}")) || lf.ends_with(&format!("/{p}"))) {
                 Some((_, h)) => {
-                    if files::sha256_file(&root.join(&f))? == *h { ok += 1 } else { modified.push(f) }
+                    if files::sha256_file(&root.join(&f))? == *h {
+                        ok += 1
+                    } else {
+                        modified.push(f)
+                    }
                 }
                 None => extra += 1,
             }
@@ -1945,7 +2200,11 @@ fn unmanaged(paths: &Paths, st: &State, modified: bool, flat: bool) -> Result<()
         if owned.contains(&lf) || vanilla::protected_prefix(&lf) {
             continue;
         }
-        let key: String = f.split('/').take(if lf.starts_with("bin/x64/plugins/cyber_engine_tweaks/mods/") { 6 } else { 3 }).collect::<Vec<_>>().join("/");
+        let key: String = f
+            .split('/')
+            .take(if lf.starts_with("bin/x64/plugins/cyber_engine_tweaks/mods/") { 6 } else { 3 })
+            .collect::<Vec<_>>()
+            .join("/");
         groups.entry(key).or_default().push(f);
     }
     println!("== unmanaged non-vanilla files{}", if flat { "" } else { " (by folder)" });
@@ -2000,7 +2259,7 @@ fn eject(paths: &Paths, st: &State, apply: bool) -> Result<()> {
     }
     let own = conflicts::ownership(paths, &st.mods, true);
     let mut n = 0;
-    for (_, (rel, owners)) in &own {
+    for (rel, owners) in own.values() {
         let winner = owners.last().unwrap();
         if apply {
             let dst = paths.game.join(rel);
@@ -2024,7 +2283,12 @@ fn eject(paths: &Paths, st: &State, apply: bool) -> Result<()> {
             }
         }
     }
-    println!("{} {n} mod files and {} overwrite files into {}", if apply { "copied" } else { "would copy" }, up.len(), paths.game.display());
+    println!(
+        "{} {n} mod files and {} overwrite files into {}",
+        if apply { "copied" } else { "would copy" },
+        up.len(),
+        paths.game.display()
+    );
     if apply {
         println!("game dir is now a classic manual install; remove `cpmm run --` from the launch options to keep it that way");
     }

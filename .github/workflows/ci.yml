@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cli:
+    name: CLI (fmt, clippy, tests, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: ./scripts/ci-deps.sh
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cli-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --locked
+      - name: Release build
+        run: cargo build --release --locked
+
+  gui:
+    name: GUI (Biome, typecheck, build, clippy)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Biome (format + lint)
+        run: npx biome ci .
+      - name: Typecheck
+        run: npx tsc -b
+      - name: Frontend build
+        run: npx vite build
+      - name: System deps + toolchain
+        run: ../scripts/ci-deps.sh gui
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            gui/src-tauri/target
+          key: gui-${{ runner.os }}-${{ hashFiles('gui/src-tauri/Cargo.lock') }}
+      - name: Tauri backend fmt + clippy
+        working-directory: gui/src-tauri
+        run: |
+          cargo fmt --check
+          cargo clippy --locked -- -D warnings

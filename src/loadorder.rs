@@ -13,8 +13,8 @@ use crate::state::{Paths, State};
 use anyhow::Result;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 use std::fs;
 use std::path::PathBuf;
 
@@ -75,7 +75,11 @@ pub fn collect(paths: &Paths, st: &State) -> Vec<Arc> {
             let name = names.get(&id).cloned().unwrap_or(id.clone());
             for f in files::list_tree(&d.path()) {
                 if f.to_lowercase().ends_with(".archive") {
-                    out.push(Arc { owner: Owner::Modio(name.clone()), name: f.rsplit('/').next().unwrap_or(&f).to_string(), path: d.path().join(&f) });
+                    out.push(Arc {
+                        owner: Owner::Modio(name.clone()),
+                        name: f.rsplit('/').next().unwrap_or(&f).to_string(),
+                        path: d.path().join(&f),
+                    });
                 }
             }
         }
@@ -147,7 +151,17 @@ pub fn archive_conflicts(paths: &Paths, st: &State, order: &[String]) -> Vec<Pai
                 _ => false,
             };
             let smaller = idx[a].as_ref().map_or(0, |i| i.entries.len()).min(idx[b].as_ref().map_or(0, |i| i.entries.len()));
-            Pair { a: oa.clone(), b: ob.clone(), archive_a: arcs[a].name.clone(), archive_b: arcs[b].name.clone(), shared, identical, smaller, related, winner }
+            Pair {
+                a: oa.clone(),
+                b: ob.clone(),
+                archive_a: arcs[a].name.clone(),
+                archive_b: arcs[b].name.clone(),
+                shared,
+                identical,
+                smaller,
+                related,
+                winner,
+            }
         })
         .collect()
 }
@@ -159,19 +173,22 @@ fn related_pairs(st: &State) -> BTreeSet<(String, String)> {
     // (imported without a file id, or optional files) depend on it.
     for a in &st.mods {
         for b in &st.mods {
-            if let (Some(na), Some(nb)) = (&a.nexus, &b.nexus) {
-                if a.id != b.id && na.mod_id == nb.mod_id && na.file_id.is_empty() && !nb.file_id.is_empty() {
-                    s.insert((a.id.clone(), b.id.clone()));
-                }
+            if let (Some(na), Some(nb)) = (&a.nexus, &b.nexus)
+                && a.id != b.id
+                && na.mod_id == nb.mod_id
+                && na.file_id.is_empty()
+                && !nb.file_id.is_empty()
+            {
+                s.insert((a.id.clone(), b.id.clone()));
             }
         }
     }
     for m in &st.mods {
         for r in &m.requires {
-            if let Some(d) = st.by_nexus(r.mod_id) {
-                if d.id != m.id {
-                    s.insert((m.id.clone(), d.id.clone()));
-                }
+            if let Some(d) = st.by_nexus(r.mod_id)
+                && d.id != m.id
+            {
+                s.insert((m.id.clone(), d.id.clone()));
             }
         }
     }
@@ -212,10 +229,10 @@ pub fn plan(paths: &Paths, st: &State) -> SortPlan {
     let pairs = archive_conflicts(paths, st, &ids);
     let mut overlaps: BTreeSet<(String, String)> = BTreeSet::new();
     for p in &pairs {
-        if let (Owner::Mod(a), Owner::Mod(b)) = (&p.a, &p.b) {
-            if p.identical < p.shared {
-                overlaps.insert((a.clone(), b.clone()));
-            }
+        if let (Owner::Mod(a), Owner::Mod(b)) = (&p.a, &p.b)
+            && p.identical < p.shared
+        {
+            overlaps.insert((a.clone(), b.clone()));
         }
     }
     for c in conflicts::file_conflicts(paths, &st.mods, true).into_iter().filter(|c| !c.identical && c.mods.len() >= 2) {
@@ -225,32 +242,54 @@ pub fn plan(paths: &Paths, st: &State) -> SortPlan {
             }
         }
     }
-    let overlap = |a: &str, b: &str| overlaps.contains(&(a.to_string(), b.to_string())) || overlaps.contains(&(b.to_string(), a.to_string()));
+    let overlap =
+        |a: &str, b: &str| overlaps.contains(&(a.to_string(), b.to_string())) || overlaps.contains(&(b.to_string(), a.to_string()));
     let mut edges: Vec<Edge> = vec![];
     for (m, d) in related_pairs(st) {
         if !overlap(&m, &d) {
             continue;
         }
         let opt = st.mods[at[m.as_str()]].requires.iter().any(|r| st.by_nexus(r.mod_id).is_some_and(|x| x.id == d) && r.optional);
-        edges.push(Edge { before: d.clone(), after: m.clone(), why: format!("{m} {} {d} and overrides some of its files", if opt { "optionally uses" } else { "requires" }), strength: "requirement" });
+        edges.push(Edge {
+            before: d.clone(),
+            after: m.clone(),
+            why: format!("{m} {} {d} and overrides some of its files", if opt { "optionally uses" } else { "requires" }),
+            strength: "requirement",
+        });
     }
     for r in &st.rules {
         if at.contains_key(r.r#mod.as_str()) && at.contains_key(r.after.as_str()) {
-            edges.push(Edge { before: r.after.clone(), after: r.r#mod.clone(), why: format!("your rule: {} after {}", r.r#mod, r.after), strength: "rule" });
+            edges.push(Edge {
+                before: r.after.clone(),
+                after: r.r#mod.clone(),
+                why: format!("your rule: {} after {}", r.r#mod, r.after),
+                strength: "rule",
+            });
         }
     }
     // Heuristic: a "patch/fix/compat/addon" mod that really overrides another mod's
     // resources or files should win over it.
     let patchy = Regex::new(r"(?i)\b(patch|patches|fix|fixes|compat|compatibility|add-?on|override|overhaul for)\b").unwrap();
-    let constrained: BTreeSet<(String, String)> = edges.iter().flat_map(|e| [(e.before.clone(), e.after.clone()), (e.after.clone(), e.before.clone())]).collect();
+    let constrained: BTreeSet<(String, String)> =
+        edges.iter().flat_map(|e| [(e.before.clone(), e.after.clone()), (e.after.clone(), e.before.clone())]).collect();
     for (a, b) in &overlaps {
         if constrained.contains(&(a.clone(), b.clone())) {
             continue;
         }
         let (na, nb) = (&st.mods[at[a.as_str()]].name, &st.mods[at[b.as_str()]].name);
         match (patchy.is_match(na), patchy.is_match(nb)) {
-            (true, false) => edges.push(Edge { before: b.clone(), after: a.clone(), why: format!("{na} looks like a patch and overrides {nb}"), strength: "heuristic" }),
-            (false, true) => edges.push(Edge { before: a.clone(), after: b.clone(), why: format!("{nb} looks like a patch and overrides {na}"), strength: "heuristic" }),
+            (true, false) => edges.push(Edge {
+                before: b.clone(),
+                after: a.clone(),
+                why: format!("{na} looks like a patch and overrides {nb}"),
+                strength: "heuristic",
+            }),
+            (false, true) => edges.push(Edge {
+                before: a.clone(),
+                after: b.clone(),
+                why: format!("{nb} looks like a patch and overrides {na}"),
+                strength: "heuristic",
+            }),
             _ => {}
         }
     }
@@ -296,7 +335,11 @@ pub fn plan(paths: &Paths, st: &State) -> SortPlan {
             id: id.clone(),
             from: i + 1,
             to: newpos[id.as_str()] + 1,
-            because: edges.iter().filter(|e| (e.after == *id || e.before == *id) && at[e.before.as_str()] > at[e.after.as_str()]).map(|e| e.why.clone()).collect(),
+            because: edges
+                .iter()
+                .filter(|e| (e.after == *id || e.before == *id) && at[e.before.as_str()] > at[e.after.as_str()])
+                .map(|e| e.why.clone())
+                .collect(),
         })
         .filter(|m| !m.because.is_empty())
         .collect();
@@ -400,7 +443,11 @@ pub fn doctor(paths: &Paths, st: &State) -> Vec<Finding> {
                 None => f.push(Finding {
                     severity: "warning",
                     title: format!("{} is missing a requirement: {}", m.name, r.name),
-                    detail: if r.notes.is_empty() { "Parts of the mod may not work.".into() } else { format!("Author's note: {}", r.notes) },
+                    detail: if r.notes.is_empty() {
+                        "Parts of the mod may not work.".into()
+                    } else {
+                        format!("Author's note: {}", r.notes)
+                    },
                     fix: None,
                     actions: vec![
                         act(format!("Install {}", r.name), &["install", &rid, "--with-deps"], "primary"),
@@ -412,7 +459,10 @@ pub fn doctor(paths: &Paths, st: &State) -> Vec<Finding> {
                     title: format!("{} requires {}, which is disabled", m.name, d.name),
                     detail: String::new(),
                     fix: None,
-                    actions: vec![act(format!("Enable {}", d.name), &["enable", &d.id], "primary"), act(format!("Disable {}", m.name), &["disable", &m.id], "secondary")],
+                    actions: vec![
+                        act(format!("Enable {}", d.name), &["enable", &d.id], "primary"),
+                        act(format!("Disable {}", m.name), &["disable", &m.id], "secondary"),
+                    ],
                 }),
                 _ => {}
             }
@@ -444,19 +494,36 @@ pub fn doctor(paths: &Paths, st: &State) -> Vec<Finding> {
             f.push(Finding {
                 severity: "crash",
                 title: format!("Same mod installed twice: {la} and {lb}"),
-                detail: format!("{} and {} share {} of {} resources. Two copies of one mod double-hook the game and are a classic crash cause.", p.archive_a, p.archive_b, p.shared, p.smaller),
+                detail: format!(
+                    "{} and {} share {} of {} resources. Two copies of one mod double-hook the game and are a classic crash cause.",
+                    p.archive_a, p.archive_b, p.shared, p.smaller
+                ),
                 fix: modio.then(|| "Unsubscribe the mod.io copy in the in-game Mods menu (quit the game afterwards).".into()),
                 actions: mods.iter().map(|m| act(format!("Disable {}", name(m)), &["disable", m], "secondary")).collect(),
             });
         } else if p.identical == p.shared && p.shared == p.smaller && p.smaller > 0 {
-            f.push(Finding { severity: "perf", title: format!("{} is fully contained in {}", p.archive_a, p.archive_b), detail: format!("{la} and {lb} ship {} byte-identical resources; the duplicate costs load time and memory.", p.shared), fix: None, actions: vec![] });
+            f.push(Finding {
+                severity: "perf",
+                title: format!("{} is fully contained in {}", p.archive_a, p.archive_b),
+                detail: format!("{la} and {lb} ship {} byte-identical resources; the duplicate costs load time and memory.", p.shared),
+                fix: None,
+                actions: vec![],
+            });
         } else if differing > 0 && !p.related && !ruled(&p) {
             let minor = differing <= 2 && p.identical * 5 >= p.shared * 4;
             let winner = p.winner.clone().unwrap_or("the game's own order".into());
             let actions = if let (Owner::Mod(a), Owner::Mod(b)) = (&p.a, &p.b) {
                 vec![
-                    act(format!("{} wins", name(a)), &["rule", a, "--after", b], if p.winner.as_deref() == Some(a.as_str()) { "primary" } else { "secondary" }),
-                    act(format!("{} wins", name(b)), &["rule", b, "--after", a], if p.winner.as_deref() == Some(b.as_str()) { "primary" } else { "secondary" }),
+                    act(
+                        format!("{} wins", name(a)),
+                        &["rule", a, "--after", b],
+                        if p.winner.as_deref() == Some(a.as_str()) { "primary" } else { "secondary" },
+                    ),
+                    act(
+                        format!("{} wins", name(b)),
+                        &["rule", b, "--after", a],
+                        if p.winner.as_deref() == Some(b.as_str()) { "primary" } else { "secondary" },
+                    ),
                 ]
             } else {
                 vec![]
@@ -471,7 +538,11 @@ pub fn doctor(paths: &Paths, st: &State) -> Vec<Finding> {
         }
     }
     let own = conflicts::ownership(paths, &st.mods, true);
-    let shadow: Vec<String> = crate::manage::overwrite_entries(paths).into_iter().filter(|e| !e.whiteout && own.contains_key(&e.rel.to_lowercase()) && !e.rel.ends_with(".log")).map(|e| e.rel).collect();
+    let shadow: Vec<String> = crate::manage::overwrite_entries(paths)
+        .into_iter()
+        .filter(|e| !e.whiteout && own.contains_key(&e.rel.to_lowercase()) && !e.rel.ends_with(".log"))
+        .map(|e| e.rel)
+        .collect();
     if !shadow.is_empty() {
         let mut clear = vec!["overwrite", "clear"];
         clear.extend(shadow.iter().map(|s| s.as_str()));
@@ -488,16 +559,34 @@ pub fn doctor(paths: &Paths, st: &State) -> Vec<Finding> {
     if let Some(c) = crate::safety::crashes(paths, 1).into_iter().next() {
         // only flag the crash if it ended the latest recorded session
         if sess.last().is_some_and(|s| c.session_start == Some(s.start)) {
-            let mut actions: Vec<Action> = c.suspects.iter().filter(|m| !crate::safety::list_history(paths, m).is_empty()).take(4).map(|m| act(format!("Roll back {}", name(m)), &["rollback", m], "secondary")).collect();
-            if let Some(b) = crate::safety::batches(paths, st).into_iter().next() {
-                if c.last_good.is_some_and(|g| b.ts > g) {
-                    actions.insert(0, act("Undo the last update run", &["undo-update", &b.batch], "primary"));
-                }
+            let mut actions: Vec<Action> = c
+                .suspects
+                .iter()
+                .filter(|m| !crate::safety::list_history(paths, m).is_empty())
+                .take(4)
+                .map(|m| act(format!("Roll back {}", name(m)), &["rollback", m], "secondary"))
+                .collect();
+            if let Some(b) = crate::safety::batches(paths, st).into_iter().next()
+                && c.last_good.is_some_and(|g| b.ts > g)
+            {
+                actions.insert(0, act("Undo the last update run", &["undo-update", &b.batch], "primary"));
             }
             f.push(Finding {
                 severity: "crash",
-                title: format!("The last session crashed {} in ({} {})", c.seconds_in.map(|s| format!("{}m{}s", s / 60, s % 60)).unwrap_or_default(), c.module, c.offset),
-                detail: { let msg = c.message.trim_end_matches('.'); if c.changes.is_empty() { format!("{msg}. No mod changes since the last clean session.") } else { format!("{msg}. Changed since the last clean session: {}", c.changes.join("; ")) } },
+                title: format!(
+                    "The last session crashed {} in ({} {})",
+                    c.seconds_in.map(|s| format!("{}m{}s", s / 60, s % 60)).unwrap_or_default(),
+                    c.module,
+                    c.offset
+                ),
+                detail: {
+                    let msg = c.message.trim_end_matches('.');
+                    if c.changes.is_empty() {
+                        format!("{msg}. No mod changes since the last clean session.")
+                    } else {
+                        format!("{msg}. Changed since the last clean session: {}", c.changes.join("; "))
+                    }
+                },
                 fix: None,
                 actions,
             });
@@ -507,32 +596,62 @@ pub fn doctor(paths: &Paths, st: &State) -> Vec<Finding> {
     let new_n: usize = ed.new.values().map(|v| v.len()).sum();
     if new_n > 0 {
         let first: Vec<String> = ed.new.iter().flat_map(|(s, v)| v.iter().take(2).map(move |l| format!("[{s}] {l}"))).take(3).collect();
-        f.push(Finding { severity: "warning", title: format!("{new_n} new errors in the logs since the previous launch"), detail: first.join(" · "), fix: None, actions: vec![] });
+        f.push(Finding {
+            severity: "warning",
+            title: format!("{new_n} new errors in the logs since the previous launch"),
+            detail: first.join(" · "),
+            fix: None,
+            actions: vec![],
+        });
     }
     let nx = crate::nexus::Nexus::new(paths.api_key().ok(), &paths.cache());
     let ps = crate::safety::patch_status(paths, st, Some(&nx));
     if ps.patch_detected && ps.at_risk.iter().any(|x| !x.released_since_patch || x.update_available) {
-        let mut actions: Vec<Action> = ps.at_risk.iter().filter(|x| x.update_available).map(|x| act(format!("Update {}", x.name), &["update", &x.id], "primary")).collect();
+        let mut actions: Vec<Action> = ps
+            .at_risk
+            .iter()
+            .filter(|x| x.update_available)
+            .map(|x| act(format!("Update {}", x.name), &["update", &x.id], "primary"))
+            .collect();
         if !ps.vanilla {
             actions.push(act("Launch vanilla next time", &["vanilla", "on"], "secondary"));
         }
         f.push(Finding {
             severity: "crash",
             title: format!("Cyberpunk was updated (build {}) and {} native mods may not support it yet", ps.build_id, ps.at_risk.len()),
-            detail: ps.at_risk.iter().map(|x| format!("{}: {}", x.name, if x.update_available { "update available" } else { "no release since the patch" })).collect::<Vec<_>>().join("; "),
+            detail: ps
+                .at_risk
+                .iter()
+                .map(|x| format!("{}: {}", x.name, if x.update_available { "update available" } else { "no release since the patch" }))
+                .collect::<Vec<_>>()
+                .join("; "),
             fix: None,
             actions,
         });
     }
     if !ps.red4ext_errors.is_empty() {
-        f.push(Finding { severity: "warning", title: "RED4ext reported errors at the last launch".into(), detail: ps.red4ext_errors.iter().take(3).cloned().collect::<Vec<_>>().join(" · "), fix: None, actions: vec![] });
+        f.push(Finding {
+            severity: "warning",
+            title: "RED4ext reported errors at the last launch".into(),
+            detail: ps.red4ext_errors.iter().take(3).cloned().collect::<Vec<_>>().join(" · "),
+            fix: None,
+            actions: vec![],
+        });
     }
     for r in crate::safety::save_risks(paths, st) {
-        let actions = r.missing.iter().filter(|m| st.find(m).is_some()).map(|m| act(format!("Re-enable {}", name(m)), &["enable", m], "primary")).collect();
+        let actions = r
+            .missing
+            .iter()
+            .filter(|m| st.find(m).is_some())
+            .map(|m| act(format!("Re-enable {}", name(m)), &["enable", m], "primary"))
+            .collect();
         f.push(Finding {
             severity: "warning",
             title: format!("Save {} was made with quest mods that are now off", r.save),
-            detail: format!("{} — loading it without them can break quest progress (like Playing for Time). Re-enable them or load an earlier save.", r.missing.join(", ")),
+            detail: format!(
+                "{} — loading it without them can break quest progress (like Playing for Time). Re-enable them or load an earlier save.",
+                r.missing.join(", ")
+            ),
             fix: None,
             actions,
         });
@@ -552,9 +671,21 @@ pub fn doctor(paths: &Paths, st: &State) -> Vec<Finding> {
             .rules
             .iter()
             .filter(|r| c.contains(&r.r#mod) && c.contains(&r.after))
-            .map(|r| act(format!("Remove rule: {} after {}", name(&r.r#mod), name(&r.after)), &["rule", &r.r#mod, "--after", &r.after, "--remove"], "secondary"))
+            .map(|r| {
+                act(
+                    format!("Remove rule: {} after {}", name(&r.r#mod), name(&r.after)),
+                    &["rule", &r.r#mod, "--after", &r.after, "--remove"],
+                    "secondary",
+                )
+            })
             .collect();
-        f.push(Finding { severity: "warning", title: "Circular load order constraints".into(), detail: c.join(" → "), fix: None, actions: rules });
+        f.push(Finding {
+            severity: "warning",
+            title: "Circular load order constraints".into(),
+            detail: c.join(" → "),
+            fix: None,
+            actions: rules,
+        });
     }
     let order = |s: &str| match s {
         "crash" => 0,
@@ -564,7 +695,7 @@ pub fn doctor(paths: &Paths, st: &State) -> Vec<Finding> {
     };
     f.sort_by_key(|x| order(x.severity));
     for x in f.iter_mut() {
-        if st.acked.iter().any(|a| *a == x.title) {
+        if st.acked.contains(&x.title) {
             x.severity = "acked";
         }
     }

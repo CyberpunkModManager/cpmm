@@ -361,10 +361,10 @@ pub fn open_nexus(app: AppHandle, url: Option<String>) -> Result<(), String> {
         .map_err(|e| format!("opening the Nexus browser: {e}"))?;
     let app2 = app.clone();
     win.on_window_event(move |e| {
-        if let tauri::WindowEvent::Destroyed = e {
-            if let Some(m) = app2.get_webview_window("main") {
-                let _ = m.set_focus();
-            }
+        if let tauri::WindowEvent::Destroyed = e
+            && let Some(m) = app2.get_webview_window("main")
+        {
+            let _ = m.set_focus();
         }
     });
     #[cfg(target_os = "linux")]
@@ -400,7 +400,7 @@ mod linux {
         }
         let mut dirs: Vec<PathBuf> = ["GST_PLUGIN_PATH", "GST_PLUGIN_PATH_1_0", "GST_PLUGIN_SYSTEM_PATH", "GST_PLUGIN_SYSTEM_PATH_1_0"]
             .iter()
-            .filter_map(|v| std::env::var_os(v))
+            .filter_map(std::env::var_os)
             .flat_map(|v| std::env::split_paths(&v).collect::<Vec<_>>())
             .collect();
         dirs.extend(["/usr/lib/gstreamer-1.0", "/usr/lib64/gstreamer-1.0", "/usr/lib/x86_64-linux-gnu/gstreamer-1.0"].map(PathBuf::from));

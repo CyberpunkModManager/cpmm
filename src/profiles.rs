@@ -101,7 +101,10 @@ impl State {
         self.sync_active_profile();
         let i = self.profile_index(name)?;
         if self.profiles[i].saves_key.is_empty() {
-            let base = { let s = slugify(&self.profiles[i].name); if s.is_empty() { "profile".to_string() } else { s } };
+            let base = {
+                let s = slugify(&self.profiles[i].name);
+                if s.is_empty() { "profile".to_string() } else { s }
+            };
             let mut key = base.clone();
             let mut n = 2;
             while self.profiles.iter().any(|p| p.saves_key == key) || paths.profile_saves().join(&key).exists() {
@@ -251,7 +254,11 @@ impl State {
 
     /// Profiles (other than the active one) in which `id` is enabled.
     pub fn profiles_enabling(&self, id: &str) -> Vec<String> {
-        self.profiles.iter().filter(|p| p.name != self.active_profile && p.enabled.iter().any(|e| e == id)).map(|p| p.name.clone()).collect()
+        self.profiles
+            .iter()
+            .filter(|p| p.name != self.active_profile && p.enabled.iter().any(|e| e == id))
+            .map(|p| p.name.clone())
+            .collect()
     }
 }
 

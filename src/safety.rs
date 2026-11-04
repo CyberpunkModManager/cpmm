@@ -44,7 +44,10 @@ pub struct JEntry {
     pub detail: String,
 }
 pub fn journal(paths: &Paths, action: &str, mods: &[String], detail: &str) {
-    let _ = append_jsonl(&paths.data.join("journal.jsonl"), &JEntry { ts: now_unix(), action: action.into(), mods: mods.to_vec(), detail: detail.into() });
+    let _ = append_jsonl(
+        &paths.data.join("journal.jsonl"),
+        &JEntry { ts: now_unix(), action: action.into(), mods: mods.to_vec(), detail: detail.into() },
+    );
 }
 pub fn read_journal(paths: &Paths) -> Vec<JEntry> {
     read_jsonl(&paths.data.join("journal.jsonl"))
@@ -309,20 +312,34 @@ pub fn crashes(paths: &Paths, limit: usize) -> Vec<Crash> {
         .take(limit)
         .map(|(ts, dir)| {
             let st = fs::read_to_string(dir.join("stacktrace.txt")).unwrap_or_default().replace('\r', "");
-            let message = st.lines().filter(|l| l.starts_with("Expression:") || l.starts_with("Message:")).map(|l| l.splitn(2, ':').nth(1).unwrap_or("").trim()).collect::<Vec<_>>().join(" — ");
+            let message = st
+                .lines()
+                .filter(|l| l.starts_with("Expression:") || l.starts_with("Message:"))
+                .map(|l| l.split_once(':').map(|x| x.1).unwrap_or("").trim())
+                .collect::<Vec<_>>()
+                .join(" — ");
             let (module, off) = minidump_fault(&dir.join("Cyberpunk2077.dmp")).unwrap_or(("?".into(), 0));
             let si = sess.iter().rposition(|s| s.start <= ts);
             let (mut changes, mut last_good, mut suspects) = (vec![], None, vec![]);
-            if let Some(i) = si {
-                if let Some(g) = (0..i).rev().find(|&j| !crashed(&sess[j], sess.get(j + 1)) && !sess[j].vanilla) {
-                    last_good = Some(sess[g].start);
-                    changes = diff_snapshots(&sess[g].mods, &sess[i].mods);
-                    let gm: BTreeMap<&str, &SessMod> = sess[g].mods.iter().map(|m| (m.id.as_str(), m)).collect();
-                    for j in read_journal(paths).into_iter().filter(|j| j.ts > sess[g].start && j.ts < sess[i].start && !matches!(j.action.as_str(), "enable" | "disable" | "update" | "uninstall")) {
-                        changes.push(format!("{} {} {}", j.action, j.mods.join(", "), j.detail).trim().to_string());
-                    }
-                    suspects = sess[i].mods.iter().filter(|m| m.enabled && gm.get(m.id.as_str()).is_none_or(|o| o.version != m.version || !o.enabled)).map(|m| m.id.clone()).collect();
+            if let Some(i) = si
+                && let Some(g) = (0..i).rev().find(|&j| !crashed(&sess[j], sess.get(j + 1)) && !sess[j].vanilla)
+            {
+                last_good = Some(sess[g].start);
+                changes = diff_snapshots(&sess[g].mods, &sess[i].mods);
+                let gm: BTreeMap<&str, &SessMod> = sess[g].mods.iter().map(|m| (m.id.as_str(), m)).collect();
+                for j in read_journal(paths).into_iter().filter(|j| {
+                    j.ts > sess[g].start
+                        && j.ts < sess[i].start
+                        && !matches!(j.action.as_str(), "enable" | "disable" | "update" | "uninstall")
+                }) {
+                    changes.push(format!("{} {} {}", j.action, j.mods.join(", "), j.detail).trim().to_string());
                 }
+                suspects = sess[i]
+                    .mods
+                    .iter()
+                    .filter(|m| m.enabled && gm.get(m.id.as_str()).is_none_or(|o| o.version != m.version || !o.enabled))
+                    .map(|m| m.id.clone())
+                    .collect();
             }
             Crash {
                 report: dir.file_name().unwrap().to_string_lossy().into(),
@@ -353,7 +370,12 @@ fn log_files(paths: &Paths) -> Vec<(String, PathBuf)> {
     // newest file of each log family, from the overlay upper dir (where the game writes)
     let up = paths.upper();
     let newest = |dir: PathBuf, prefix: &str| -> Option<PathBuf> {
-        fs::read_dir(&dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(prefix) && n.to_string_lossy().ends_with(".log"))).max_by_key(|p| mtime(p))
+        fs::read_dir(&dir)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(prefix) && n.to_string_lossy().ends_with(".log")))
+            .max_by_key(|p| mtime(p))
     };
     let mut out = vec![];
     let fixed = [
@@ -366,7 +388,12 @@ fn log_files(paths: &Paths) -> Vec<(String, PathBuf)> {
             out.push((n.to_string(), p));
         }
     }
-    for (n, d, pre) in [("RED4ext", "red4ext/logs", "red4ext-"), ("TweakXL", "red4ext/plugins/TweakXL", "TweakXL-"), ("ArchiveXL", "red4ext/plugins/ArchiveXL", "ArchiveXL-"), ("Codeware", "red4ext/plugins/Codeware", "Codeware-")] {
+    for (n, d, pre) in [
+        ("RED4ext", "red4ext/logs", "red4ext-"),
+        ("TweakXL", "red4ext/plugins/TweakXL", "TweakXL-"),
+        ("ArchiveXL", "red4ext/plugins/ArchiveXL", "ArchiveXL-"),
+        ("Codeware", "red4ext/plugins/Codeware", "Codeware-"),
+    ] {
         if let Some(p) = newest(up.join(d), pre) {
             out.push((n.to_string(), p));
         }
@@ -459,7 +486,9 @@ pub fn error_diff(paths: &Paths) -> ErrDiff {
 pub fn game_build(paths: &Paths) -> (String, i64) {
     let lib = paths.game.parent().and_then(|p| p.parent()).map(Path::to_path_buf).unwrap_or_default();
     let acf = fs::read_to_string(lib.join(format!("appmanifest_{}.acf", crate::state::STEAM_APP_ID))).unwrap_or_default();
-    let field = |k: &str| acf.lines().find(|l| l.trim_start().starts_with(&format!("\"{k}\""))).and_then(|l| l.split('"').nth(3)).unwrap_or("").to_string();
+    let field = |k: &str| {
+        acf.lines().find(|l| l.trim_start().starts_with(&format!("\"{k}\""))).and_then(|l| l.split('"').nth(3)).unwrap_or("").to_string()
+    };
     (field("buildid"), field("LastUpdated").parse().unwrap_or(0))
 }
 
@@ -518,7 +547,11 @@ pub fn patch_status(paths: &Paths, st: &State, nx: Option<&crate::nexus::Nexus>)
         rec = BuildRecord { build_id: build.clone(), previous: None, changed_at: 0 };
         let _ = fs::write(&rp, serde_json::to_vec_pretty(&rec).unwrap());
     } else if rec.build_id != build && !build.is_empty() {
-        rec = BuildRecord { previous: Some(rec.build_id.clone()), build_id: build.clone(), changed_at: if updated > 0 { updated } else { now_unix() } };
+        rec = BuildRecord {
+            previous: Some(rec.build_id.clone()),
+            build_id: build.clone(),
+            changed_at: if updated > 0 { updated } else { now_unix() },
+        };
         let _ = fs::write(&rp, serde_json::to_vec_pretty(&rec).unwrap());
     }
     let patch_detected = rec.previous.is_some();
@@ -536,7 +569,14 @@ pub fn patch_status(paths: &Paths, st: &State, nx: Option<&crate::nexus::Nexus>)
             let since = latest.as_deref().is_some_and(|u| u >= patched_iso.as_str());
             let update = newest.as_ref().is_some_and(|v| v.id != n.version_id);
             if !since || update {
-                at_risk.push(Framework { id: id.clone(), name: m.name.clone(), version: m.version.clone(), latest_upload: latest, update_available: update, released_since_patch: since });
+                at_risk.push(Framework {
+                    id: id.clone(),
+                    name: m.name.clone(),
+                    version: m.version.clone(),
+                    latest_upload: latest,
+                    update_available: update,
+                    released_since_patch: since,
+                });
             }
         }
     }
@@ -544,10 +584,30 @@ pub fn patch_status(paths: &Paths, st: &State, nx: Option<&crate::nexus::Nexus>)
     let red4ext_errors = log_files(paths)
         .into_iter()
         .filter(|(n, _)| n == "RED4ext")
-        .flat_map(|(_, p)| fs::read_to_string(p).unwrap_or_default().lines().filter(|l| l.to_lowercase().contains("not supported") || l.to_lowercase().contains("incompatible") || l.contains("[error]") || l.contains("[critical]")).map(String::from).collect::<Vec<_>>())
+        .flat_map(|(_, p)| {
+            fs::read_to_string(p)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| {
+                    l.to_lowercase().contains("not supported")
+                        || l.to_lowercase().contains("incompatible")
+                        || l.contains("[error]")
+                        || l.contains("[critical]")
+                })
+                .map(String::from)
+                .collect::<Vec<_>>()
+        })
         .take(10)
         .collect();
-    PatchStatus { build_id: build, previous_build: rec.previous, patched_at: if rec.changed_at > 0 { rec.changed_at } else { updated }, patch_detected, at_risk, red4ext_errors, vanilla: vanilla_flag(paths).exists() }
+    PatchStatus {
+        build_id: build,
+        previous_build: rec.previous,
+        patched_at: if rec.changed_at > 0 { rec.changed_at } else { updated },
+        patch_detected,
+        at_risk,
+        red4ext_errors,
+        vanilla: vanilla_flag(paths).exists(),
+    }
 }
 
 pub fn iso(t: i64) -> String {
@@ -568,7 +628,16 @@ pub fn iso(t: i64) -> String {
 
 /// The game's own save folder (what Steam Cloud syncs; profiles with "shared" saves use it).
 pub fn shared_saves_dir(paths: &Paths) -> PathBuf {
-    report_queue(paths).parent().unwrap().parent().unwrap().parent().unwrap().parent().unwrap().join("Saved Games/CD Projekt Red/Cyberpunk 2077")
+    report_queue(paths)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("Saved Games/CD Projekt Red/Cyberpunk 2077")
 }
 
 /// Save folder of a profile (by name; None = the active one).
@@ -674,7 +743,9 @@ pub fn quest_mods(paths: &Paths, st: &State) -> BTreeSet<String> {
         let questy = m.name.to_lowercase().contains("quest")
             || files::list_tree(&root).iter().any(|f| {
                 let l = f.to_lowercase();
-                (l.ends_with(".xl") && fs::read_to_string(root.join(f)).is_ok_and(|s| s.contains("quest:") || s.contains("questphase") || s.contains(".questphase")))
+                (l.ends_with(".xl")
+                    && fs::read_to_string(root.join(f))
+                        .is_ok_and(|s| s.contains("quest:") || s.contains("questphase") || s.contains(".questphase")))
                     || l.contains("/quest/")
             });
         if questy {

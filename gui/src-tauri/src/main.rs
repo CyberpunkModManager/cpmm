@@ -48,7 +48,13 @@ fn launch_game(app: AppHandle) -> Result<(), String> {
         .unwrap_or(false);
     if !via_systemd {
         // fallback: ask Steam right away (it may ask to close cpmm first)
-        Command::new(&steam).arg("steam://rungameid/1091500").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e| format!("starting steam: {e}"))?;
+        Command::new(&steam)
+            .arg("steam://rungameid/1091500")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("starting steam: {e}"))?;
     }
     glog(&format!("launch_game requested (systemd: {via_systemd})"));
     let a = app.clone();
@@ -68,7 +74,8 @@ fn gui_log(msg: String) {
 #[tauri::command]
 async fn api(args: Vec<String>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = Command::new(cpmm_bin()).arg("api").args(&args).stdin(Stdio::null()).output().map_err(|e| format!("running cpmm: {e}"))?;
+        let out =
+            Command::new(cpmm_bin()).arg("api").args(&args).stdin(Stdio::null()).output().map_err(|e| format!("running cpmm: {e}"))?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
         }
@@ -304,7 +311,16 @@ fn main() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![api, run, gui_log, quit, launch_game, nexus::open_nexus, nexus::close_nexus, nexus::nexus_toast])
+        .invoke_handler(tauri::generate_handler![
+            api,
+            run,
+            gui_log,
+            quit,
+            launch_game,
+            nexus::open_nexus,
+            nexus::close_nexus,
+            nexus::nexus_toast
+        ])
         .run(tauri::generate_context!())
         .expect("error while running cpmm GUI");
 }

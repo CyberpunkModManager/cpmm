@@ -34,12 +34,10 @@ pub fn file_conflicts(paths: &Paths, mods: &[Mod], hash_check: bool) -> Vec<File
         if owners.len() < 2 && !overrides_base {
             continue;
         }
-        let identical = owners.len() > 1
-            && hash_check
-            && {
-                let hs: BTreeSet<String> = owners.iter().filter_map(|o| files::sha256_file(&paths.mod_files(o).join(&path)).ok()).collect();
-                hs.len() == 1
-            };
+        let identical = owners.len() > 1 && hash_check && {
+            let hs: BTreeSet<String> = owners.iter().filter_map(|o| files::sha256_file(&paths.mod_files(o).join(&path)).ok()).collect();
+            hs.len() == 1
+        };
         out.push(FileConflict { path, mods: owners, identical, overrides_base });
     }
     out
@@ -66,16 +64,17 @@ pub fn unresolved_imports(paths: &Paths, mods: &[Mod]) -> Vec<(String, String, S
             srcs.push(("(unmanaged)".into(), format!("r6/scripts/{f}"), comments.replace_all(&s, "").into_owned()));
         }
     }
-    let modules: BTreeSet<String> = srcs.iter().flat_map(|(_, _, s)| module_re.captures_iter(s).map(|c| c[1].to_string()).collect::<Vec<_>>()).collect();
+    let modules: BTreeSet<String> =
+        srcs.iter().flat_map(|(_, _, s)| module_re.captures_iter(s).map(|c| c[1].to_string()).collect::<Vec<_>>()).collect();
     let provided = |m: &str| modules.iter().any(|x| x == m || x.starts_with(&format!("{m}.")) || m.starts_with(&format!("{x}.")));
     let mut out = vec![];
     let mut seen = BTreeSet::new();
     for (owner, rel, s) in &srcs {
         for c in import_re.captures_iter(s) {
-            if let Some(g) = c.get(2) {
-                if provided(g.as_str()) == c.get(1).is_some_and(|n| n.as_str() == "!") {
-                    continue; // guarded import that isn't compiled
-                }
+            if let Some(g) = c.get(2)
+                && provided(g.as_str()) == c.get(1).is_some_and(|n| n.as_str() == "!")
+            {
+                continue; // guarded import that isn't compiled
             }
             let imp = c[3].trim_end_matches('.').to_string();
             if !provided(&imp) && seen.insert((owner.clone(), imp.clone())) {
@@ -121,7 +120,8 @@ pub fn redscript_conflicts(paths: &Paths, mods: &[Mod], unmanaged: &[(String, St
             scan(&format!("(unmanaged) {owner}"), &s);
         }
     }
-    let modules: BTreeSet<String> = sources.iter().flat_map(|(_, s)| module_re.captures_iter(s).map(|c| c[1].to_string()).collect::<Vec<_>>()).collect();
+    let modules: BTreeSet<String> =
+        sources.iter().flat_map(|(_, s)| module_re.captures_iter(s).map(|c| c[1].to_string()).collect::<Vec<_>>()).collect();
     for (owner, src) in &sources {
         for c in ann.captures_iter(src) {
             if let Some(m) = c.get(2) {
@@ -143,14 +143,14 @@ pub fn redscript_conflicts(paths: &Paths, mods: &[Mod], unmanaged: &[(String, St
         if ms.len() > 1 && matches!(kind.as_str(), "addField" | "addMethod") {
             out.push(ScriptConflict { kind: format!("duplicate @{kind}"), target: target.clone(), mods: ms.iter().cloned().collect() });
         }
-        if kind == "replaceMethod" {
-            if let Some(w) = hooks.get(&(cls.clone(), name.clone(), "wrapMethod".into())) {
-                let w: Vec<String> = w.difference(ms).cloned().collect();
-                if !w.is_empty() {
-                    let mut all: Vec<String> = ms.iter().map(|m| format!("replace:{m}")).collect();
-                    all.extend(w.into_iter().map(|m| format!("wrap:{m}")));
-                    out.push(ScriptConflict { kind: "replace+wrap (usually fine)".into(), target, mods: all });
-                }
+        if kind == "replaceMethod"
+            && let Some(w) = hooks.get(&(cls.clone(), name.clone(), "wrapMethod".into()))
+        {
+            let w: Vec<String> = w.difference(ms).cloned().collect();
+            if !w.is_empty() {
+                let mut all: Vec<String> = ms.iter().map(|m| format!("replace:{m}")).collect();
+                all.extend(w.into_iter().map(|m| format!("wrap:{m}")));
+                out.push(ScriptConflict { kind: "replace+wrap (usually fine)".into(), target, mods: all });
             }
         }
     }

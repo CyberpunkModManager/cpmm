@@ -20,7 +20,11 @@ function nexusToast(kind: "ok" | "error" | "info", text: string) {
 
 /** What an install printed, in one line for a toast. */
 function summary(output: string): string {
-  const lines = output.trim().split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = output
+    .trim()
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
   const installed = lines.filter((l) => /^installed \S+: \d+ files/.test(l));
   if (installed.length) return installed.map((l) => l.replace(/^installed (\S+): .*/, "$1")).join(", ");
   return (lines.pop() ?? "").replace(/^error:\s*/, "");
@@ -33,8 +37,7 @@ function summary(output: string): string {
 export function useNexusBridge() {
   const { exec } = useJobs();
   useEffect(() => {
-    const report = (ok: boolean, output: string) =>
-      nexusToast(ok ? "ok" : "error", ok ? `Installed ${summary(output)}` : `Install failed: ${summary(output)}`);
+    const report = (ok: boolean, output: string) => nexusToast(ok ? "ok" : "error", ok ? `Installed ${summary(output)}` : `Install failed: ${summary(output)}`);
     const unNxm = listen<{ url: string }>("nexus-nxm", async (e) => {
       const id = /\/mods\/(\d+)/.exec(e.payload.url)?.[1];
       const r = await exec(id ? `Install Nexus mod #${id}` : "Install from Nexus", ["nxm", e.payload.url]);
