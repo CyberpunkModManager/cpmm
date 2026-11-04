@@ -37,10 +37,6 @@ impl Paths {
     pub fn mods(&self) -> PathBuf {
         crate::settings::expand(&self.cfg.staging_dir).unwrap_or_else(|| self.data.join("mods"))
     }
-    /// The folder watched for manually downloaded mod archives.
-    pub fn watch_dir(&self) -> PathBuf {
-        crate::settings::expand(&self.cfg.watch_dir).unwrap_or_else(|| home().join("Downloads"))
-    }
     pub fn mod_files(&self, id: &str) -> PathBuf {
         self.mods().join(id).join("files")
     }
@@ -164,6 +160,9 @@ pub struct Mod {
     /// FOMOD installer choices ("step/group" -> option names), reused when the mod updates
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fomod: Option<serde_json::Value>,
+    /// The download (file name in the downloads folder) this mod was installed from
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<String>,
     #[serde(default)]
     pub installed_at: String,
     #[serde(default)]

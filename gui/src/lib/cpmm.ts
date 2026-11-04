@@ -228,12 +228,12 @@ export interface SettingField {
 export interface SettingsData {
   values: Record<string, boolean | number | string>;
   schema: SettingField[];
-  resolved: { staging_dir: string; download_dir: string; watch_dir: string; data_dir: string; game_dir: string };
+  resolved: { staging_dir: string; download_dir: string; data_dir: string; game_dir: string };
   api_key: boolean;
 }
 export const api4 = {
   settings: () => invoke<SettingsData>("api", { args: ["settings"] }),
-  downloads: () => invoke<{ path: string; nexus_id: number | null }[]>("api", { args: ["downloads"] }),
+  downloads: () => invoke<DownloadEntry[]>("api", { args: ["downloads"] }),
 };
 
 export interface OnboardingStatus {
@@ -319,3 +319,20 @@ export interface CollectionInfo {
 export const api9 = {
   collection: (reference: string) => invoke<CollectionInfo>("api", { args: ["collection", reference] }),
 };
+
+export interface DownloadEntry {
+  file: string;
+  path: string;
+  size: number;
+  name: string;
+  mod_id: number | null;
+  file_id: string;
+  version_gsid: string;
+  version: string;
+  file_name: string;
+  uploaded_at: string;
+  source: string;
+  downloaded_at: string;
+  status: "installed" | "other version installed" | "not installed";
+  installed_as: string | null;
+}

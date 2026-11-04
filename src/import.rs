@@ -243,6 +243,7 @@ pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> 
             hidden: vec![],
             ignored_reqs: vec![],
             fomod: None,
+            archive: None,
             installed_at: now(),
             notes: "imported".into(),
         });
@@ -297,6 +298,7 @@ pub fn adopt(paths: &Paths, state: &mut State, id: &str, name: &str, rels: &[Str
         hidden: vec![],
         ignored_reqs: vec![],
         fomod: None,
+        archive: None,
         installed_at: now(),
         notes: "adopted".into(),
     });

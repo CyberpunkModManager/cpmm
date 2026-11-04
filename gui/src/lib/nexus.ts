@@ -46,8 +46,9 @@ export function useNexusBridge() {
     const unArchive = listen<{ path: string; mod_id: number | null }>("nexus-archive", async (e) => {
       const { path, mod_id } = e.payload;
       const name = path.split("/").pop() ?? path;
-      const args = ["install", path, "--with-deps", ...(mod_id ? ["--nexus", String(mod_id)] : [])];
-      const r = await exec(`Install ${name}`, args);
+      // into the Downloads list; installed right away only with "Install downloads automatically"
+      const args = ["downloads", "add", path, "--move", "--source", "browser", "--auto", ...(mod_id ? ["--nexus", String(mod_id)] : [])];
+      const r = await exec(`Download ${name}`, args);
       report(r.ok, r.output);
     });
     return () => {

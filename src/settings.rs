@@ -22,7 +22,6 @@ pub struct Settings {
     pub after_install_command: String,
     // Downloads
     pub auto_install_downloads: bool,
-    pub watch_dir: String,
     pub keep_archives: bool,
     // Storage
     pub staging_dir: String,
@@ -51,8 +50,7 @@ impl Default for Settings {
             after_install_doctor: true,
             after_install_command: String::new(),
             auto_install_downloads: false,
-            watch_dir: String::new(),
-            keep_archives: false,
+            keep_archives: true,
             staging_dir: String::new(),
             download_dir: String::new(),
             profiles_enabled: true,
@@ -172,16 +170,15 @@ pub fn schema() -> Value {
         f(
             "auto_install_downloads",
             "Downloads",
-            "Auto-install downloaded mods",
-            "Watch a folder and install new mod archives from it (Nexus file names identify the mod).",
+            "Install downloads automatically",
+            "Install a mod as soon as its download finishes (Mod Manager Download links, the built-in browser). Off: it waits in Downloads until you install it.",
             "bool"
         ),
-        f("watch_dir", "Downloads", "Folder to watch", "Default: ~/Downloads", "path"),
         f(
             "keep_archives",
             "Downloads",
-            "Keep downloaded archives",
-            "Keep archives after installing (uses disk space; lets you reinstall offline).",
+            "Keep archives after installing",
+            "Installed mods stay in the Downloads list, so you can reinstall or switch FOMOD options without downloading again. Off saves disk space.",
             "bool"
         ),
         f(

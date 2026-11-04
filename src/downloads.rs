@@ -1,0 +1,213 @@
+//! The downloads library: every archive cpmm downloads (or is handed) is kept in the download
+//! folder with a small record next to it, listed separately from installed mods, and installed
+//! only when the user asks (or right away when `auto_install_downloads` is on).
+
+use crate::state::{Paths, State};
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const META_EXT: &str = "cpmm.json";
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct DlMeta {
+    /// display name (mod name)
+    pub name: String,
+    pub mod_id: Option<u64>,
+    /// Nexus file (stable across its uploads) and the exact upload
+    pub file_id: String,
+    pub version_gsid: String,
+    pub version: String,
+    pub file_name: String,
+    pub uploaded_at: String,
+    /// where it came from: "nexus" (cpmm download / install), "nxm" (link), "browser", "local"
+    pub source: String,
+    pub downloaded_at: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct Download {
+    /// archive file name inside the download folder (the key for install/remove)
+    pub file: String,
+    pub path: PathBuf,
+    pub size: u64,
+    #[serde(flatten)]
+    pub meta: DlMeta,
+    /// "installed", "other version installed", "not installed"
+    pub status: &'static str,
+    pub installed_as: Option<String>,
+}
+
+fn meta_path(arc: &Path) -> PathBuf {
+    let mut s = arc.as_os_str().to_owned();
+    s.push(format!(".{META_EXT}"));
+    PathBuf::from(s)
+}
+
+pub fn read_meta(arc: &Path) -> Option<DlMeta> {
+    serde_json::from_slice(&fs::read(meta_path(arc)).ok()?).ok()
+}
+
+pub fn write_meta(arc: &Path, m: &DlMeta) -> Result<()> {
+    fs::write(meta_path(arc), serde_json::to_vec_pretty(m)?)?;
+    Ok(())
+}
+
+/// Nexus names manual downloads `<Name>-<modid>-<version>-<unix time>.<ext>`.
+pub fn nexus_id_from_filename(stem: &str) -> Option<u64> {
+    let re = regex::Regex::new(r"^.+?-(\d+)-(?:[\w.]+-)*?(\d{9,11})$").ok()?;
+    re.captures(stem).and_then(|c| c[1].parse().ok())
+}
+pub fn name_from_filename(stem: &str) -> String {
+    match regex::Regex::new(r"^(.+?)-\d+-(?:[\w.]+-)*?\d{9,11}$").ok().and_then(|re| re.captures(stem).map(|c| c[1].to_string())) {
+        Some(n) => n.replace('_', " "),
+        None => stem.replace('_', " "),
+    }
+}
+
+fn is_archive_file(p: &Path) -> bool {
+    let n = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    p.is_file() && !n.ends_with(&format!(".{META_EXT}")) && !n.ends_with(".part") && !n.ends_with(".tmp") && !n.starts_with('.')
+}
+
+/// Everything in the library, newest first, with install status.
+pub fn list(paths: &Paths, st: &State) -> Vec<Download> {
+    let dir = paths.downloads();
+    // older cpmm versions put browser downloads in a subfolder
+    let mut files: Vec<PathBuf> = [dir.clone(), dir.join("browser")]
+        .iter()
+        .flat_map(|d| fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()))
+        .filter(|p| is_archive_file(p))
+        .collect();
+    files.sort_by_key(|p| std::cmp::Reverse(fs::metadata(p).and_then(|m| m.modified()).ok()));
+    files
+        .into_iter()
+        .map(|p| {
+            let rel = p.strip_prefix(&dir).unwrap_or(&p).to_string_lossy().to_string();
+            let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let meta = read_meta(&p).unwrap_or_else(|| DlMeta {
+                name: name_from_filename(&stem),
+                mod_id: nexus_id_from_filename(&stem),
+                source: "local".into(),
+                ..Default::default()
+            });
+            let (status, installed_as) = status(st, &rel, &meta);
+            Download { size: fs::metadata(&p).map(|m| m.len()).unwrap_or(0), file: rel, path: p, meta, status, installed_as }
+        })
+        .collect()
+}
+
+fn status(st: &State, file: &str, m: &DlMeta) -> (&'static str, Option<String>) {
+    for x in &st.mods {
+        if x.archive.as_deref() == Some(file) {
+            return ("installed", Some(x.id.clone()));
+        }
+        if let (Some(id), Some(n)) = (m.mod_id, &x.nexus)
+            && n.mod_id == id
+            && !m.version_gsid.is_empty()
+            && n.version_gsid == m.version_gsid
+        {
+            return ("installed", Some(x.id.clone()));
+        }
+    }
+    // same Nexus file installed at another upload
+    if let Some(x) = st
+        .mods
+        .iter()
+        .find(|x| x.nexus.as_ref().is_some_and(|n| Some(n.mod_id) == m.mod_id && (m.file_id.is_empty() || n.file_id == m.file_id)))
+    {
+        return ("other version installed", Some(x.id.clone()));
+    }
+    ("not installed", None)
+}
+
+/// Find a download by file name, list number (1-based, as `cpmm downloads` prints) or name part.
+pub fn find(paths: &Paths, st: &State, key: &str) -> Result<Download> {
+    let all = list(paths, st);
+    if let Ok(n) = key.parse::<usize>()
+        && n >= 1
+        && n <= all.len()
+        && !all.iter().any(|d| d.file == key)
+    {
+        return Ok(all[n - 1].clone());
+    }
+    if let Some(d) = all.iter().find(|d| d.file == key || d.path == Path::new(key)) {
+        return Ok(d.clone());
+    }
+    let lk = key.to_lowercase();
+    let hits: Vec<&Download> =
+        all.iter().filter(|d| d.file.to_lowercase().contains(&lk) || d.meta.name.to_lowercase().contains(&lk)).collect();
+    match hits.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => bail!("no download matches {key:?} (see `cpmm downloads`)"),
+        _ => bail!("{key:?} matches {} downloads; use the number or file name from `cpmm downloads`", hits.len()),
+    }
+}
+
+/// Bring an archive from elsewhere into the library (moved if it's already on the same drive
+/// and `move_it`, otherwise copied), with a record of where it came from.
+pub fn add(paths: &Paths, src: &Path, mod_id: Option<u64>, source: &str, move_it: bool) -> Result<PathBuf> {
+    if !src.is_file() {
+        bail!("{} is not a file", src.display());
+    }
+    let dir = paths.downloads();
+    fs::create_dir_all(&dir)?;
+    let name = src.file_name().context("no file name")?;
+    let mut dst = dir.join(name);
+    if dst != src {
+        let mut n = 2;
+        while dst.exists() {
+            dst = dir.join(format!("{n}-{}", name.to_string_lossy()));
+            n += 1;
+        }
+        if !(move_it && fs::rename(src, &dst).is_ok()) {
+            crate::files::reflink_or_copy(src, &dst)?;
+            if move_it {
+                let _ = fs::remove_file(src);
+            }
+        }
+    }
+    let stem = dst.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let mut m = read_meta(&dst).unwrap_or_default();
+    m.name = if m.name.is_empty() { name_from_filename(&stem) } else { m.name };
+    m.mod_id = mod_id.or(m.mod_id).or_else(|| nexus_id_from_filename(&stem));
+    m.source = source.into();
+    m.downloaded_at = crate::state::now();
+    write_meta(&dst, &m)?;
+    Ok(dst)
+}
+
+pub fn remove(d: &Download) -> Result<()> {
+    fs::remove_file(&d.path).with_context(|| format!("removing {}", d.path.display()))?;
+    let _ = fs::remove_file(meta_path(&d.path));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nexus_manual_download_names() {
+        assert_eq!(nexus_id_from_filename("Curbside-35922-1-0-1-1761517298"), Some(35922));
+        assert_eq!(nexus_id_from_filename("Cyber Engine Tweaks-107-1-38-1-1761442138"), Some(107));
+        assert_eq!(nexus_id_from_filename("my_custom_mod"), None);
+        assert_eq!(name_from_filename("Cyber_Engine_Tweaks-107-1-38-1-1761442138"), "Cyber Engine Tweaks");
+        assert_eq!(name_from_filename("random"), "random");
+    }
+
+    #[test]
+    fn metadata_sits_next_to_the_archive() {
+        let d = std::env::temp_dir().join(format!("cpmm-dl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let a = d.join("168851-highbeam-1-0");
+        fs::write(&a, b"x").unwrap();
+        write_meta(&a, &DlMeta { name: "Highbeam".into(), mod_id: Some(36088), ..Default::default() }).unwrap();
+        assert_eq!(read_meta(&a).unwrap().mod_id, Some(36088));
+        assert!(is_archive_file(&a) && !is_archive_file(&meta_path(&a)));
+        let _ = fs::remove_dir_all(&d);
+    }
+}

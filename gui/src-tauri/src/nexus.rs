@@ -261,7 +261,7 @@ fn on_navigation(app: &AppHandle, url: &Url) -> bool {
     match url.scheme() {
         "nxm" => {
             crate::glog(&format!("nexus: nxm link {}", url.as_str().split('?').next().unwrap_or("")));
-            toast(app, "info", "Sent to cpmm, installing…");
+            toast(app, "info", "Sent to cpmm…");
             let _ = app.emit_to("main", "nexus-nxm", NxmEvent { url: url.to_string() });
             false
         }
@@ -292,7 +292,7 @@ fn downloads_dir() -> PathBuf {
             Some(r) => home_dir().join(r),
             None => PathBuf::from(s),
         });
-    custom.unwrap_or_else(|| data.join("downloads")).join("browser")
+    custom.unwrap_or_else(|| data.join("downloads")).join(".incoming")
 }
 
 #[tauri::command]

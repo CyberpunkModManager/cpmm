@@ -30,6 +30,7 @@ import { api, api2, api4 } from "./lib/cpmm";
 import { useSpatialNav } from "./lib/gamepad";
 import { useJobs } from "./lib/jobs";
 import { openNexus, useNexusBridge } from "./lib/nexus";
+import { DownloadsView } from "./views/Downloads";
 import { HealthView } from "./views/LoadOrder";
 import { ModsView } from "./views/Mods";
 import { Onboarding } from "./views/Onboarding";
@@ -45,6 +46,7 @@ const SECTIONS = [
   { key: "updates", label: "Updates", icon: ArrowDownToLine },
   { key: "overwrite", label: "Overwrite", icon: Save },
   { key: "install", label: "Install", icon: PackagePlus },
+  { key: "downloads", label: "Downloads", icon: Download },
   { key: "system", label: "System", icon: Cpu },
   { key: "settings", label: "Settings", icon: Settings2 },
 ] as const;
@@ -218,6 +220,7 @@ export default function App() {
                 {section === "updates" && <UpdatesView state={s} />}
                 {section === "overwrite" && <OverwriteView state={s} />}
                 {section === "install" && <InstallView state={s} />}
+                {section === "downloads" && <DownloadsView state={s} />}
                 {section === "system" && <SystemView state={s} />}
                 {section === "settings" && <SettingsView onSetup={() => setSetupOpen(true)} />}
               </div>

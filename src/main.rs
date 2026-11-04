@@ -4,6 +4,7 @@ mod api;
 mod archive;
 mod collections;
 mod conflicts;
+mod downloads;
 mod files;
 mod fomod;
 mod import;
@@ -242,10 +243,18 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<SettingsCmd>,
     },
-    /// Mod archives in the watched download folder; --install installs the new ones.
-    Downloads {
+    /// Download a mod into the Downloads list without installing it.
+    Download {
+        /// Nexus mod id or URL
+        source: String,
+        /// Nexus file: file id, version id, or name fragment (default: the main file)
         #[arg(long)]
-        install: bool,
+        file: Option<String>,
+    },
+    /// The Downloads list: `cpmm downloads`, `install <#|name>`, `remove <#|name>`, `add <path>`.
+    Downloads {
+        #[command(subcommand)]
+        action: Option<DownloadsCmd>,
     },
     Clean {
         #[arg(long)]
@@ -415,6 +424,42 @@ enum ProfileCmd {
 }
 
 #[derive(Subcommand)]
+enum DownloadsCmd {
+    /// Everything downloaded, with install status (default)
+    List,
+    /// Install a download (number or name from the list)
+    Install {
+        key: String,
+        /// FOMOD choices as JSON (see `cpmm api fomod <archive>`)
+        #[arg(long)]
+        fomod_choices: Option<String>,
+        #[arg(long)]
+        fomod_defaults: bool,
+        /// Also install missing requirements
+        #[arg(long)]
+        with_deps: bool,
+    },
+    /// Delete a download (installed mods are not affected)
+    Remove { key: String },
+    /// Put an archive from elsewhere into the Downloads list
+    Add {
+        path: PathBuf,
+        /// The Nexus mod it belongs to (enables update checks)
+        #[arg(long)]
+        nexus: Option<u64>,
+        /// Move instead of copy
+        #[arg(long, name = "move")]
+        move_it: bool,
+        /// How it was obtained (shown in the list)
+        #[arg(long, default_value = "local")]
+        source: String,
+        /// Install it right away if "install downloads automatically" is on
+        #[arg(long)]
+        auto: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum CollectionCmd {
     /// What a collection contains and what you already have
     Show { reference: String },
@@ -477,7 +522,7 @@ enum ApiCmd {
     },
     /// First-run status: game found, Nexus key, launch options, link handler
     Onboarding,
-    /// New archives waiting in the watched download folder
+    /// The Downloads list with install status
     Downloads,
     /// Everything the main view needs
     State,
@@ -913,32 +958,36 @@ fn real_main() -> Result<()> {
             }
             if let Some(u) = url {
                 let l = manage::parse_nxm(&u)?;
-                let o = InstallOpts {
-                    file: Some(l.file_gsid.clone()),
-                    id: None,
-                    name: None,
-                    root: None,
-                    dest: None,
-                    with_deps: true,
-                    ignore_deps: false,
-                    disabled: false,
-                    keep_archive: false,
-                    nxm: l.key.clone().zip(l.expires.clone()),
-                    hooks: true,
-                    fomod: None,
-                    fomod_defaults: true,
-                };
                 let nx = nexus(&paths);
-                let mut visiting = BTreeSet::new();
-                match install_nexus(&paths, &mut st, &nx, l.mod_id, &o, 0, &mut visiting) {
-                    Ok(()) => {
-                        let name = st.by_nexus(l.mod_id).map(|m| format!("{} {}", m.name, m.version)).unwrap_or_default();
-                        manage::notify("Mod installed", &format!("{name}\n(applies on next launch; log: ~/.local/share/cpmm/nxm.log)"));
-                    }
+                // Mod Manager Download = download into the Downloads list; install only if the
+                // user asked for that (Settings → Install downloads automatically).
+                let arc = match download_nexus(&paths, &nx, l.mod_id, Some(&l.file_gsid), l.key.as_deref().zip(l.expires.as_deref()), "nxm")
+                {
+                    Ok(p) => p,
                     Err(e) => {
-                        manage::notify("Mod install failed", &format!("{e:#}"));
+                        manage::notify("Download failed", &format!("{e:#}"));
                         return Err(e);
                     }
+                };
+                let file = arc.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let d = downloads::find(&paths, &st, &file)?;
+                if paths.cfg.auto_install_downloads {
+                    match install_download(&paths, &mut st, &d, None, true, true) {
+                        Ok(()) => {
+                            let name = st.by_nexus(l.mod_id).map(|m| format!("{} {}", m.name, m.version)).unwrap_or_default();
+                            manage::notify("Mod installed", &format!("{name}\n(applies on next launch)"));
+                        }
+                        Err(e) => {
+                            manage::notify("Mod install failed", &format!("{e:#}"));
+                            return Err(e);
+                        }
+                    }
+                } else {
+                    println!("downloaded {} {}; install it from Downloads (cpmm downloads install {file:?})", d.meta.name, d.meta.version);
+                    manage::notify(
+                        "Mod downloaded",
+                        &format!("{} {}\nInstall it from cpmm's Downloads list.", d.meta.name, d.meta.version),
+                    );
                 }
             } else if !register {
                 bail!("give an nxm:// URL or --register");
@@ -992,9 +1041,7 @@ fn real_main() -> Result<()> {
                     serde_json::json!({"plan": p, "rules": st.rules, "modlist": loadorder::modlist(&paths, &st)})
                 }
                 ApiCmd::Doctor => serde_json::to_value(loadorder::doctor(&paths, &st))?,
-                ApiCmd::Downloads => serde_json::json!(
-                    scan_downloads(&paths)?.into_iter().map(|(p, id)| serde_json::json!({"path": p, "nexus_id": id})).collect::<Vec<_>>()
-                ),
+                ApiCmd::Downloads => serde_json::to_value(downloads::list(&paths, &st))?,
                 ApiCmd::Onboarding => {
                     let exe = installed_exe().unwrap_or_default();
                     let lo = steam::read_launch_options();
@@ -1061,7 +1108,6 @@ fn real_main() -> Result<()> {
                     "resolved": {
                         "staging_dir": paths.mods(),
                         "download_dir": paths.downloads(),
-                        "watch_dir": paths.watch_dir(),
                         "data_dir": paths.data,
                         "game_dir": paths.game,
                     },
@@ -1471,45 +1517,53 @@ fn real_main() -> Result<()> {
             }
         },
         Cmd::Settings { action } => settings_cmd(&paths, &st, action.unwrap_or(SettingsCmd::Show { json: false }))?,
-        Cmd::Downloads { install } => {
-            let found = scan_downloads(&paths)?;
-            if found.is_empty() {
-                println!("no new mod archives in {}", paths.watch_dir().display());
-            }
-            for (p, nid) in &found {
-                println!(
-                    "  new: {}{}",
-                    p.file_name().unwrap_or_default().to_string_lossy(),
-                    nid.map(|n| format!("  (Nexus mod {n})")).unwrap_or_default()
-                );
-            }
-            if install {
-                for (p, nid) in found {
-                    let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                    let name = download_name(&stem);
-                    let o = InstallOpts {
-                        file: None,
-                        id: None,
-                        name: Some(name),
-                        root: None,
-                        dest: None,
-                        with_deps: false,
-                        ignore_deps: true,
-                        disabled: false,
-                        keep_archive: true,
-                        nxm: None,
-                        hooks: true,
-                        fomod: None,
-                        fomod_defaults: true,
-                    };
-                    let r = install_local(&paths, &mut st, &p, nid, &o);
-                    mark_download_seen(&paths, &p)?;
-                    if let Err(e) = r {
-                        println!("  {}: {e:#}", p.display());
-                    }
+        Cmd::Download { source, file } => {
+            let gid = parse_nexus(&source).context("give a Nexus mod id or URL")?;
+            let p = download_nexus(&paths, &nexus(&paths), gid, file.as_deref(), None, "nexus")?;
+            println!("downloaded to {} (cpmm downloads install … to install it)", p.display());
+        }
+        Cmd::Downloads { action } => match action.unwrap_or(DownloadsCmd::List) {
+            DownloadsCmd::List => {
+                let all = downloads::list(&paths, &st);
+                if all.is_empty() {
+                    println!("no downloads in {}", paths.downloads().display());
+                }
+                for (i, d) in all.iter().enumerate() {
+                    println!(
+                        "{:>3}  {:<16} {:<42} {:<10} {:>8.1} MB  {}{}",
+                        i + 1,
+                        d.status,
+                        d.meta.name.chars().take(42).collect::<String>(),
+                        d.meta.version.chars().take(10).collect::<String>(),
+                        d.size as f64 / 1048576.0,
+                        d.meta.source,
+                        d.installed_as.as_ref().map(|x| format!("  ({x})")).unwrap_or_default()
+                    );
                 }
             }
-        }
+            DownloadsCmd::Install { key, fomod_choices, fomod_defaults, with_deps } => {
+                let d = downloads::find(&paths, &st, &key)?;
+                let fomod = fomod_choices
+                    .map(|j| serde_json::from_str::<fomod::Choices>(&j))
+                    .transpose()
+                    .context("--fomod-choices must be JSON")?;
+                install_download(&paths, &mut st, &d, fomod, fomod_defaults, with_deps)?;
+            }
+            DownloadsCmd::Remove { key } => {
+                let d = downloads::find(&paths, &st, &key)?;
+                downloads::remove(&d)?;
+                println!("deleted {}{}", d.file, d.installed_as.map(|x| format!(" ({x} stays installed)")).unwrap_or_default());
+            }
+            DownloadsCmd::Add { path, nexus: nid, move_it, source, auto } => {
+                let p = downloads::add(&paths, &expand(&path.to_string_lossy()), nid, &source, move_it)?;
+                let file = p.strip_prefix(paths.downloads()).unwrap_or(&p).to_string_lossy().to_string();
+                println!("added {file} to Downloads");
+                if auto && paths.cfg.auto_install_downloads {
+                    let d = downloads::find(&paths, &st, &file)?;
+                    install_download(&paths, &mut st, &d, None, true, true)?;
+                }
+            }
+        },
         Cmd::Clean { dry_run } => {
             let mut total = 0u64;
             for d in [paths.trash(), paths.tmp(), paths.downloads()] {
@@ -2116,8 +2170,11 @@ fn install_nexus(
     let man = nx.manifest(&manifest_url)?;
     paths.ensure_dirs()?;
     let arc = paths.downloads().join(format!("{}-{}", ver.game_scoped_id, slugify(&ver.file.name)));
-    println!("{ind}  downloading {:.1} MB", man.archive.size as f64 / 1048576.0);
+    if !arc.exists() {
+        println!("{ind}  downloading {:.1} MB", man.archive.size as f64 / 1048576.0);
+    }
     nx.download(&ver, &man, &arc, o.nxm.as_ref().map(|(k, e)| (k.as_str(), e.as_str())))?;
+    record_download(&arc, &info.name, gid, &ver, if o.nxm.is_some() { "nxm" } else { "nexus" });
 
     let x = install::tmp_extract_dir(paths, &id);
     if x.exists() {
@@ -2147,9 +2204,13 @@ fn install_nexus(
     };
     let staged = install::stage(paths, st, &id, &x, &plan)?;
     let _ = fs::remove_dir_all(&x);
-    if !o.keep_archive && !paths.cfg.keep_archives {
+    let archive = if !o.keep_archive && !paths.cfg.keep_archives {
         let _ = fs::remove_file(&arc);
-    }
+        let _ = fs::remove_file(format!("{}.cpmm.json", arc.display()));
+        None
+    } else {
+        arc.file_name().map(|n| n.to_string_lossy().into_owned())
+    };
     let src = NexusSource {
         mod_id: gid,
         mod_uid: info.id.clone(),
@@ -2169,6 +2230,7 @@ fn install_nexus(
             m.requires = stored;
             m.reqs_checked = Some(checked);
             m.installed_at = now();
+            m.archive = archive.clone();
         }
         None => {
             st.mods.push(Mod {
@@ -2182,6 +2244,7 @@ fn install_nexus(
                 hidden: vec![],
                 ignored_reqs: vec![],
                 fomod: None,
+                archive: archive.clone(),
                 installed_at: now(),
                 notes: String::new(),
             });
@@ -2275,9 +2338,12 @@ fn install_local(paths: &Paths, st: &mut State, arc: &std::path::Path, nid: Opti
         Some((r, c)) => (r, Some(c)),
         None => (vec![], None),
     };
+    // installed from the Downloads list? remember which download
+    let from_library = arc.strip_prefix(paths.downloads()).ok().map(|r| r.to_string_lossy().into_owned());
     match st.find(&id) {
         Some(i) => {
             st.mods[i].installed_at = now();
+            st.mods[i].archive = from_library.clone();
             if reqs_checked.is_some() {
                 st.mods[i].requires = requires;
                 st.mods[i].reqs_checked = reqs_checked;
@@ -2296,6 +2362,7 @@ fn install_local(paths: &Paths, st: &mut State, arc: &std::path::Path, nid: Opti
                 hidden: vec![],
                 ignored_reqs: vec![],
                 fomod: None,
+                archive: from_library.clone(),
                 installed_at: now(),
                 notes: format!("from {}", arc.display()),
             });
@@ -2598,15 +2665,89 @@ fn fomod_plan(
 
 /// The archive for a source: a local path, or the Nexus file downloaded into the cache.
 fn fetch_archive(paths: &Paths, source: &str, file: Option<&str>) -> Result<PathBuf> {
-    let Some(gid) = parse_nexus(source) else { return Ok(expand(source)) };
-    let nx = nexus(paths);
+    match parse_nexus(source) {
+        Some(gid) => download_nexus(paths, &nexus(paths), gid, file, None, "nexus"),
+        None => {
+            // a name or number from the Downloads list, or a path
+            let p = expand(source);
+            if p.exists() {
+                return Ok(p);
+            }
+            let st = State::load(paths)?;
+            Ok(downloads::find(paths, &st, source)?.path)
+        }
+    }
+}
+
+/// Write the Downloads-list record for a Nexus archive.
+fn record_download(arc: &std::path::Path, name: &str, gid: u64, ver: &nexus::Version, source: &str) {
+    // keep when and how it first arrived (an nxm download stays "nxm" after installing)
+    let prev = downloads::read_meta(arc);
+    let keep = prev.as_ref().map(|m| m.downloaded_at.clone()).filter(|d| !d.is_empty());
+    let source = prev.map(|m| m.source).filter(|s| !s.is_empty()).unwrap_or_else(|| source.to_string());
+    let _ = downloads::write_meta(
+        arc,
+        &downloads::DlMeta {
+            name: name.to_string(),
+            mod_id: Some(gid),
+            file_id: ver.file.id.clone(),
+            version_gsid: ver.game_scoped_id.clone(),
+            version: ver.version.clone(),
+            file_name: ver.file.name.clone(),
+            uploaded_at: ver.uploaded_at.clone(),
+            source,
+            downloaded_at: keep.unwrap_or_else(now),
+        },
+    );
+}
+
+/// Download one Nexus file into the Downloads list (no install).
+fn download_nexus(paths: &Paths, nx: &Nexus, gid: u64, file: Option<&str>, nxm: Option<(&str, &str)>, source: &str) -> Result<PathBuf> {
     let info = nx.mod_info(gid)?;
-    let ver = pick_file(&nx, &info, file)?;
+    let ver = pick_file(nx, &info, file)?;
     let man = nx.manifest(ver.manifest_url.as_deref().context("version has no manifest")?)?;
     paths.ensure_dirs()?;
     let arc = paths.downloads().join(format!("{}-{}", ver.game_scoped_id, slugify(&ver.file.name)));
-    nx.download(&ver, &man, &arc, None)?;
+    if !arc.exists() {
+        println!("downloading {} {} ({:.1} MB)", info.name, ver.version, man.archive.size as f64 / 1048576.0);
+    }
+    nx.download(&ver, &man, &arc, nxm)?;
+    record_download(&arc, &info.name, gid, &ver, source);
     Ok(arc)
+}
+
+/// Install an entry of the Downloads list. Nexus downloads go through the Nexus install (which
+/// reuses the archive on disk and keeps update tracking exact); others install as archives.
+fn install_download(
+    paths: &Paths,
+    st: &mut State,
+    d: &downloads::Download,
+    fomod: Option<fomod::Choices>,
+    fomod_defaults: bool,
+    with_deps: bool,
+) -> Result<()> {
+    let o = InstallOpts {
+        file: (!d.meta.version_gsid.is_empty()).then(|| d.meta.version_gsid.clone()),
+        id: None,
+        name: (!d.meta.name.is_empty()).then(|| d.meta.name.clone()),
+        root: None,
+        dest: None,
+        with_deps,
+        ignore_deps: !with_deps,
+        disabled: false,
+        keep_archive: true,
+        nxm: None,
+        hooks: true,
+        fomod,
+        fomod_defaults,
+    };
+    match (d.meta.mod_id, d.meta.version_gsid.is_empty()) {
+        (Some(gid), false) => {
+            let mut visiting = BTreeSet::new();
+            install_nexus(paths, st, &nexus(paths), gid, &InstallOpts { name: None, ..o }, 0, &mut visiting)
+        }
+        (gid, _) => install_local(paths, st, &d.path, gid, &o),
+    }
 }
 
 /// Revision info + manifest of a collection (the archive is cached per revision).
@@ -2953,12 +3094,7 @@ fn settings_cmd(paths: &Paths, st: &State, action: SettingsCmd) -> Result<()> {
                     let k = f["key"].as_str().unwrap();
                     println!("  {:<24} {:<10} {}", k, v[k].to_string().trim_matches('"'), f["label"].as_str().unwrap_or(""));
                 }
-                println!(
-                    "staging: {}\ndownloads: {}\nwatching: {}",
-                    paths.mods().display(),
-                    paths.downloads().display(),
-                    paths.watch_dir().display()
-                );
+                println!("staging: {}\ndownloads: {}", paths.mods().display(), paths.downloads().display());
             }
             return Ok(());
         }
@@ -3001,76 +3137,10 @@ fn settings_cmd(paths: &Paths, st: &State, action: SettingsCmd) -> Result<()> {
             println!("note: the new folder is on a different drive than the game; installs and imports will copy instead of move");
         }
     }
-    // Turning the download watcher on: what is already in the folder isn't "new".
-    if new.auto_install_downloads && !cur.auto_install_downloads {
-        let n = baseline_downloads(&np)?;
-        println!("watching {} (ignoring the {n} archives already there)", np.watch_dir().display());
-    }
     settings::save(&paths.data, &new)?;
     let _ = st;
     println!("saved");
     Ok(())
-}
-
-const ARCHIVE_EXTS: &[&str] = &["zip", "7z", "rar"];
-
-fn seen_file(paths: &Paths) -> PathBuf {
-    paths.data.join("downloads-seen.json")
-}
-fn seen_set(paths: &Paths) -> BTreeSet<String> {
-    fs::read(seen_file(paths)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
-}
-fn mark_download_seen(paths: &Paths, p: &std::path::Path) -> Result<()> {
-    let mut s = seen_set(paths);
-    s.insert(p.to_string_lossy().into());
-    fs::write(seen_file(paths), serde_json::to_vec(&s)?)?;
-    Ok(())
-}
-fn baseline_downloads(paths: &Paths) -> Result<usize> {
-    let all: Vec<PathBuf> = archives_in(&paths.watch_dir());
-    let mut s = seen_set(paths);
-    for p in &all {
-        s.insert(p.to_string_lossy().into());
-    }
-    fs::write(seen_file(paths), serde_json::to_vec(&s)?)?;
-    Ok(all.len())
-}
-fn archives_in(dir: &std::path::Path) -> Vec<PathBuf> {
-    fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && p.extension().is_some_and(|e| ARCHIVE_EXTS.contains(&e.to_string_lossy().to_lowercase().as_str())))
-        .collect()
-}
-/// Nexus names manual downloads `<Name>-<modid>-<version>-<unix time>.<ext>`.
-fn nexus_id_from_filename(stem: &str) -> Option<u64> {
-    let re = regex::Regex::new(r"^.+?-(\d+)-(?:[\w.]+-)*?(\d{9,11})$").ok()?;
-    re.captures(stem).and_then(|c| c[1].parse().ok())
-}
-fn download_name(stem: &str) -> String {
-    match regex::Regex::new(r"^(.+?)-\d+-(?:[\w.]+-)*?\d{9,11}$").ok().and_then(|re| re.captures(stem).map(|c| c[1].to_string())) {
-        Some(n) => n.replace('_', " "),
-        None => stem.to_string(),
-    }
-}
-/// New, completely downloaded archives in the watched folder.
-fn scan_downloads(paths: &Paths) -> Result<Vec<(PathBuf, Option<u64>)>> {
-    let seen = seen_set(paths);
-    let now = std::time::SystemTime::now();
-    Ok(archives_in(&paths.watch_dir())
-        .into_iter()
-        .filter(|p| !seen.contains(&p.to_string_lossy().to_string()))
-        // still being written? (browsers write .part/.crdownload first, but be safe)
-        .filter(|p| {
-            fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age.as_secs() >= 5)
-        })
-        .map(|p| {
-            let id = p.file_stem().and_then(|s| nexus_id_from_filename(&s.to_string_lossy()));
-            (p, id)
-        })
-        .collect())
 }
 
 /// Settings-driven tasks after a mod is installed.
@@ -3332,18 +3402,4 @@ fn eject(paths: &Paths, st: &State, apply: bool) -> Result<()> {
         println!("game dir is now a classic manual install; remove `cpmm run --` from the launch options to keep it that way");
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod download_tests {
-    use super::*;
-
-    #[test]
-    fn nexus_manual_download_names() {
-        assert_eq!(nexus_id_from_filename("Curbside-35922-1-0-1-1761517298"), Some(35922));
-        assert_eq!(nexus_id_from_filename("Cyber Engine Tweaks-107-1-38-1-1761442138"), Some(107));
-        assert_eq!(nexus_id_from_filename("my_custom_mod"), None);
-        assert_eq!(download_name("Cyber_Engine_Tweaks-107-1-38-1-1761442138"), "Cyber Engine Tweaks");
-        assert_eq!(download_name("random"), "random");
-    }
 }

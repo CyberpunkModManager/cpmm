@@ -561,6 +561,14 @@ export function InstallView({ state }: { state: AppState }) {
                 >
                   {installedIds.has(look.data.mod_id) ? "Reinstall / switch file" : "Install"}
                 </Button>
+                <Button
+                  icon={<Download className="size-4" />}
+                  disabled={busy}
+                  onClick={() => run(`Download ${look.data!.name}`, ["download", String(look.data!.mod_id), ...(file ? ["--file", file] : [])])}
+                  title="Add it to Downloads without installing"
+                >
+                  Download only
+                </Button>
               </div>
             </div>
             <div className="mt-4 grid gap-4 lg:grid-cols-2">

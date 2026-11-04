@@ -218,7 +218,7 @@ paths are matched case-insensitively.
   `--fomod-defaults` takes the suggestions; `--fomod-choices '{"Step/Group": ["Option"]}'` sets them
   (`cpmm api fomod <source>` lists the options as JSON).
 * Your choices are saved with the mod and reused when it updates. Requirement installs, nxm links
-  and the download watcher use the installer's suggestions.
+  and downloads installed automatically use the installer's suggestions.
 
 Several files from one Nexus page (a car and its tuning-parts installer) install as separate mods.
 
@@ -239,6 +239,24 @@ Downloading mods from the API needs a Nexus premium account; if a large collecti
 API's hourly limit, run the same command again to continue. Vortex-only binary patches and
 non-Nexus sources are listed for manual steps. The GUI has the same on the Install page.
 
+## Downloads
+
+Like Vortex and MO2, cpmm keeps a **Downloads list** separate from the installed mods: every archive
+it downloads (Mod Manager Download links, the built-in Nexus browser, `cpmm download`, installs)
+stays in the download folder with a small record of which mod, file and version it is.
+
+```
+cpmm download <nexus id | url> [--file …]   # download only
+cpmm downloads                               # the list, with installed / not installed / other version
+cpmm downloads install <# | name> [--with-deps] [--fomod-choices … | --fomod-defaults]
+cpmm downloads remove <# | name>             # deletes the archive; the installed mod stays
+cpmm downloads add <path> [--nexus <id>] [--move]
+```
+
+Downloads only install themselves when **Settings → Downloads → Install downloads automatically**
+is on (off by default). Installing a Nexus download reuses the archive on disk, keeps update
+tracking exact, and opens the FOMOD chooser in the GUI when the mod has an installer.
+
 ## Settings
 
 Settings live in `~/.local/share/cpmm/settings.json` (every key has a default) and are shared by
@@ -256,7 +274,7 @@ cpmm settings reset [key]
 | Updates | `check_updates_on_start`, `auto_install_updates` (never while the game runs; undoable), `refresh_minutes` |
 | Load order | `auto_sort`: re-sort after installs, updates, enabling and rollbacks |
 | After installing | `after_install_verify`, `after_install_doctor`, `after_install_command` (gets `CPMM_MOD_ID`, `CPMM_MOD_NAME`, `CPMM_MOD_VERSION`) |
-| Downloads | `auto_install_downloads` + `watch_dir` (default `~/Downloads`): new archives are installed, Nexus file names give the mod id (`cpmm downloads [--install]`); `keep_archives` |
+| Downloads | `auto_install_downloads`: install a mod as soon as its download finishes (off: it waits in the Downloads list); `keep_archives` (default on): installed mods stay in the list |
 | Storage | `staging_dir`, `download_dir` |
 | Profiles | `profiles_enabled`, `new_profiles_own_saves` |
 | Safety | `snapshot_saves`, `keep_versions`, `keep_save_snapshots` |

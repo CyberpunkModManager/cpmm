@@ -145,6 +145,7 @@ pub fn overwrite_move(paths: &Paths, st: &mut State, to: &str, sel: &[String]) -
                 hidden: vec![],
                 ignored_reqs: vec![],
                 fomod: None,
+                archive: None,
                 installed_at: now(),
                 notes: "created from overwrite".into(),
             });
