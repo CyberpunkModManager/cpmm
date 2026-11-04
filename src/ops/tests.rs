@@ -259,3 +259,39 @@ fn a_job_log_is_the_cli_text() {
     assert!(r.installed.is_empty());
     let _ = fs::remove_dir_all(&p.data);
 }
+
+#[test]
+fn remedies_read_as_their_cli_command() {
+    use crate::install::OnMissing;
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    // the argv `cpmm doctor` printed (and `api doctor` carried) before remedies were typed
+    let cases = [
+        (
+            Action::Install(InstallRequest { source: "107".into(), ask: true, missing: OnMissing::Install, ..Default::default() }),
+            s(&["install", "107", "--with-deps"]),
+        ),
+        (
+            Action::Deps { refresh: false, fix: false, ignore: Some(("a".into(), "107".into())), unignore: None },
+            s(&["deps", "--ignore", "a", "107"]),
+        ),
+        (Action::Enable { mods: vec!["b".into()] }, s(&["enable", "b"])),
+        (Action::Disable { mods: vec!["a".into()] }, s(&["disable", "a"])),
+        (Action::Rule { r#mod: "a".into(), after: "b".into(), remove: false }, s(&["rule", "a", "--after", "b"])),
+        (Action::Rule { r#mod: "a".into(), after: "b".into(), remove: true }, s(&["rule", "a", "--after", "b", "--remove"])),
+        (Action::OverwriteClear { paths: vec!["r6/config/x.json".into()] }, s(&["overwrite", "clear", "r6/config/x.json"])),
+        (Action::ModioAck, s(&["modio", "--ack"])),
+        (Action::Rollback { r#mod: "a".into(), to: None }, s(&["rollback", "a"])),
+        (Action::UndoUpdate { batch: Some("update-1".into()) }, s(&["undo-update", "update-1"])),
+        (Action::Update { mods: vec!["a".into()], all: false }, s(&["update", "a"])),
+        (Action::Vanilla { on: true }, s(&["vanilla", "on"])),
+        (Action::Sort { apply: true }, s(&["sort", "--apply"])),
+    ];
+    for (a, argv) in cases {
+        assert_eq!(a.argv(), argv);
+    }
+    // and a few the GUI sends
+    let p = ProfileAction::Create { name: "P".into(), from: None, empty: true, own_saves: true, copy_saves: false, switch: true };
+    assert_eq!(Action::Profile(p).argv(), s(&["profile", "create", "P", "--empty", "--own-saves", "--switch"]));
+    let add = Action::DownloadsAdd { path: "/x.zip".into(), nexus: Some(5), move_it: true, source: "browser".into(), auto: true };
+    assert_eq!(add.argv(), s(&["downloads", "add", "/x.zip", "--nexus", "5", "--move", "--source", "browser", "--auto"]));
+}

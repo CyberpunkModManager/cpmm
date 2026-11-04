@@ -7,27 +7,39 @@
 //! Findings whose title the user acknowledged (`State::acked`) keep their place as "acked".
 
 use crate::conflicts;
+use crate::install::OnMissing;
 use crate::loadorder::{self, Owner, Pair};
 use crate::manage::{self, OwKind};
 use crate::modio;
 use crate::nexus::{Catalogue, Nexus};
+use crate::ops;
 use crate::requirements::{self, Status};
 use crate::safety;
 use crate::state::{Paths, State};
 use serde::Serialize;
 
-/// A one-click fix: the GUI shows `label` and runs `cpmm <args>`.
+/// A one-click fix: the operation the GUI runs when the user picks `label`. `args` is the
+/// same as a `cpmm` command line (what `cpmm doctor` prints; for scripts reading `api doctor`).
 #[derive(Serialize, Debug, Clone, ts_rs::TS)]
 #[ts(rename = "Remedy")]
 pub struct Action {
     pub label: String,
+    pub op: ops::Action,
     pub args: Vec<String>,
     /// "primary" for the recommended choice
     #[ts(type = "\"primary\" | \"secondary\"")]
     pub style: &'static str,
 }
-fn act(label: impl Into<String>, args: &[&str], style: &'static str) -> Action {
-    Action { label: label.into(), args: args.iter().map(|s| s.to_string()).collect(), style }
+fn act(label: impl Into<String>, op: ops::Action, style: &'static str) -> Action {
+    Action { label: label.into(), args: op.argv(), op, style }
+}
+
+fn ids(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+fn rule(a: &str, b: &str, remove: bool) -> ops::Action {
+    ops::Action::Rule { r#mod: a.into(), after: b.into(), remove }
 }
 
 #[derive(Serialize, Debug, ts_rs::TS)]
@@ -79,7 +91,7 @@ fn name(st: &State, id: &str) -> String {
 }
 
 fn disable(st: &State, id: &str) -> Action {
-    act(format!("Disable {}", name(st, id)), &["disable", id], "secondary")
+    act(format!("Disable {}", name(st, id)), ops::Action::Disable { mods: ids(&[id]) }, "secondary")
 }
 
 fn imports(paths: &Paths, st: &State) -> Vec<Finding> {
@@ -90,7 +102,7 @@ fn imports(paths: &Paths, st: &State) -> Vec<Finding> {
             title: format!("{owner} imports {imp}, which no installed mod provides"),
             detail: format!("{rel}: one unresolved import fails the whole redscript compile, so every script mod stops working. Install the mod that provides `{imp}` (see this mod's requirements) or disable it."),
             fix: None,
-            actions: if owner.starts_with('(') { vec![] } else { vec![act(format!("Disable {}", name(st, &owner)), &["disable", &owner], "primary")] },
+            actions: if owner.starts_with('(') { vec![] } else { vec![act(format!("Disable {}", name(st, &owner)), ops::Action::Disable { mods: ids(&[&owner]) }, "primary")] },
         })
         .collect()
 }
@@ -111,8 +123,21 @@ fn deps(st: &State) -> Vec<Finding> {
                     },
                     fix: None,
                     actions: vec![
-                        act(format!("Install {}", r.name), &["install", &rid, "--with-deps"], "primary"),
-                        act("Skip it (ignore)", &["deps", "--ignore", &m.id, &rid], "secondary"),
+                        act(
+                            format!("Install {}", r.name),
+                            ops::Action::Install(ops::InstallRequest {
+                                source: rid.clone(),
+                                ask: true,
+                                missing: OnMissing::Install,
+                                ..Default::default()
+                            }),
+                            "primary",
+                        ),
+                        act(
+                            "Skip it (ignore)",
+                            ops::Action::Deps { refresh: false, fix: false, ignore: Some((m.id.clone(), rid)), unignore: None },
+                            "secondary",
+                        ),
                     ],
                 }),
                 (Status::Disabled, Some(d)) => f.push(Finding {
@@ -121,8 +146,8 @@ fn deps(st: &State) -> Vec<Finding> {
                     detail: String::new(),
                     fix: None,
                     actions: vec![
-                        act(format!("Enable {}", d.name), &["enable", &d.id], "primary"),
-                        act(format!("Disable {}", m.name), &["disable", &m.id], "secondary"),
+                        act(format!("Enable {}", d.name), ops::Action::Enable { mods: ids(&[&d.id]) }, "primary"),
+                        act(format!("Disable {}", m.name), ops::Action::Disable { mods: ids(&[&m.id]) }, "secondary"),
                     ],
                 }),
                 _ => {}
@@ -185,8 +210,8 @@ fn archives(paths: &Paths, st: &State) -> Vec<Finding> {
             let actions = if let (Owner::Mod(a), Owner::Mod(b)) = (&p.a, &p.b) {
                 let style = |x: &str| if p.winner.as_deref() == Some(x) { "primary" } else { "secondary" };
                 vec![
-                    act(format!("{} wins", name(st, a)), &["rule", a, "--after", b], style(a)),
-                    act(format!("{} wins", name(st, b)), &["rule", b, "--after", a], style(b)),
+                    act(format!("{} wins", name(st, a)), rule(a, b, false), style(a)),
+                    act(format!("{} wins", name(st, b)), rule(b, a, false), style(b)),
                 ]
             } else {
                 vec![]
@@ -212,8 +237,7 @@ fn overwrite(paths: &Paths, st: &State) -> Option<Finding> {
     if shadow.is_empty() {
         return None;
     }
-    let mut clear = vec!["overwrite", "clear"];
-    clear.extend(shadow.iter().map(|s| s.as_str()));
+    let clear = ops::Action::OverwriteClear { paths: shadow.clone() };
     Some(Finding {
         severity: "info",
         title: format!("{} mod files are overridden by runtime copies in overwrite/", shadow.len()),
@@ -222,7 +246,7 @@ fn overwrite(paths: &Paths, st: &State) -> Option<Finding> {
             shadow.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
         ),
         fix: None,
-        actions: vec![act("Reset to the mods' shipped versions", &clear, "secondary")],
+        actions: vec![act("Reset to the mods' shipped versions", clear, "secondary")],
     })
 }
 
@@ -240,7 +264,7 @@ fn modio_findings(paths: &Paths, st: &State, earlier: &[Finding]) -> Vec<Finding
                 if ch.updated.is_empty() { String::new() } else { format!("; updated: {}", ch.updated.join("; ")) }
             ),
             fix: Some("Unsubscribe in the in-game Mods menu if you didn't mean to add them.".into()),
-            actions: vec![act("Mark as reviewed", &["modio", "--ack"], "secondary")],
+            actions: vec![act("Mark as reviewed", ops::Action::ModioAck, "secondary")],
         });
     }
     // archive and script clashes with mod.io mods are already reported by the general checks
@@ -286,12 +310,12 @@ fn safety_net(paths: &Paths, st: &State, nx: Option<&Nexus>) -> Vec<Finding> {
             .iter()
             .filter(|m| !safety::list_history(paths, m).is_empty())
             .take(4)
-            .map(|m| act(format!("Roll back {}", name(st, m)), &["rollback", m], "secondary"))
+            .map(|m| act(format!("Roll back {}", name(st, m)), ops::Action::Rollback { r#mod: m.clone(), to: None }, "secondary"))
             .collect();
         if let Some(b) = safety::batches(paths, st).into_iter().next()
             && c.last_good.is_some_and(|g| b.ts > g)
         {
-            actions.insert(0, act("Undo the last update run", &["undo-update", &b.batch], "primary"));
+            actions.insert(0, act("Undo the last update run", ops::Action::UndoUpdate { batch: Some(b.batch) }, "primary"));
         }
         let msg = c.message.trim_end_matches('.');
         f.push(Finding {
@@ -329,10 +353,10 @@ fn safety_net(paths: &Paths, st: &State, nx: Option<&Nexus>) -> Vec<Finding> {
             .at_risk
             .iter()
             .filter(|x| x.update_available)
-            .map(|x| act(format!("Update {}", x.name), &["update", &x.id], "primary"))
+            .map(|x| act(format!("Update {}", x.name), ops::Action::Update { mods: ids(&[&x.id]), all: false }, "primary"))
             .collect();
         if !ps.vanilla {
-            actions.push(act("Launch vanilla next time", &["vanilla", "on"], "secondary"));
+            actions.push(act("Launch vanilla next time", ops::Action::Vanilla { on: true }, "secondary"));
         }
         f.push(Finding {
             severity: "crash",
@@ -361,7 +385,7 @@ fn safety_net(paths: &Paths, st: &State, nx: Option<&Nexus>) -> Vec<Finding> {
             .missing
             .iter()
             .filter(|m| st.find(m).is_some())
-            .map(|m| act(format!("Re-enable {}", name(st, m)), &["enable", m], "primary"))
+            .map(|m| act(format!("Re-enable {}", name(st, m)), ops::Action::Enable { mods: ids(&[m]) }, "primary"))
             .collect();
         f.push(Finding {
             severity: "warning",
@@ -387,7 +411,7 @@ fn load_order(paths: &Paths, st: &State) -> Vec<Finding> {
             title: format!("Load order breaks {} constraints", sp.moved.len()),
             detail: sp.moved.iter().flat_map(|m| m.because.clone()).take(4).collect::<Vec<_>>().join("; "),
             fix: None,
-            actions: vec![act("Sort load order", &["sort", "--apply"], "primary")],
+            actions: vec![act("Sort load order", ops::Action::Sort { apply: true }, "primary")],
         });
     }
     for c in &sp.cycles {
@@ -398,7 +422,7 @@ fn load_order(paths: &Paths, st: &State) -> Vec<Finding> {
             .map(|r| {
                 act(
                     format!("Remove rule: {} after {}", name(st, &r.r#mod), name(st, &r.after)),
-                    &["rule", &r.r#mod, "--after", &r.after, "--remove"],
+                    rule(&r.r#mod, &r.after, true),
                     "secondary",
                 )
             })

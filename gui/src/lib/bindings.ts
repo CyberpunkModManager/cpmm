@@ -305,9 +305,10 @@ enabled: number, active: boolean, created_at: string, own_saves: boolean, saves:
 export type Query = { "view": "state" } | { "view": "info", mod: string, } | { "view": "conflicts" } | { "view": "updates", refresh: boolean, } | { "view": "overwrite" } | { "view": "tracked" } | { "view": "lookup", source: string, } | { "view": "loadorder" } | { "view": "doctor" } | { "view": "archives" } | { "view": "safety" } | { "view": "history", mod: string, } | { "view": "settings" } | { "view": "downloads" } | { "view": "onboarding" } | { "view": "changelog", mod: string, } | { "view": "modio" } | { "view": "fomod", source: string, file?: string | null, choices?: { [key in string]: Array<string> } | null, } | { "view": "collection", reference: string, };
 
 /**
- * A one-click fix: the GUI shows `label` and runs `cpmm <args>`.
+ * A one-click fix: the operation the GUI runs when the user picks `label`. `args` is the
+ * same as a `cpmm` command line (what `cpmm doctor` prints; for scripts reading `api doctor`).
  */
-export type Remedy = { label: string, args: Array<string>, 
+export type Remedy = { label: string, op: Action, args: Array<string>, 
 /**
  * "primary" for the recommended choice
  */

@@ -26,10 +26,9 @@ fn is_nexus(u: &Url) -> bool {
     u.scheme() == "https" && u.host_str().is_some_and(|h| h == "nexusmods.com" || h.ends_with(".nexusmods.com"))
 }
 
-/// Nexus mod id from a page URL like …/cyberpunk2077/mods/4626?tab=files.
+/// Nexus mod id from a page URL like …/cyberpunk2077/mods/4626?tab=files (the core's parser).
 fn mod_id_of(u: &Url) -> Option<u64> {
-    let segs: Vec<&str> = u.path_segments()?.collect();
-    segs.windows(2).find(|w| w[0] == "mods").and_then(|w| w[1].parse().ok())
+    cpmm::nexus::catalogue::mod_id(u.as_str())
 }
 
 /// Game Mode (gamescope) has no desktop keyboard; Steam's on-screen one has to be asked for.
@@ -281,18 +280,11 @@ fn on_navigation(app: &AppHandle, url: &Url) -> bool {
     }
 }
 
+/// Where the browser saves manual downloads (in the download folder the settings give).
 fn downloads_dir() -> PathBuf {
-    let data = std::env::var_os("CPMM_DATA").map(PathBuf::from).unwrap_or_else(|| home_dir().join(".local/share/cpmm"));
-    // honour the user's download directory setting (cpmm settings set download_dir …)
-    let custom = std::fs::read(data.join("settings.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v["download_dir"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from))
-        .map(|s| match s.strip_prefix("~/") {
-            Some(r) => home_dir().join(r),
-            None => PathBuf::from(s),
-        });
-    custom.unwrap_or_else(|| data.join("downloads")).join(".incoming")
+    cpmm::state::Paths::load()
+        .map(|p| cpmm::downloads::incoming(&p))
+        .unwrap_or_else(|_| home_dir().join(".local/share/cpmm/downloads/.incoming"))
 }
 
 #[tauri::command]

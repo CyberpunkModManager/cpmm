@@ -7,16 +7,13 @@ use cpmm::ops::query::Query;
 use cpmm::ops::render::{ActResult, LogLine, Transcript};
 use cpmm::ops::{self, Action, Event, Ui};
 use cpmm::state::Paths;
-use serde::Serialize;
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter, Manager};
 
 mod nexus;
 
-/// The `cpmm` binary: what Steam's launch options and the nxm:// link handler run (and, until
-/// remedies are typed, the CLI the `run` command spawns).
+/// The `cpmm` binary: what Steam's launch options and the nxm:// link handler run.
 fn cpmm_bin() -> PathBuf {
     if let Some(p) = std::env::var_os("CPMM_BIN") {
         return p.into();
@@ -145,50 +142,6 @@ fn launch_game(app: AppHandle, close: Option<bool>) -> Result<(), String> {
 #[tauri::command]
 fn gui_log(msg: String) {
     glog(&format!("ui: {msg}"));
-}
-
-#[derive(Serialize)]
-struct RunResult {
-    code: i32,
-    output: String,
-}
-
-/// Run `cpmm <args>` for the doctor's remedies, which are still CLI argv; each output line is
-/// emitted as a `cpmm-log` event tagged with `job`.
-#[tauri::command]
-async fn run(app: AppHandle, job: u64, args: Vec<String>) -> Result<RunResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut child = Command::new(cpmm_bin())
-            .args(&args)
-            .env("CPMM_GUI", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("running cpmm: {e}"))?;
-        let err = child.stderr.take().unwrap();
-        let app2 = app.clone();
-        let t = std::thread::spawn(move || {
-            let mut s = String::new();
-            for line in BufReader::new(err).lines().map_while(Result::ok) {
-                let _ = app2.emit("cpmm-log", LogLine { job, line: line.clone(), stderr: true });
-                s.push_str(&line);
-                s.push('\n');
-            }
-            s
-        });
-        let mut output = String::new();
-        for line in BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
-            let _ = app.emit("cpmm-log", LogLine { job, line: line.clone(), stderr: false });
-            output.push_str(&line);
-            output.push('\n');
-        }
-        output.push_str(&t.join().unwrap_or_default());
-        let code = child.wait().map_err(|e| e.to_string())?.code().unwrap_or(-1);
-        Ok(RunResult { code, output })
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 /// Controller input, read natively (evdev via gilrs). WebKitGTK's Gamepad API doesn't see
@@ -370,7 +323,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             query,
             act,
-            run,
             gui_log,
             quit,
             launch_game,

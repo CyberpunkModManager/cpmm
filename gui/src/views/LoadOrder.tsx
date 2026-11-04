@@ -17,7 +17,7 @@ const sev: Record<Finding["severity"], { tone: "red" | "amber" | "violet" | "mut
 };
 
 export function HealthView({ state }: { state: AppState }) {
-  const { run, runArgs, busy } = useJobs();
+  const { run, busy } = useJobs();
   const doc = useQuery({ queryKey: ["doctor"], queryFn: api.doctor });
   const lo = useQuery({ queryKey: ["loadorder"], queryFn: api.loadorder });
   const [showAcked, setShowAcked] = useState(false);
@@ -88,7 +88,7 @@ export function HealthView({ state }: { state: AppState }) {
                             size="sm"
                             variant={a.style === "primary" ? "primary" : "secondary"}
                             disabled={busy}
-                            onClick={() => runArgs(a.label, a.args)}
+                            onClick={() => run(a.label, a.op)}
                           >
                             {a.label}
                           </Button>

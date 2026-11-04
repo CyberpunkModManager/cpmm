@@ -320,6 +320,208 @@ impl Action {
             Action::Clean { dry_run } => !dry_run,
         }
     }
+
+    /// The `cpmm` command line that does the same (how `cpmm doctor` shows a remedy).
+    pub fn argv(&self) -> Vec<String> {
+        let mut a: Vec<String> = vec![];
+        let mut put = |xs: &[&str]| a.extend(xs.iter().map(|x| x.to_string()));
+        let on = |b: bool, flag: &'static str| if b { vec![flag] } else { vec![] };
+        let opt =
+            |v: &Option<String>, flag: &'static str| -> Vec<String> { v.iter().flat_map(|x| [flag.to_string(), x.clone()]).collect() };
+        fn strs(v: &[String]) -> Vec<&str> {
+            v.iter().map(String::as_str).collect()
+        }
+        match self {
+            Action::Init { game } => {
+                put(&["init"]);
+                if let Some(g) = game {
+                    put(&["--game", &g.to_string_lossy()]);
+                }
+            }
+            Action::Enable { mods } => put(&[&["enable"], &strs(mods)[..]].concat()),
+            Action::Disable { mods } => put(&[&["disable"], &strs(mods)[..]].concat()),
+            Action::Order { r#mod, place } => {
+                put(&["order", r#mod]);
+                match place {
+                    Some(Place::Top) => put(&["--top"]),
+                    Some(Place::Bottom) => put(&["--bottom"]),
+                    Some(Place::Before(b)) => put(&["--before", b]),
+                    Some(Place::After(x)) => put(&["--after", x]),
+                    None => {}
+                }
+            }
+            Action::Install(r) => {
+                put(&["install", &r.source]);
+                for (v, flag) in [(&r.file, "--file"), (&r.id, "--id"), (&r.name, "--name"), (&r.root, "--root"), (&r.dest, "--dest")] {
+                    put(&opt(v, flag).iter().map(String::as_str).collect::<Vec<_>>());
+                }
+                match r.missing {
+                    OnMissing::Install => put(&["--with-deps"]),
+                    OnMissing::Warn => put(&["--ignore-deps"]),
+                    OnMissing::Refuse => {}
+                }
+                put(&on(r.disabled, "--disabled"));
+                if let Some(n) = r.nexus {
+                    put(&["--nexus", &n.to_string()]);
+                }
+                put(&on(r.keep_archive, "--keep-archive"));
+                if let Some(c) = &r.fomod {
+                    put(&["--fomod-choices", &serde_json::to_string(c).unwrap_or_default()]);
+                }
+                put(&on(!r.ask, "--fomod-defaults"));
+            }
+            Action::Update { mods, all } => {
+                put(&[&["update"], &strs(mods)[..]].concat());
+                put(&on(*all, "--all"));
+            }
+            Action::Rename { r#mod, new_id } => put(&["rename", r#mod, new_id]),
+            Action::Remove { r#mod, force } => {
+                put(&["remove", r#mod]);
+                put(&on(*force, "--force"));
+            }
+            Action::Deps { refresh, fix, ignore, unignore } => {
+                put(&["deps"]);
+                put(&on(*refresh, "--refresh"));
+                put(&on(*fix, "--fix"));
+                for (v, flag) in [(ignore, "--ignore"), (unignore, "--unignore")] {
+                    if let Some((m, r)) = v {
+                        put(&[flag, m, r]);
+                    }
+                }
+            }
+            Action::Hide { r#mod, paths } => put(&[&["hide", r#mod.as_str()], &strs(paths)[..]].concat()),
+            Action::Unhide { r#mod, paths } => put(&[&["unhide", r#mod.as_str()], &strs(paths)[..]].concat()),
+            Action::Prefer { r#mod, paths } => put(&[&["prefer", r#mod.as_str()], &strs(paths)[..]].concat()),
+            Action::Nxm { url, register } => {
+                put(&["nxm"]);
+                put(&url.iter().map(String::as_str).collect::<Vec<_>>());
+                put(&on(*register, "--register"));
+            }
+            Action::Tracked { install, untrack } => {
+                put(&["tracked"]);
+                put(&on(*install, "--install"));
+                put(&on(*untrack, "--untrack"));
+            }
+            Action::RegisterHandler => put(&["register-handler"]),
+            Action::UnregisterHandler => put(&["register-handler", "--unregister"]),
+            Action::Import { modlist, apply } => {
+                put(&["import", "--modlist", &modlist.to_string_lossy()]);
+                put(&on(*apply, "--apply"));
+            }
+            Action::Adopt { id, name, paths } => {
+                put(&["adopt", id]);
+                put(&opt(name, "--name").iter().map(String::as_str).collect::<Vec<_>>());
+                put(&strs(paths));
+            }
+            Action::OverwriteMove { to, paths } => put(&[&["overwrite", "move", to.as_str()], &strs(paths)[..]].concat()),
+            Action::OverwriteClear { paths } => put(&[&["overwrite", "clear"], &strs(paths)[..]].concat()),
+            Action::Eject { apply } => {
+                put(&["eject"]);
+                put(&on(*apply, "--apply"));
+            }
+            Action::CollectionInstall { reference, optional, into_current, profile } => {
+                put(&["collection", "install", reference]);
+                put(&on(*optional, "--optional"));
+                put(&on(*into_current, "--into-current"));
+                put(&opt(profile, "--profile").iter().map(String::as_str).collect::<Vec<_>>());
+            }
+            Action::SettingsSet { key, value } => put(&["settings", "set", key, value]),
+            Action::SettingsReset { key } => {
+                put(&["settings", "reset"]);
+                put(&key.iter().map(String::as_str).collect::<Vec<_>>());
+            }
+            Action::Download { source, file } => {
+                put(&["download", source]);
+                put(&opt(file, "--file").iter().map(String::as_str).collect::<Vec<_>>());
+            }
+            Action::DownloadsInstall { key, fomod, ask, with_deps } => {
+                put(&["downloads", "install", key]);
+                if let Some(c) = fomod {
+                    put(&["--fomod-choices", &serde_json::to_string(c).unwrap_or_default()]);
+                }
+                put(&on(!ask, "--fomod-defaults"));
+                put(&on(*with_deps, "--with-deps"));
+            }
+            Action::DownloadsRemove { key } => put(&["downloads", "remove", key]),
+            Action::DownloadsAdd { path, nexus, move_it, source, auto } => {
+                put(&["downloads", "add", &path.to_string_lossy()]);
+                if let Some(n) = nexus {
+                    put(&["--nexus", &n.to_string()]);
+                }
+                put(&on(*move_it, "--move"));
+                if source != "local" {
+                    put(&["--source", source]);
+                }
+                put(&on(*auto, "--auto"));
+            }
+            Action::Clean { dry_run } => {
+                put(&["clean"]);
+                put(&on(*dry_run, "--dry-run"));
+            }
+            Action::Sort { apply } => {
+                put(&["sort"]);
+                put(&on(*apply, "--apply"));
+            }
+            Action::Rule { r#mod, after, remove } => {
+                put(&["rule", r#mod, "--after", after]);
+                put(&on(*remove, "--remove"));
+            }
+            Action::Ack { finding } => put(&["doctor", "--ack", finding]),
+            Action::Unack { finding } => put(&["doctor", "--unack", finding]),
+            Action::Rollback { r#mod, to } => {
+                put(&["rollback", r#mod]);
+                if let Some(t) = to {
+                    put(&["--to", &t.to_string()]);
+                }
+            }
+            Action::UndoUpdate { batch } => {
+                put(&["undo-update"]);
+                put(&batch.iter().map(String::as_str).collect::<Vec<_>>());
+            }
+            Action::Errors => put(&["errors"]),
+            Action::Vanilla { on: v } => put(&["vanilla", if *v { "on" } else { "off" }]),
+            Action::SnapshotSaves => put(&["saves", "--snapshot"]),
+            Action::RestoreSaves { name } => put(&["saves", "--restore", name]),
+            Action::Profile(p) => match p {
+                ProfileAction::Create { name, from, empty, own_saves, copy_saves, switch } => {
+                    put(&["profile", "create", name]);
+                    put(&opt(from, "--from").iter().map(String::as_str).collect::<Vec<_>>());
+                    put(&on(*empty, "--empty"));
+                    put(&on(*own_saves, "--own-saves"));
+                    put(&on(*copy_saves, "--copy-saves"));
+                    put(&on(*switch, "--switch"));
+                }
+                ProfileAction::Switch { name } => put(&["profile", "switch", name]),
+                ProfileAction::Rename { old, new } => put(&["profile", "rename", old, new]),
+                ProfileAction::Saves { name, own, copy } => {
+                    put(&["profile", "saves", name, if *own { "own" } else { "shared" }]);
+                    put(&on(*copy, "--copy"));
+                }
+                ProfileAction::Delete { name } => put(&["profile", "delete", name]),
+            },
+            Action::ModioAck => put(&["modio", "--ack"]),
+            Action::LaunchOptionsApply => put(&["launch-options", "--apply"]),
+            Action::NexusKeySet { key } => put(&["nexus-key", key]),
+            Action::NexusKeyRemove => put(&["nexus-key", "--remove"]),
+            Action::NexusKey { check } => {
+                put(&["nexus-key"]);
+                put(&on(*check, "--check"));
+            }
+            Action::SteamShortcut { name, exe, remove, dry_run } => {
+                put(&["steam-shortcut"]);
+                if name != "cpmm" {
+                    put(&["--name", name]);
+                }
+                if let Some(e) = exe {
+                    put(&["--exe", &e.to_string_lossy()]);
+                }
+                put(&on(*remove, "--remove"));
+                put(&on(*dry_run, "--dry-run"));
+            }
+            Action::Setup => put(&["setup"]),
+        }
+        a
+    }
 }
 
 /// Run an action: take the cpmm lock if it changes state (saying so if it has to wait), read

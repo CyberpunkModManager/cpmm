@@ -59,31 +59,17 @@ export const api = {
   collection: (reference: string) => query<CollectionInfo>({ view: "collection", reference }),
 };
 
-export interface RunResult {
-  code: number;
-  output: string;
-}
-
 let nextJob = 1;
 
-async function asJob<R>(onLine: ((l: LogLine) => void) | undefined, start: (job: number) => Promise<R>): Promise<R & { job: number }> {
+/** Run an action in the core; its log lines stream to `onLine` as they happen. */
+export async function act(action: Action, onLine?: (l: LogLine) => void): Promise<ActResult & { job: number }> {
   const job = nextJob++;
   const unlisten = onLine ? await listen<LogLine>("cpmm-log", (e) => e.payload.job === job && onLine(e.payload)) : null;
   try {
-    return { ...(await start(job)), job };
+    return { ...(await invoke<ActResult>("act", { job, action })), job };
   } finally {
     unlisten?.();
   }
-}
-
-/** Run an action in the core; its log lines stream to `onLine` as they happen. */
-export function act(action: Action, onLine?: (l: LogLine) => void): Promise<ActResult & { job: number }> {
-  return asJob(onLine, (job) => invoke<ActResult>("act", { job, action }));
-}
-
-/** Run a cpmm CLI command (the doctor's remedies, still argv); lines stream to `onLine`. */
-export function runCpmm(args: string[], onLine?: (l: LogLine) => void): Promise<RunResult & { job: number }> {
-  return asJob(onLine, (job) => invoke<RunResult>("run", { job, args }));
 }
 
 /** The `cpmm` command an action is (the job log names it). */
