@@ -40,7 +40,7 @@ export interface AppState {
   overwrite_count: number;
   nxm_handler: boolean;
   active_profile: string;
-  profiles: { name: string; enabled: number; active: boolean; created_at: string }[];
+  profiles: { name: string; enabled: number; active: boolean; created_at: string; own_saves: boolean; saves: number }[];
 }
 
 export interface ModInfo {

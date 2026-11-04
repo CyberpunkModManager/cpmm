@@ -173,6 +173,22 @@ top of their order; uninstalling removes it everywhere (cpmm names the other pro
 on). Existing setups become the profile "Default" on first run. The GUI's profile button (top of the
 sidebar) does the same.
 
+### Per-profile saves
+
+```
+cpmm profile create "Story run" --own-saves [--copy-saves] [--switch]
+cpmm profile saves NAME own [--copy]       # or: shared
+```
+
+A profile uses either the game's normal save folder ("shared", which Steam Cloud syncs) or its own
+folder in `~/.local/share/cpmm/profile-saves/<key>`. `cpmm run` bind-mounts the profile's folder over
+the game's save folder inside the game's namespace (vanilla launches too), so only the game sees the
+swap: switching moves no files, and Steam, outside the namespace, keeps syncing the shared folder
+only. Own saves therefore aren't in Steam Cloud. `--copy-saves` / `--copy` starts the folder with a
+reflinked copy of the active profile's saves (no extra space on btrfs). Turning own saves off keeps
+the folder for later; deleting a profile moves its saves to `trash/`. Save snapshots (`cpmm saves`)
+record their profile, and restore only into it.
+
 ## Load order and health
 
 * `cpmm sort [--apply]`: stable dependency-aware sort. Constraints are only enforced between mods that

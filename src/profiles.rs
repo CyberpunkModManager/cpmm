@@ -7,11 +7,17 @@
 //! Switching saves the current list into its profile, then applies the target's. Mods the
 //! target has never seen (installed while another profile was active) are added to it
 //! disabled, at the top of the order.
+//!
+//! Saves: a profile either uses the game's normal save folder ("shared", which Steam Cloud
+//! syncs) or has its own folder in `<data>/profile-saves/<key>`, which `cpmm run` bind-mounts
+//! over the normal one inside the game's namespace. Only the game sees the swap: nothing is
+//! moved on switching, and Steam (outside the namespace) keeps syncing the shared folder only.
 
 use crate::loadorder::Rule;
-use crate::state::{State, now};
+use crate::state::{Paths, State, now, slugify};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 pub const DEFAULT: &str = "Default";
 
@@ -26,6 +32,25 @@ pub struct Profile {
     pub rules: Vec<Rule>,
     #[serde(default)]
     pub created_at: String,
+    /// Uses its own save folder instead of the game's (shared) one.
+    #[serde(default)]
+    pub own_saves: bool,
+    /// Folder name under profile-saves/; kept across renames and when own_saves is turned
+    /// off (so turning it back on finds the same saves).
+    #[serde(default)]
+    pub saves_key: String,
+}
+
+impl Profile {
+    /// The profile's own save folder, if it uses one.
+    pub fn own_saves_dir(&self, paths: &Paths) -> Option<PathBuf> {
+        (self.own_saves && !self.saves_key.is_empty()).then(|| paths.profile_saves().join(&self.saves_key))
+    }
+}
+
+/// Number of save folders (one per save) in a saves directory.
+pub fn count_saves(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir).map(|d| d.flatten().filter(|e| e.path().join("sav.dat").is_file()).count()).unwrap_or(0)
 }
 
 pub fn valid_name(name: &str) -> Result<String> {
@@ -56,7 +81,41 @@ impl State {
             enabled: self.mods.iter().filter(|m| m.enabled).map(|m| m.id.clone()).collect(),
             rules: self.rules.clone(),
             created_at: now(),
+            own_saves: false,
+            saves_key: String::new(),
         }
+    }
+
+    pub fn active(&self) -> &Profile {
+        self.profiles.iter().find(|p| p.name == self.active_profile).expect("ensure_profiles ran")
+    }
+
+    /// Where the active profile's saves live: its own folder, or None for the shared one.
+    pub fn active_own_saves(&self, paths: &Paths) -> Option<PathBuf> {
+        self.active().own_saves_dir(paths)
+    }
+
+    /// Give a profile its own save folder (`own`) or put it back on the shared one. Returns
+    /// the own folder. Turning it off keeps the folder's saves for later.
+    pub fn set_own_saves(&mut self, paths: &Paths, name: &str, own: bool) -> Result<PathBuf> {
+        self.sync_active_profile();
+        let i = self.profile_index(name)?;
+        if self.profiles[i].saves_key.is_empty() {
+            let base = { let s = slugify(&self.profiles[i].name); if s.is_empty() { "profile".to_string() } else { s } };
+            let mut key = base.clone();
+            let mut n = 2;
+            while self.profiles.iter().any(|p| p.saves_key == key) || paths.profile_saves().join(&key).exists() {
+                key = format!("{base}-{n}");
+                n += 1;
+            }
+            self.profiles[i].saves_key = key;
+        }
+        self.profiles[i].own_saves = own;
+        let dir = paths.profile_saves().join(&self.profiles[i].saves_key);
+        if own {
+            std::fs::create_dir_all(&dir)?;
+        }
+        Ok(dir)
     }
 
     /// Write the live list back into the active profile's entry.
@@ -137,6 +196,8 @@ impl State {
             enabled: if empty { vec![] } else { src.enabled.clone() },
             rules: if empty { vec![] } else { src.rules.clone() },
             created_at: now(),
+            own_saves: false,
+            saves_key: String::new(),
         };
         self.profiles.push(p);
         Ok(name)
@@ -156,13 +217,17 @@ impl State {
         Ok((old, new))
     }
 
-    pub fn delete_profile(&mut self, name: &str) -> Result<String> {
+    /// Delete a profile. Its own save folder (if any) is returned so the caller can move it
+    /// to the trash: saves are never deleted outright.
+    pub fn delete_profile(&mut self, paths: &Paths, name: &str) -> Result<(String, Option<PathBuf>)> {
         self.sync_active_profile();
         let i = self.profile_index(name)?;
         if self.profiles[i].name == self.active_profile {
             bail!("{:?} is the active profile; switch to another one first", self.profiles[i].name);
         }
-        Ok(self.profiles.remove(i).name)
+        let p = self.profiles.remove(i);
+        let dir = (!p.saves_key.is_empty()).then(|| paths.profile_saves().join(&p.saves_key)).filter(|d| d.exists());
+        Ok((p.name, dir))
     }
 
     /// Keep every profile's references in step with a mod id rename.
@@ -253,12 +318,40 @@ mod tests {
         let mut s = st();
         assert!(s.create_profile("default", None, false).is_err());
         assert!(s.create_profile("  ", None, false).is_err());
-        assert!(s.delete_profile(DEFAULT).is_err());
         s.create_profile("X", None, false).unwrap();
         s.rename_profile(DEFAULT, "Main").unwrap();
         assert_eq!(s.active_profile, "Main");
         s.rename_mod_in_profiles("c", "c2");
         assert!(s.profiles.iter().all(|p| p.order.contains(&"c2".to_string()) && p.rules[0].r#mod == "c2"));
-        assert_eq!(s.delete_profile("x").unwrap(), "X");
+        let paths = test_paths("guards");
+        assert!(s.delete_profile(&paths, DEFAULT).is_err());
+        assert_eq!(s.delete_profile(&paths, "x").unwrap().0, "X");
+    }
+
+    fn test_paths(tag: &str) -> Paths {
+        let d = std::env::temp_dir().join(format!("cpmm-profiles-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        Paths { data: d.clone(), game: d.join("game") }
+    }
+
+    #[test]
+    fn own_saves_keep_their_folder() {
+        let mut s = st();
+        let paths = test_paths("saves");
+        s.create_profile("Story Run", None, false).unwrap();
+        let dir = s.set_own_saves(&paths, "Story Run", true).unwrap();
+        assert!(dir.ends_with("profile-saves/story-run") && dir.is_dir());
+        assert_eq!(s.active_own_saves(&paths), None); // Default still shared
+        s.switch_profile("Story Run").unwrap();
+        assert_eq!(s.active_own_saves(&paths).as_deref(), Some(dir.as_path()));
+        s.rename_profile("Story Run", "Act 2").unwrap();
+        assert_eq!(s.active_own_saves(&paths).as_deref(), Some(dir.as_path())); // same folder
+        s.set_own_saves(&paths, "Act 2", false).unwrap();
+        assert_eq!(s.active_own_saves(&paths), None);
+        assert_eq!(s.set_own_saves(&paths, "Act 2", true).unwrap(), dir); // saves come back
+        // a new profile with the same slug gets a fresh folder
+        s.create_profile("story run", None, false).unwrap();
+        assert!(s.set_own_saves(&paths, "story run", true).unwrap().ends_with("story-run-2"));
+        let _ = std::fs::remove_dir_all(&paths.data);
     }
 }

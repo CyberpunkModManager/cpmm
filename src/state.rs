@@ -50,6 +50,8 @@ impl Paths {
     }
     pub fn downloads(&self) -> PathBuf { self.data.join("downloads") }
     pub fn run_file(&self) -> PathBuf { self.data.join("run.json") }
+    /// Save folders of profiles that don't use the game's shared one.
+    pub fn profile_saves(&self) -> PathBuf { self.data.join("profile-saves") }
     pub fn cache(&self) -> PathBuf {
         std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".cache")).join("cpmm")
     }

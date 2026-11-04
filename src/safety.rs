@@ -566,8 +566,23 @@ pub fn iso(t: i64) -> String {
 
 /* ------------------------------------------------------------------ saves */
 
-pub fn saves_dir(paths: &Paths) -> PathBuf {
+/// The game's own save folder (what Steam Cloud syncs; profiles with "shared" saves use it).
+pub fn shared_saves_dir(paths: &Paths) -> PathBuf {
     report_queue(paths).parent().unwrap().parent().unwrap().parent().unwrap().parent().unwrap().join("Saved Games/CD Projekt Red/Cyberpunk 2077")
+}
+
+/// Save folder of a profile (by name; None = the active one).
+fn profile_saves_dir(paths: &Paths, st: &State, profile: Option<&str>) -> PathBuf {
+    let p = profile.and_then(|n| st.profiles.iter().find(|p| p.name == n)).unwrap_or_else(|| st.active());
+    p.own_saves_dir(paths).unwrap_or_else(|| shared_saves_dir(paths))
+}
+
+/// The active profile's save folder, as the game sees it.
+pub fn saves_dir(paths: &Paths) -> PathBuf {
+    match State::load(paths) {
+        Ok(st) => profile_saves_dir(paths, &st, None),
+        Err(_) => shared_saves_dir(paths),
+    }
 }
 fn snapshots_dir(paths: &Paths) -> PathBuf {
     paths.data.join("save-snapshots")
@@ -579,12 +594,16 @@ pub struct Snapshot {
     pub ts: i64,
     pub reason: String,
     pub saves: usize,
+    /// Profile whose saves these are ("" for snapshots from before profiles).
+    pub profile: String,
 }
 
 /// Reflink-copy every save folder (no extra disk space on btrfs). Keeps the newest few.
 pub fn snapshot_saves(paths: &Paths, reason: &str) -> Result<Option<String>> {
-    let src = saves_dir(paths);
-    if !src.is_dir() {
+    let st = State::load(paths)?;
+    let profile = st.active_profile.clone();
+    let src = profile_saves_dir(paths, &st, None);
+    if !src.is_dir() || crate::profiles::count_saves(&src) == 0 {
         return Ok(None);
     }
     let name = format!("{}-{}", now_unix(), crate::state::slugify(reason));
@@ -593,6 +612,7 @@ pub fn snapshot_saves(paths: &Paths, reason: &str) -> Result<Option<String>> {
         files::reflink_or_copy(&src.join(&f), &dst.join(&f))?;
     }
     fs::write(dst.join(".reason"), reason)?;
+    fs::write(dst.join(".profile"), &profile)?;
     let mut all = list_snapshots(paths);
     all.sort_by_key(|s| std::cmp::Reverse(s.ts));
     for s in all.into_iter().skip(KEEP_SAVE_SNAPSHOTS) {
@@ -611,24 +631,31 @@ pub fn list_snapshots(paths: &Paths) -> Vec<Snapshot> {
             let name = e.file_name().to_string_lossy().to_string();
             let ts = name.split('-').next().and_then(|t| t.parse().ok()).unwrap_or(0);
             let reason = fs::read_to_string(e.path().join(".reason")).unwrap_or_default();
+            let profile = fs::read_to_string(e.path().join(".profile")).unwrap_or_default();
             let saves = fs::read_dir(e.path()).map(|d| d.flatten().filter(|x| x.path().is_dir()).count()).unwrap_or(0);
-            Snapshot { name, ts, reason, saves }
+            Snapshot { name, ts, reason, saves, profile }
         })
         .collect();
     v.sort_by_key(|s| std::cmp::Reverse(s.ts));
     v
 }
 
-/// Put a snapshot's saves back (current saves are snapshotted first).
+/// Put a snapshot's saves back into the folder of the profile they came from (current saves
+/// are snapshotted first). Snapshots of another profile's saves need that profile active.
 pub fn restore_snapshot(paths: &Paths, name: &str) -> Result<usize> {
     let snap = snapshots_dir(paths).join(name);
     if !snap.is_dir() {
         bail!("no snapshot {name}");
     }
+    let st = State::load(paths)?;
+    let from = fs::read_to_string(snap.join(".profile")).unwrap_or_default();
+    if !from.is_empty() && from != st.active_profile && st.profiles.iter().any(|p| p.name == from) {
+        bail!("snapshot {name} holds saves of profile {from:?}; switch to it first (cpmm profile switch {from:?})");
+    }
     snapshot_saves(paths, &format!("before restoring {name}"))?;
-    let dst = saves_dir(paths);
+    let dst = profile_saves_dir(paths, &st, None);
     let mut n = 0;
-    for f in files::list_tree(&snap).into_iter().filter(|f| f != ".reason") {
+    for f in files::list_tree(&snap).into_iter().filter(|f| f != ".reason" && f != ".profile") {
         let d = dst.join(&f);
         if d.exists() {
             fs::remove_file(&d)?;

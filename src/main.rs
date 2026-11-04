@@ -328,6 +328,12 @@ enum ProfileCmd {
         from: Option<String>,
         #[arg(long)]
         empty: bool,
+        /// Give it its own save folder (starts empty unless --copy-saves)
+        #[arg(long)]
+        own_saves: bool,
+        /// With --own-saves: start with a copy of the active profile's saves
+        #[arg(long, requires = "own_saves")]
+        copy_saves: bool,
         /// Switch to it right away
         #[arg(long)]
         switch: bool,
@@ -336,6 +342,16 @@ enum ProfileCmd {
     #[command(visible_alias = "use")]
     Switch { name: String },
     Rename { old: String, new: String },
+    /// Own save folder for a profile (`own`), or back to the game's shared one (`shared`).
+    /// Turning it off keeps the profile's saves for later.
+    Saves {
+        name: String,
+        #[arg(value_parser = ["own", "shared"])]
+        mode: String,
+        /// With `own`: copy the active profile's saves in (only into an empty folder)
+        #[arg(long)]
+        copy: bool,
+    },
     /// Delete a profile (not the active one); mods stay installed
     Delete { name: String },
 }
@@ -445,6 +461,10 @@ fn real_main() -> Result<()> {
                     let _ = fs::remove_file(&vf);
                     safety::record_session(&paths, &st, true);
                     eprintln!("cpmm: vanilla launch (no mods mounted)");
+                    if let Some(s) = st.active_own_saves(&paths) {
+                        // still the profile's own saves
+                        return vfs::run(&paths, None, Some(&s), &cmd);
+                    }
                     use std::os::unix::process::CommandExt;
                     let err = std::process::Command::new(&cmd[0]).args(&cmd[1..]).exec();
                     bail!("exec {}: {err}", cmd[0]);
@@ -454,14 +474,14 @@ fn real_main() -> Result<()> {
                     eprintln!("cpmm: modlist.txt not updated: {e:#}");
                 }
             }
-            return vfs::run(&paths, &st.mods, &cmd);
+            return vfs::run(&paths, Some(&st.mods), st.active_own_saves(&paths).as_deref(), &cmd);
         }
         Cmd::Exec { cmd } => {
             let st = State::load(&paths)?;
             if std::env::var_os("CPMM_NS").is_none() && vfs::running(&paths).is_none() {
                 let _ = loadorder::write_modlist(&paths, &st);
             }
-            return vfs::exec_in(&paths, &st.mods, &cmd);
+            return vfs::exec_in(&paths, &st.mods, st.active_own_saves(&paths).as_deref(), &cmd);
         }
         _ if in_ns => bail!("run cpmm management commands outside `cpmm exec`/the game session"),
         _ => {}
@@ -997,7 +1017,8 @@ fn real_main() -> Result<()> {
                 println!("restored {} files from {r}", safety::restore_snapshot(&paths, &r)?);
             }
             for s in safety::list_snapshots(&paths) {
-                println!("  {}  {}  {} saves  {}", s.name, safety::iso(s.ts), s.saves, s.reason);
+                let prof = if s.profile.is_empty() || st.profiles.len() < 2 { String::new() } else { format!("  [{}]", s.profile) };
+                println!("  {}  {}  {} saves  {}{prof}", s.name, safety::iso(s.ts), s.saves, s.reason);
             }
         }
         Cmd::Clean { dry_run } => {
@@ -1015,6 +1036,9 @@ fn real_main() -> Result<()> {
         Cmd::Status => match vfs::running(&paths) {
             Some((info, pid)) => {
                 println!("session running since {} (pid {pid}), {} layers:", info.started, info.layers.len());
+                if let Some(s) = &info.saves {
+                    println!("  saves: {}", s.display());
+                }
                 for l in info.layers {
                     println!("  {l}");
                 }
@@ -1043,13 +1067,20 @@ fn profile(paths: &Paths, st: &mut State, action: ProfileCmd) -> Result<()> {
             st.sync_active_profile();
             for p in &st.profiles {
                 let active = p.name == st.active_profile;
-                println!("{} {:<24} {}", if active { "*" } else { " " }, p.name, summary(st, p));
+                let saves = match p.own_saves_dir(paths) {
+                    Some(d) => format!("own saves ({})", profiles::count_saves(&d)),
+                    None => "shared saves".into(),
+                };
+                println!("{} {:<24} {:<26} {saves}", if active { "*" } else { " " }, p.name, summary(st, p));
             }
             return Ok(());
         }
-        ProfileCmd::Create { name, from, empty, switch } => {
+        ProfileCmd::Create { name, from, empty, own_saves, copy_saves, switch } => {
             let name = st.create_profile(&name, from.as_deref(), empty)?;
             println!("created profile {name:?} ({})", if empty { "empty: every mod disabled".to_string() } else { format!("copy of {:?}", from.unwrap_or(st.active_profile.clone())) });
+            if own_saves {
+                set_profile_saves(paths, st, &name, true, copy_saves)?;
+            }
             if switch {
                 manage::ensure_idle(paths)?;
                 st.switch_profile(&name)?;
@@ -1076,12 +1107,50 @@ fn profile(paths: &Paths, st: &mut State, action: ProfileCmd) -> Result<()> {
             let (old, new) = st.rename_profile(&old, &new)?;
             println!("renamed profile {old:?} -> {new:?}");
         }
+        ProfileCmd::Saves { name, mode, copy } => {
+            set_profile_saves(paths, st, &name, mode == "own", copy)?;
+        }
         ProfileCmd::Delete { name } => {
-            let name = st.delete_profile(&name)?;
+            let (name, saves) = st.delete_profile(paths, &name)?;
             println!("deleted profile {name:?} (mods stay installed)");
+            if let Some(d) = saves {
+                let t = paths.trash_for(&format!("saves-{}", slugify(&name)));
+                fs::create_dir_all(t.parent().unwrap())?;
+                fs::rename(&d, &t)?;
+                println!("its own saves moved to {} (delete when sure)", t.display());
+            }
         }
     }
     st.save(paths)
+}
+
+fn set_profile_saves(paths: &Paths, st: &mut State, name: &str, own: bool, copy: bool) -> Result<()> {
+    let i = st.profile_index(name)?;
+    let name = st.profiles[i].name.clone();
+    if name == st.active_profile {
+        manage::ensure_idle(paths)?; // the running game has the current save folder in use
+    }
+    let source = safety::saves_dir(paths); // the active profile's saves, before any change
+    let dir = st.set_own_saves(paths, &name, own)?;
+    if !own {
+        let n = profiles::count_saves(&dir);
+        println!("{name:?} now uses the game's shared saves{}", if n > 0 { format!(" (its {n} own saves stay in {})", dir.display()) } else { String::new() });
+        return Ok(());
+    }
+    let have = profiles::count_saves(&dir);
+    if copy {
+        if have > 0 {
+            bail!("{} already holds {have} saves; not copying over them", dir.display());
+        }
+        let mut n = 0;
+        for f in files::list_tree(&source) {
+            files::reflink_or_copy(&source.join(&f), &dir.join(&f))?;
+            n += 1;
+        }
+        println!("copied {} saves ({n} files) from {}", profiles::count_saves(&dir), source.display());
+    }
+    println!("{name:?} uses its own saves in {} ({} saves; not synced by Steam Cloud)", dir.display(), profiles::count_saves(&dir));
+    Ok(())
 }
 
 fn same_fs_check(paths: &Paths) -> Result<()> {

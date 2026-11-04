@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { Check, Copy, FilePlus2, Pencil, Trash2, UserRound } from "lucide-react";
+import { Check, Copy, FilePlus2, HardDrive, Pencil, Save, Trash2, UserRound } from "lucide-react";
 import { useState } from "react";
 import type { AppState } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
@@ -33,12 +33,16 @@ function ProfilesDrawer({ open, onClose, state }: { open: boolean; onClose: () =
   const [renaming, setRenaming] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [ownSaves, setOwnSaves] = useState(false);
+  const [copySaves, setCopySaves] = useState(true);
+  const [savesFor, setSavesFor] = useState<{ name: string; own: boolean } | null>(null);
+  const deletingHasSaves = state.profiles.find((p) => p.name === deleting)?.own_saves;
   const locked = state.game_running || !!state.session;
   const taken = (n: string) => state.profiles.some((p) => p.name.toLowerCase() === n.trim().toLowerCase());
   const nameOk = name.trim().length > 0 && !taken(name);
 
   const create = async (empty: boolean) => {
-    const args = ["profile", "create", name.trim(), ...(empty ? ["--empty"] : []), ...(locked ? [] : ["--switch"])];
+    const args = ["profile", "create", name.trim(), ...(empty ? ["--empty"] : []), ...(ownSaves ? ["--own-saves", ...(copySaves ? ["--copy-saves"] : [])] : []), ...(locked ? [] : ["--switch"])];
     if (await run(`New profile ${name.trim()}`, args)) setName("");
   };
 
@@ -83,8 +87,14 @@ function ProfilesDrawer({ open, onClose, state }: { open: boolean; onClose: () =
                         <span className="truncate font-medium">{p.name}</span>
                         {p.active && <Badge tone="cyan">active</Badge>}
                       </div>
-                      <div className="text-xs text-ink-400">
-                        {p.enabled} of {state.mods.length} mods enabled
+                      <div className="flex flex-wrap items-center gap-x-3 text-xs text-ink-400">
+                        <span>
+                          {p.enabled} of {state.mods.length} mods enabled
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          {p.own_saves ? <HardDrive className="size-3" /> : <Save className="size-3" />}
+                          {p.own_saves ? `Own saves · ${p.saves}` : `Shared saves · ${p.saves}`}
+                        </span>
                       </div>
                     </div>
                     {!p.active && (
@@ -92,6 +102,9 @@ function ProfilesDrawer({ open, onClose, state }: { open: boolean; onClose: () =
                         Switch
                       </Button>
                     )}
+                    <Button size="sm" variant="ghost" disabled={busy || (p.active && locked)} onClick={() => setSavesFor({ name: p.name, own: !p.own_saves })}>
+                      {p.own_saves ? "Use shared saves" : "Own saves"}
+                    </Button>
                     <Button
                       size="sm"
                       variant="ghost"
@@ -126,6 +139,16 @@ function ProfilesDrawer({ open, onClose, state }: { open: boolean; onClose: () =
             >
               <Input placeholder="Name, e.g. Story run or Photo mode" value={name} onChange={(e) => setName(e.target.value)} aria-label="New profile name" />
               {name.trim() && taken(name) && <div className="text-xs text-neon-red">A profile with that name exists.</div>}
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <input type="checkbox" checked={ownSaves} onChange={(e) => setOwnSaves(e.target.checked)} className="size-4 accent-cyan-400" />
+                Own saves (a separate save list for this profile)
+              </label>
+              {ownSaves && (
+                <label className="ml-6 flex cursor-pointer items-center gap-2 text-sm text-ink-300">
+                  <input type="checkbox" checked={copySaves} onChange={(e) => setCopySaves(e.target.checked)} className="size-4 accent-cyan-400" />
+                  Start with a copy of {state.active_profile}'s saves
+                </label>
+              )}
               <div className="flex flex-wrap gap-2">
                 <Button type="submit" variant="primary" icon={<Copy className="size-4" />} disabled={busy || !nameOk}>
                   Copy of {state.active_profile}
@@ -142,9 +165,25 @@ function ProfilesDrawer({ open, onClose, state }: { open: boolean; onClose: () =
         </div>
       </Drawer>
       <Confirm
+        open={!!savesFor}
+        title={savesFor?.own ? `Give ${savesFor?.name} its own saves?` : `Put ${savesFor?.name} back on the shared saves?`}
+        body={
+          savesFor?.own
+            ? "The game will see a separate save list while this profile is active. It starts empty; your other saves stay where they are. Own saves aren't synced by Steam Cloud."
+            : "The game will see the normal save list again (the one Steam Cloud syncs). This profile's own saves are kept, and come back if you turn own saves on again."
+        }
+        confirmLabel={savesFor?.own ? "Use own saves" : "Use shared saves"}
+        onCancel={() => setSavesFor(null)}
+        onConfirm={async () => {
+          const s = savesFor!;
+          setSavesFor(null);
+          await run(`${s.name}: ${s.own ? "own" : "shared"} saves`, ["profile", "saves", s.name, s.own ? "own" : "shared"]);
+        }}
+      />
+      <Confirm
         open={!!deleting}
         title={`Delete profile ${deleting}?`}
-        body="Only the list goes: every mod stays installed and keeps its place in your other profiles."
+        body={`Only the list goes: every mod stays installed and keeps its place in your other profiles.${deletingHasSaves ? " Its own saves are moved to cpmm's trash, not deleted." : ""}`}
         confirmLabel="Delete profile"
         danger
         onCancel={() => setDeleting(null)}

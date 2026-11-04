@@ -13,6 +13,7 @@
 use crate::state::{Mod, Paths};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::os::unix::ffi::OsStrExt;
 use std::ffi::CString;
 use std::fs;
 use std::os::unix::process::CommandExt;
@@ -26,6 +27,18 @@ pub struct RunInfo {
     pub layers: Vec<String>,
     pub started: String,
     pub command: Vec<String>,
+    /// The profile's own save folder, bind-mounted over the game's save folder.
+    #[serde(default)]
+    pub saves: Option<PathBuf>,
+}
+
+/// Bind `src` over `dst` in the current mount namespace (recursive, like bwrap's --bind).
+fn bind_mount(src: &Path, dst: &Path) -> Result<()> {
+    let (s, d) = (CString::new(src.as_os_str().as_bytes())?, CString::new(dst.as_os_str().as_bytes())?);
+    if unsafe { libc::mount(s.as_ptr(), d.as_ptr(), std::ptr::null(), libc::MS_BIND | libc::MS_REC, std::ptr::null()) } != 0 {
+        return Err(cerr(&format!("bind {} over {}", src.display(), dst.display())));
+    }
+    Ok(())
 }
 
 pub fn layers(paths: &Paths, mods: &[Mod]) -> Vec<(String, PathBuf)> {
@@ -142,18 +155,25 @@ pub fn running(paths: &Paths) -> Option<(RunInfo, u32)> {
 }
 
 /// Enter a fresh namespace with the overlay mounted. Must be called while single-threaded.
-fn enter_new(paths: &Paths, mods: &[Mod], cmd: &[String]) -> Result<Vec<String>> {
+/// `mods: None` mounts no overlay (vanilla launch); only the profile's saves are bound.
+fn enter_new(paths: &Paths, mods: Option<&[Mod]>, saves: Option<&Path>, cmd: &[String]) -> Result<Vec<String>> {
     if !paths.game.is_dir() {
         bail!("game directory {} not found", paths.game.display());
     }
     paths.ensure_dirs()?;
-    let ls = layers(paths, mods);
+    let ls = mods.map(|m| layers(paths, m)).unwrap_or_default();
     if ls.len() > 450 {
         bail!("{} layers exceeds overlayfs's limit of ~500", ls.len());
     }
     let mut lowers: Vec<PathBuf> = ls.iter().map(|(_, p)| p.clone()).collect();
     lowers.push(paths.game.clone());
 
+    // Both ends of the saves bind must exist (and be ours) before we leave our uid behind.
+    let shared_saves = crate::safety::shared_saves_dir(paths);
+    if let Some(s) = saves {
+        fs::create_dir_all(s)?;
+        fs::create_dir_all(&shared_saves)?;
+    }
     let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
     unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS)?;
     write_maps(0, uid, 0, gid)?;
@@ -161,7 +181,12 @@ fn enter_new(paths: &Paths, mods: &[Mod], cmd: &[String]) -> Result<Vec<String>>
     if unsafe { libc::mount(std::ptr::null(), root.as_ptr(), std::ptr::null(), libc::MS_REC | libc::MS_PRIVATE, std::ptr::null()) } != 0 {
         return Err(cerr("make / private"));
     }
-    mount_overlay(&paths.game, &lowers, &paths.upper(), &paths.work())?;
+    if mods.is_some() {
+        mount_overlay(&paths.game, &lowers, &paths.upper(), &paths.work())?;
+    }
+    if let Some(s) = saves {
+        bind_mount(s, &shared_saves)?;
+    }
 
     let info = RunInfo {
         pid: std::process::id(),
@@ -169,6 +194,7 @@ fn enter_new(paths: &Paths, mods: &[Mod], cmd: &[String]) -> Result<Vec<String>>
         layers: ls.iter().map(|(id, _)| id.clone()).collect(),
         started: crate::state::now(),
         command: cmd.to_vec(),
+        saves: saves.map(Path::to_path_buf),
     };
     // Written from inside userns#1 (root there == us outside), so it is owned by us.
     fs::write(paths.run_file(), serde_json::to_vec_pretty(&info)?)?;
@@ -208,27 +234,32 @@ fn exec(cmd: &[String]) -> Result<()> {
 }
 
 /// `cpmm run -- %command%`: the Steam launch wrapper.
-pub fn run(paths: &Paths, mods: &[Mod], cmd: &[String]) -> Result<()> {
+pub fn run(paths: &Paths, mods: Option<&[Mod]>, saves: Option<&Path>, cmd: &[String]) -> Result<()> {
     if std::env::var_os("CPMM_NS").is_some() {
         return exec(cmd); // already inside (e.g. nested wrappers)
     }
     if let Some((_, pid)) = running(paths) {
         bail!("a cpmm session is already running (pid {pid}); two overlays sharing one upper dir would corrupt it");
     }
-    let ls = enter_new(paths, mods, cmd)?;
-    eprintln!("cpmm: overlay mounted with {} mod layers", ls.len());
+    let ls = enter_new(paths, mods, saves, cmd)?;
+    if mods.is_some() {
+        eprintln!("cpmm: overlay mounted with {} mod layers", ls.len());
+    }
+    if let Some(s) = saves {
+        eprintln!("cpmm: saves from {}", s.display());
+    }
     exec(cmd)
 }
 
 /// `cpmm exec -- cmd`: run a tool inside the game's view (joins a running session if any).
-pub fn exec_in(paths: &Paths, mods: &[Mod], cmd: &[String]) -> Result<()> {
+pub fn exec_in(paths: &Paths, mods: &[Mod], saves: Option<&Path>, cmd: &[String]) -> Result<()> {
     if std::env::var_os("CPMM_NS").is_some() {
         return exec(cmd);
     }
     if let Some((_, pid)) = running(paths) {
         join(pid)?;
     } else {
-        enter_new(paths, mods, cmd)?;
+        enter_new(paths, Some(mods), saves, cmd)?;
     }
     exec(cmd)
 }
