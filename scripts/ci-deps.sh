@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# System packages + Rust toolchain for CI (Ubuntu/Debian runners, GitHub or Forgejo).
+# System packages + Rust toolchain for CI (Ubuntu/Debian GitHub runners).
 set -euo pipefail
 SUDO=""; command -v sudo >/dev/null && [ "$(id -u)" != 0 ] && SUDO=sudo
 if [ "${1:-}" = "gui" ]; then

@@ -5,6 +5,9 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -45,18 +48,8 @@ jobs:
         with:
           name: cpmm-linux-x86_64
           path: dist/release/*
-      - name: Publish release (GitHub)
-        if: startsWith(github.ref, 'refs/tags/') && github.server_url == 'https://github.com'
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/release/*
-      - name: Publish release (Forgejo)
-        if: startsWith(github.ref, 'refs/tags/') && github.server_url != 'https://github.com'
-        uses: https://code.forgejo.org/actions/forgejo-release@v2
-        with:
-          direction: upload
-          url: ${{ github.server_url }}
-          repo: ${{ github.repository }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.ref_name }}
-          release-dir: dist/release
