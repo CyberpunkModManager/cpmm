@@ -226,18 +226,7 @@ impl State {
             Err(e) => Err(e.into()),
         }
     }
-    pub fn save(&self, p: &Paths) -> Result<()> {
-        fs::create_dir_all(&p.data)?;
-        let tmp = p.data.join("state.json.tmp");
-        let mut v = serde_json::to_value(self)?;
-        v["profiles"] = serde_json::to_value(self.synced_profiles())?;
-        fs::write(&tmp, serde_json::to_vec_pretty(&v)?)?;
-        if p.state_file().exists() {
-            let _ = fs::copy(p.state_file(), p.data.join("state.json.bak"));
-        }
-        fs::rename(tmp, p.state_file())?;
-        Ok(())
-    }
+    // `save` is in change.rs: State reaches disk only through the change protocol.
     pub fn find(&self, key: &str) -> Option<usize> {
         if let Some(i) = self.mods.iter().position(|m| m.id == key) {
             return Some(i);

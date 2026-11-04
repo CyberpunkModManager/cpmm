@@ -157,7 +157,8 @@ pub fn plan(extracted: &[String], slug: &str, root: Option<&str>, dest: Option<&
 
 /// Build `mods/<id>/files` from an extracted tree; replaces any existing staged files
 /// (old ones go to trash). Returns the list of installed relative paths.
-pub fn stage(paths: &Paths, state: &State, id: &str, extracted_root: &Path, plan: &Plan) -> Result<Vec<String>> {
+/// `batch` tags the replaced version's history entry (change::Edit::batch).
+pub fn stage(paths: &Paths, state: &State, id: &str, extracted_root: &Path, plan: &Plan, batch: Option<&str>) -> Result<Vec<String>> {
     if paths.mods().join(id).exists() && crate::vfs::running(paths).is_some() {
         bail!("{id} is mounted by the running game session; quit the game before replacing its files");
     }
@@ -187,7 +188,7 @@ pub fn stage(paths: &Paths, state: &State, id: &str, extracted_root: &Path, plan
         match state.find(id) {
             Some(i) => {
                 let reason = format!("replaced by an install/update (was {})", state.mods[i].version);
-                crate::safety::archive_current(paths, &state.mods[i], &reason)?;
+                crate::safety::archive_current(paths, &state.mods[i], &reason, batch)?;
                 eprintln!("previous version of {id} kept in history (cpmm rollback {id})");
             }
             None => {

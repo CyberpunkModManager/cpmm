@@ -29,12 +29,10 @@ fn read_json(p: &Path) -> Option<Value> {
     serde_json::from_slice(&fs::read(p).ok()?).ok()
 }
 
+/// With `apply`, runs inside a change (which checks the game isn't running and saves).
 pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> Result<()> {
     if !state.mods.is_empty() && apply {
         bail!("cpmm already manages {} mods; import is meant to run once on a fresh state", state.mods.len());
-    }
-    if crate::game_running() {
-        bail!("Cyberpunk is running; quit it first");
     }
     let cache = modlist.join(".cache");
     let result = read_json(&cache.join("result.json")).context("missing .cache/result.json; run check_mods.py first")?;
@@ -252,7 +250,6 @@ pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> 
     println!("\n{} mods, {} files claimed by more than one mod (each owner gets its own reflinked copy)", new_mods.len(), shared);
     if apply {
         state.mods = new_mods;
-        state.save(paths)?;
         println!("imported. Base game dir now holds only vanilla + unmanaged files; launch through `cpmm run`.");
     } else {
         println!("dry run; re-run with --apply to move files");
@@ -260,11 +257,9 @@ pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> 
     Ok(())
 }
 
-/// Move arbitrary game-dir files/dirs into a new manual mod.
+/// Move arbitrary game-dir files/dirs into a new manual mod. Runs inside a change (which
+/// checks the game isn't running and saves).
 pub fn adopt(paths: &Paths, state: &mut State, id: &str, name: &str, rels: &[String]) -> Result<Vec<String>> {
-    if crate::game_running() {
-        bail!("Cyberpunk is running; quit it first");
-    }
     if state.find(id).is_some() {
         bail!("mod {id} already exists");
     }
@@ -302,6 +297,5 @@ pub fn adopt(paths: &Paths, state: &mut State, id: &str, name: &str, rels: &[Str
         installed_at: now(),
         notes: "adopted".into(),
     });
-    state.save(paths)?;
     Ok(out)
 }

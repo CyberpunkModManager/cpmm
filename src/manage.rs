@@ -9,13 +9,6 @@ use std::fs;
 use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 
-pub fn ensure_idle(paths: &Paths) -> Result<()> {
-    if crate::vfs::running(paths).is_some() || crate::game_running() {
-        bail!("the game (or a cpmm session) is running and has these files mounted; quit it first");
-    }
-    Ok(())
-}
-
 fn matches(rel: &str, sel: &[String]) -> bool {
     let l = rel.to_lowercase();
     sel.is_empty()
@@ -177,8 +170,8 @@ pub fn overwrite_files(paths: &Paths, st: &State) -> Vec<OwFile> {
 }
 
 /// Move runtime-written files from overwrite/ into a mod (created as a manual mod if new).
+/// Runs inside a change that needs the game idle.
 pub fn overwrite_move(paths: &Paths, st: &mut State, to: &str, sel: &[String]) -> Result<(String, usize, usize)> {
-    ensure_idle(paths)?;
     let id = match st.find(to) {
         Some(i) => st.mods[i].id.clone(),
         None => {
@@ -222,7 +215,7 @@ pub fn overwrite_move(paths: &Paths, st: &mut State, to: &str, sel: &[String]) -
 
 /// Move overwrite entries (including deletion markers) to trash.
 pub fn overwrite_clear(paths: &Paths, sel: &[String]) -> Result<(usize, std::path::PathBuf)> {
-    ensure_idle(paths)?;
+    crate::change::Idle::Required.check(paths)?;
     let up = paths.upper();
     let t = paths.trash_for("overwrite");
     let mut n = 0;

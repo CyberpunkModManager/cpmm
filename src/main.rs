@@ -2,6 +2,7 @@
 
 mod api;
 mod archive;
+mod change;
 mod collections;
 mod conflicts;
 mod downloads;
@@ -24,6 +25,7 @@ mod vanilla;
 mod vfs;
 
 use anyhow::{Context, Result, bail};
+use change::{Change, Edit, Idle};
 use clap::{Parser, Subcommand};
 use nexus::Catalogue;
 use requirements::Status;
@@ -586,30 +588,73 @@ pub fn game_running() -> bool {
         .unwrap_or(false)
 }
 
-/// Serialise state-changing commands (two nxm clicks at once, etc.).
-fn lock(paths: &Paths) -> Result<fs::File> {
-    use std::os::fd::AsRawFd;
-    fs::create_dir_all(&paths.data)?;
-    let f = fs::OpenOptions::new().create(true).truncate(false).write(true).open(paths.data.join("cpmm.lock"))?;
-    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        eprintln!("waiting for another cpmm command to finish…");
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            bail!("flock: {}", std::io::Error::last_os_error());
+impl Cmd {
+    /// Does this command change State or cpmm's data? Those run under the cpmm lock
+    /// (change::Lock, taken before State is read); the rest only read. Exhaustive on purpose:
+    /// a new command has to choose, and a change made by a command declared read-only fails.
+    fn changes_state(&self) -> bool {
+        match self {
+            Cmd::List { .. }
+            | Cmd::Info { .. }
+            | Cmd::Conflicts { .. }
+            | Cmd::Updates { .. }
+            | Cmd::Verify { .. }
+            | Cmd::Unmanaged { .. }
+            | Cmd::Changelog { .. }
+            | Cmd::Run { .. }
+            | Cmd::Exec { .. }
+            | Cmd::Status
+            | Cmd::SteamShortcut { .. }
+            | Cmd::RegisterHandler { .. }
+            | Cmd::Archives { .. }
+            | Cmd::History { .. }
+            | Cmd::Crashes { .. }
+            | Cmd::Patch
+            | Cmd::Api(_) => false,
+            Cmd::Init { .. }
+            | Cmd::Enable { .. }
+            | Cmd::Disable { .. }
+            | Cmd::Order { .. }
+            | Cmd::Install { .. }
+            | Cmd::Update { .. }
+            | Cmd::Rename { .. }
+            | Cmd::Remove { .. }
+            | Cmd::Deps { .. }
+            | Cmd::Hide { .. }
+            | Cmd::Unhide { .. }
+            | Cmd::Prefer { .. }
+            | Cmd::Nxm { .. }
+            | Cmd::Adopt { .. }
+            | Cmd::Errors // records the log baseline
+            | Cmd::Rollback { .. }
+            | Cmd::UndoUpdate { .. }
+            | Cmd::Setup => true,
+            Cmd::Profile { action } => !matches!(action, None | Some(ProfileCmd::List)),
+            Cmd::Overwrite { action } => !matches!(action, None | Some(OwCmd::List)),
+            Cmd::Collection { action } => matches!(action, CollectionCmd::Install { .. }),
+            Cmd::Settings { action } => !matches!(action, None | Some(SettingsCmd::Show { .. })),
+            Cmd::Doctor { ack, unack, .. } => ack.is_some() || unack.is_some(),
+            Cmd::Tracked { install, untrack } => *install || *untrack,
+            Cmd::Import { apply, .. } | Cmd::Eject { apply } | Cmd::LaunchOptions { apply } | Cmd::Sort { apply } => *apply,
+            Cmd::Rule { r#mod, list, .. } => r#mod.is_some() && !list,
+            Cmd::Download { .. } => true,
+            Cmd::Downloads { action } => !matches!(action, None | Some(DownloadsCmd::List)),
+            Cmd::Modio { ack } => *ack,
+            Cmd::Clean { dry_run } => !dry_run,
+            Cmd::Vanilla { state } => matches!(state.as_deref(), Some("on" | "off")),
+            Cmd::Saves { snapshot, restore } => *snapshot || restore.is_some(),
+            Cmd::NexusKey { key, remove, .. } => key.is_some() || *remove,
         }
     }
-    Ok(f)
 }
+
+/// Import and adopt move files out of the game dir, which only the game process holds.
+const GAME_DIR_IDLE: Idle = Idle::NoGame("Cyberpunk is running; quit it first");
 
 fn expand(p: &str) -> PathBuf {
     match p.strip_prefix("~/") {
         Some(r) => PathBuf::from(std::env::var("HOME").unwrap()).join(r),
         None => PathBuf::from(p),
-    }
-}
-
-fn warn_if_running(paths: &Paths) {
-    if vfs::running(paths).is_some() {
-        eprintln!("note: a game session is running; changes apply on next launch");
     }
 }
 
@@ -662,26 +707,7 @@ fn real_main() -> Result<()> {
         _ if in_ns => bail!("run cpmm management commands outside `cpmm exec`/the game session"),
         _ => {}
     }
-    let _lock = match cli.cmd {
-        Cmd::List { .. }
-        | Cmd::Profile { action: None | Some(ProfileCmd::List) }
-        | Cmd::Info { .. }
-        | Cmd::Status
-        | Cmd::LaunchOptions { apply: false }
-        | Cmd::NexusKey { key: None, remove: false, .. }
-        | Cmd::SteamShortcut { .. }
-        | Cmd::RegisterHandler { .. }
-        | Cmd::Api(_)
-        | Cmd::Archives { .. }
-        | Cmd::Doctor { ack: None, unack: None, .. }
-        | Cmd::History { .. }
-        | Cmd::Crashes { .. }
-        | Cmd::Patch
-        | Cmd::Conflicts { .. }
-        | Cmd::Updates { .. }
-        | Cmd::Unmanaged { .. } => None,
-        _ => Some(lock(&paths)?),
-    };
+    let _lock = if cli.cmd.changes_state() { Some(change::Lock::acquire(&paths)?) } else { None };
     if let Cmd::Nxm { url: Some(_), .. } = &cli.cmd {
         // Launched by the browser without a terminal: log instead. (The GUI reads stdout itself.)
         if unsafe { libc::isatty(1) } == 0 && std::env::var_os("CPMM_GUI").is_none() {
@@ -704,7 +730,7 @@ fn real_main() -> Result<()> {
                 fs::write(paths.data.join("game_dir"), g.to_string_lossy().as_bytes())?;
             }
             let p = Paths::load()?;
-            st.save(&p)?;
+            Change::records().apply(&p, &mut st, |_, _| Ok(()))?;
             println!("data: {}\ngame: {}", p.data.display(), p.game.display());
             same_fs_check(&p)?;
         }
@@ -714,25 +740,27 @@ fn real_main() -> Result<()> {
         Cmd::Enable { mods } | Cmd::Disable { mods } if mods.is_empty() => bail!("name at least one mod"),
         Cmd::Enable { mods } => set_enabled(&paths, &mut st, &mods, true)?,
         Cmd::Disable { mods } => set_enabled(&paths, &mut st, &mods, false)?,
+        // a manual placement: auto-sort would undo it
         Cmd::Order { r#mod, top, bottom, before, after } => {
-            let i = st.get(&r#mod)?;
-            let m = st.mods.remove(i);
-            let pos = if top {
-                st.mods.len()
-            } else if bottom {
-                0
-            } else if let Some(b) = before {
-                st.get(&b)?
-            } else if let Some(a) = after {
-                st.get(&a)? + 1
-            } else {
-                st.mods.insert(i, m);
-                bail!("give --top, --bottom, --before or --after");
-            };
-            println!("{} now at priority {}", m.id, pos + 1);
-            st.mods.insert(pos, m);
-            st.save(&paths)?;
-            warn_if_running(&paths);
+            Change::setup().idle(Idle::NotNeeded).keep_order().apply(&paths, &mut st, |cx, st| {
+                let i = st.get(&r#mod)?;
+                let m = st.mods.remove(i);
+                let pos = if top {
+                    st.mods.len()
+                } else if bottom {
+                    0
+                } else if let Some(b) = before {
+                    st.get(&b)?
+                } else if let Some(a) = after {
+                    st.get(&a)? + 1
+                } else {
+                    bail!("give --top, --bottom, --before or --after");
+                };
+                println!("{} now at priority {}", m.id, pos + 1);
+                cx.journal("order", std::slice::from_ref(&m.id), &format!("priority {}", pos + 1));
+                st.mods.insert(pos, m);
+                Ok(())
+            })?
         }
         Cmd::Conflicts { r#mod, no_hash, base } => show_conflicts(&paths, &st, r#mod.as_deref(), !no_hash, base)?,
         Cmd::Install {
@@ -769,19 +797,15 @@ fn real_main() -> Result<()> {
                 fomod,
                 fomod_defaults,
             };
-            if let Some(gid) = nexus::catalogue::mod_id(&source) {
-                let nx = Catalogue::open(&paths);
-                let mut visiting = BTreeSet::new();
-                install_nexus(&paths, &mut st, &nx, gid, &o, 0, &mut visiting)?;
-            } else {
-                install_local(&paths, &mut st, &expand(&source), nid, &o)?;
-            }
-            warn_if_running(&paths);
+            // a new mod doesn't touch a running session; replacing a mounted one is refused by staging
+            Change::setup().idle(Idle::NotNeeded).apply(&paths, &mut st, |cx, st| match nexus::catalogue::mod_id(&source) {
+                Some(gid) => install_nexus(cx, st, &Catalogue::open(cx.paths()), gid, &o, 0, &mut BTreeSet::new()),
+                None => install_local(cx, st, &expand(&source), nid, &o),
+            })?;
         }
         Cmd::Updates { refresh } => updates(&paths, &st, refresh)?,
         Cmd::Update { mods, all } => update(&paths, &mut st, &mods, all)?,
-        Cmd::Rename { r#mod, new_id } => {
-            manage::ensure_idle(&paths)?;
+        Cmd::Rename { r#mod, new_id } => Change::setup().keep_order().apply(&paths, &mut st, |cx, st| {
             let i = st.get(&r#mod)?;
             let new_id = slugify(&new_id);
             if st.find(&new_id).is_some() {
@@ -801,9 +825,10 @@ fn real_main() -> Result<()> {
             }
             st.mods[i].id = new_id.clone();
             st.rename_mod_in_profiles(&old, &new_id);
-            st.save(&paths)?;
+            cx.journal("rename", std::slice::from_ref(&new_id), &format!("from {old}"));
             println!("renamed {old} -> {new_id}");
-        }
+            Ok(())
+        })?,
         Cmd::Remove { r#mod, force } => {
             let i = st.get(&r#mod)?;
             let id = st.mods[i].id.clone();
@@ -811,120 +836,84 @@ fn real_main() -> Result<()> {
             if !users.is_empty() && !force {
                 bail!("{id} is required by {}; --force to remove anyway", users.join(", "));
             }
-            if vfs::running(&paths).is_some() {
-                bail!("game session running; quit first (its overlay uses these files)");
-            }
-            let elsewhere = st.profiles_enabling(&id);
-            if !elsewhere.is_empty() {
-                println!(
-                    "note: also removes it from profile(s) {} where it is enabled (disable it instead to keep it there)",
-                    elsewhere.join(", ")
-                );
-            }
-            safety::auto_snapshot(&paths, &format!("before uninstalling {id}"));
-            safety::journal(&paths, "uninstall", std::slice::from_ref(&id), &st.mods[i].version);
-            let d = paths.mods().join(&id);
-            if d.exists() {
-                let t = paths.trash_for(&id);
-                fs::rename(&d, &t)?;
-                println!("files moved to {} (delete when sure)", t.display());
-            }
-            st.mods.remove(i);
-            st.save(&paths)?;
+            // staged files are in use only through a session's overlay
+            Change::setup()
+                .idle(Idle::NoSession("game session running; quit first (its overlay uses these files)"))
+                .snapshot(format!("before uninstalling {id}"))
+                .keep_order()
+                .apply(&paths, &mut st, |cx, st| {
+                    let elsewhere = st.profiles_enabling(&id);
+                    if !elsewhere.is_empty() {
+                        println!(
+                            "note: also removes it from profile(s) {} where it is enabled (disable it instead to keep it there)",
+                            elsewhere.join(", ")
+                        );
+                    }
+                    cx.journal("uninstall", std::slice::from_ref(&id), &st.mods[i].version);
+                    let d = cx.paths().mods().join(&id);
+                    if d.exists() {
+                        let t = cx.paths().trash_for(&id);
+                        fs::rename(&d, &t)?;
+                        println!("files moved to {} (delete when sure)", t.display());
+                    }
+                    st.mods.remove(i);
+                    Ok(())
+                })?;
             println!("removed {id}");
         }
         Cmd::Deps { refresh, fix, ignore, unignore } => {
-            for (v, on) in [(ignore, true), (unignore, false)] {
-                if let Some(v) = v {
-                    let i = st.get(&v[0])?;
-                    let rid: u64 = v[1].parse().context("requirement must be a Nexus mod id")?;
-                    let m = &mut st.mods[i];
-                    m.ignored_reqs.retain(|x| *x != rid);
-                    if on {
-                        m.ignored_reqs.push(rid);
+            if ignore.is_some() || unignore.is_some() {
+                Change::records().apply(&paths, &mut st, |cx, st| {
+                    for (v, on) in [(ignore, true), (unignore, false)] {
+                        if let Some(v) = v {
+                            let i = st.get(&v[0])?;
+                            let rid: u64 = v[1].parse().context("requirement must be a Nexus mod id")?;
+                            let m = &mut st.mods[i];
+                            m.ignored_reqs.retain(|x| *x != rid);
+                            if on {
+                                m.ignored_reqs.push(rid);
+                            }
+                            println!("{} requirement {rid} for {}", if on { "ignoring" } else { "no longer ignoring" }, m.id);
+                            cx.journal(if on { "ignore" } else { "unignore" }, std::slice::from_ref(&m.id), &format!("requirement {rid}"));
+                            cx.save(st)?;
+                        }
                     }
-                    println!("{} requirement {rid} for {}", if on { "ignoring" } else { "no longer ignoring" }, m.id);
-                    st.save(&paths)?;
-                }
+                    Ok(())
+                })?;
             }
-            deps(&paths, &mut st, refresh)?;
+            Change::records().apply(&paths, &mut st, |cx, st| deps(cx, st, refresh))?;
             if fix {
                 deps_fix(&paths, &mut st)?;
             }
         }
-        Cmd::Hide { r#mod, paths: sel } => {
-            manage::ensure_idle(&paths)?;
+        Cmd::Hide { r#mod, paths: sel } => Change::setup().keep_order().apply(&paths, &mut st, |cx, st| {
             let i = st.get(&r#mod)?;
-            let d = manage::hide(&paths, &mut st, i, &sel)?;
-            safety::journal(&paths, "hide", std::slice::from_ref(&st.mods[i].id), &sel.join(", "));
-            st.save(&paths)?;
+            let d = manage::hide(cx.paths(), st, i, &sel)?;
+            cx.journal("hide", std::slice::from_ref(&st.mods[i].id), &sel.join(", "));
             println!("hid {} files of {}", d.len(), st.mods[i].id);
-        }
-        Cmd::Unhide { r#mod, paths: sel } => {
-            manage::ensure_idle(&paths)?;
+            Ok(())
+        })?,
+        Cmd::Unhide { r#mod, paths: sel } => Change::setup().keep_order().apply(&paths, &mut st, |cx, st| {
             let i = st.get(&r#mod)?;
-            let d = manage::unhide(&paths, &mut st, i, &sel)?;
-            st.save(&paths)?;
+            let d = manage::unhide(cx.paths(), st, i, &sel)?;
+            cx.journal("unhide", std::slice::from_ref(&st.mods[i].id), &sel.join(", "));
             println!("restored {} files of {}", d.len(), st.mods[i].id);
-        }
-        Cmd::Prefer { r#mod, paths: sel } => {
-            manage::ensure_idle(&paths)?;
+            Ok(())
+        })?,
+        Cmd::Prefer { r#mod, paths: sel } => Change::setup().keep_order().apply(&paths, &mut st, |cx, st| {
             let i = st.get(&r#mod)?;
-            let d = manage::prefer(&paths, &mut st, i, &sel)?;
-            safety::journal(&paths, "prefer", std::slice::from_ref(&st.mods[i].id), &sel.join(", "));
-            st.save(&paths)?;
+            let d = manage::prefer(cx.paths(), st, i, &sel)?;
+            cx.journal("prefer", std::slice::from_ref(&st.mods[i].id), &sel.join(", "));
             for (o, rel) in &d {
                 println!("  hid {rel} in {o}");
             }
             println!("{} now wins {} contested files (undo with `cpmm unhide <other mod>`)", st.mods[i].id, d.len());
+            Ok(())
+        })?,
+        Cmd::Tracked { install: true, untrack } => {
+            Change::setup().idle(Idle::NotNeeded).apply(&paths, &mut st, |cx, st| tracked(cx.paths(), st, Some(cx), untrack))?
         }
-        Cmd::Tracked { install, untrack } => {
-            let nx = Catalogue::open(&paths);
-            let ids = nx.gate().tracked()?;
-            if ids.is_empty() {
-                println!("no tracked Cyberpunk mods (press Track on a mod page on nexusmods.com)");
-            }
-            let mut done = vec![];
-            for gid in ids {
-                let name = nx.gate().mod_info(gid).map(|i| i.name).unwrap_or_default();
-                match st.by_nexus(gid) {
-                    Some(m) => {
-                        println!("  {gid:<7} {name}: installed as {}", m.id);
-                        done.push(gid);
-                    }
-                    None if install => {
-                        let o = InstallOpts {
-                            file: None,
-                            id: None,
-                            name: None,
-                            root: None,
-                            dest: None,
-                            with_deps: true,
-                            ignore_deps: false,
-                            disabled: false,
-                            keep_archive: false,
-                            nxm: None,
-                            hooks: true,
-                            fomod: None,
-                            fomod_defaults: true,
-                        };
-                        let mut visiting = BTreeSet::new();
-                        match install_nexus(&paths, &mut st, &nx, gid, &o, 0, &mut visiting) {
-                            Ok(()) => done.push(gid),
-                            Err(e) => println!("  {gid} {name}: {e:#}"),
-                        }
-                    }
-                    None => println!("  {gid:<7} {name}: not installed"),
-                }
-            }
-            if untrack {
-                for gid in done {
-                    nx.gate().untrack(gid)?;
-                    println!("  untracked {gid}");
-                }
-            }
-            warn_if_running(&paths);
-        }
+        Cmd::Tracked { install: false, untrack } => tracked(&paths, &mut st, None, untrack)?,
         Cmd::RegisterHandler { check, unregister } => {
             let before = manage::current_nxm_handler();
             if check {
@@ -988,23 +977,37 @@ fn real_main() -> Result<()> {
         Cmd::Verify { mods } => verify(&paths, &st, &mods)?,
         Cmd::Import { modlist, apply } => {
             same_fs_check(&paths)?;
-            import::import(&paths, &mut st, &expand(&modlist), apply)?;
-            if apply {
+            if !apply {
+                import::import(&paths, &mut st, &expand(&modlist), false)?;
+            } else {
+                Change::setup()
+                    .idle(GAME_DIR_IDLE)
+                    .keep_order()
+                    .apply(&paths, &mut st, |cx, st| import::import(cx.paths(), st, &expand(&modlist), true))?;
                 println!("fetching Nexus requirements…");
-                deps(&paths, &mut st, true)?;
+                Change::records().apply(&paths, &mut st, |cx, st| deps(cx, st, true))?;
             }
         }
         Cmd::Adopt { id, name, paths: rels } => {
             let id = slugify(&id);
-            let got = import::adopt(&paths, &mut st, &id, name.as_deref().unwrap_or(&id), &rels)?;
+            let got = Change::setup().idle(GAME_DIR_IDLE).keep_order().apply(&paths, &mut st, |cx, st| {
+                let got = import::adopt(cx.paths(), st, &id, name.as_deref().unwrap_or(&id), &rels)?;
+                cx.journal("adopt", std::slice::from_ref(&id), &format!("{} files", got.len()));
+                Ok(got)
+            })?;
             println!("adopted {} files into {id}", got.len());
         }
         Cmd::Unmanaged { modified, flat } => unmanaged(&paths, &st, modified, flat)?,
         Cmd::Overwrite { action } => match action.unwrap_or(OwCmd::List) {
             OwCmd::List => overwrite(&paths, &st)?,
             OwCmd::Move { to, paths: sel } => {
-                let (id, moved, skipped) = manage::overwrite_move(&paths, &mut st, &to, &sel)?;
-                st.save(&paths)?;
+                let (id, moved, skipped) = Change::setup().keep_order().apply(&paths, &mut st, |cx, st| {
+                    let r = manage::overwrite_move(cx.paths(), st, &to, &sel)?;
+                    if r.1 > 0 {
+                        cx.journal("overwrite", std::slice::from_ref(&r.0), &format!("{} game-written files moved in", r.1));
+                    }
+                    Ok(r)
+                })?;
                 println!(
                     "moved {moved} files into {id}{}",
                     if skipped > 0 {
@@ -1148,11 +1151,13 @@ fn real_main() -> Result<()> {
                 }
             }
             if apply && !p.moved.is_empty() {
-                safety::journal(&paths, "sort", &p.moved.iter().map(|m| m.id.clone()).collect::<Vec<_>>(), "");
-                loadorder::apply(&mut st, &p.order);
-                st.save(&paths)?;
-                println!("applied; {} archives in modlist.txt", loadorder::write_modlist(&paths, &st)?);
-                warn_if_running(&paths);
+                // the edit is the sort
+                Change::setup().idle(Idle::NotNeeded).keep_order().apply(&paths, &mut st, |cx, st| {
+                    cx.journal("sort", &p.moved.iter().map(|m| m.id.clone()).collect::<Vec<_>>(), "");
+                    loadorder::apply(st, &p.order);
+                    Ok(())
+                })?;
+                println!("applied; {} archives in modlist.txt", loadorder::modlist(&paths, &st).len());
             } else if !p.moved.is_empty() {
                 println!("dry run: `cpmm sort --apply` to save");
             }
@@ -1160,28 +1165,30 @@ fn real_main() -> Result<()> {
         Cmd::Rule { r#mod, after, remove, list } => {
             let target = r#mod.filter(|_| !list);
             if let Some(target) = target {
-                let a = st.mods[st.get(&target)?].id.clone();
-                let b = st.mods[st.get(&after.context("give --after <mod>")?)?].id.clone();
-                if a == b {
-                    bail!("a mod can't load after itself");
-                }
-                st.rules.retain(|r| !(r.r#mod == a && r.after == b) && !(r.r#mod == b && r.after == a));
-                if !remove {
-                    st.rules.push(loadorder::Rule { r#mod: a.clone(), after: b.clone() });
-                    safety::journal(&paths, "rule", &[a.clone(), b.clone()], "wins over");
-                    println!("rule: {a} wins over {b}");
-                } else {
-                    println!("removed rules between {a} and {b}");
-                }
-                // A rule only matters once the order reflects it: re-sort right away.
-                let p = loadorder::plan(&paths, &st);
-                for mv in &p.moved {
-                    println!("  moved {} {} -> {}", mv.id, mv.from, mv.to);
-                }
-                loadorder::apply(&mut st, &p.order);
-                st.save(&paths)?;
-                println!("load order updated; {} archives in modlist.txt", loadorder::write_modlist(&paths, &st)?);
-                warn_if_running(&paths);
+                // the edit sorts: a rule only matters once the order reflects it
+                Change::setup().idle(Idle::NotNeeded).keep_order().apply(&paths, &mut st, |cx, st| {
+                    let a = st.mods[st.get(&target)?].id.clone();
+                    let b = st.mods[st.get(&after.context("give --after <mod>")?)?].id.clone();
+                    if a == b {
+                        bail!("a mod can't load after itself");
+                    }
+                    st.rules.retain(|r| !(r.r#mod == a && r.after == b) && !(r.r#mod == b && r.after == a));
+                    if !remove {
+                        st.rules.push(loadorder::Rule { r#mod: a.clone(), after: b.clone() });
+                        cx.journal("rule", &[a.clone(), b.clone()], "wins over");
+                        println!("rule: {a} wins over {b}");
+                    } else {
+                        cx.journal("rule", &[a.clone(), b.clone()], "removed");
+                        println!("removed rules between {a} and {b}");
+                    }
+                    let p = loadorder::plan(cx.paths(), st);
+                    for mv in &p.moved {
+                        println!("  moved {} {} -> {}", mv.id, mv.from, mv.to);
+                    }
+                    loadorder::apply(st, &p.order);
+                    Ok(())
+                })?;
+                println!("load order updated; {} archives in modlist.txt", loadorder::modlist(&paths, &st).len());
             } else {
                 if st.rules.is_empty() {
                     println!("no rules");
@@ -1226,11 +1233,13 @@ fn real_main() -> Result<()> {
                 if titles.len() != 1 {
                     bail!("{:?} matches {} findings; be more specific", k, titles.len());
                 }
-                st.acked.retain(|t| *t != titles[0]);
-                if unack.is_none() {
-                    st.acked.push(titles[0].clone());
-                }
-                st.save(&paths)?;
+                Change::records().apply(&paths, &mut st, |_, st| {
+                    st.acked.retain(|t| *t != titles[0]);
+                    if unack.is_none() {
+                        st.acked.push(titles[0].clone());
+                    }
+                    Ok(())
+                })?;
                 println!("{} {:?}", if unack.is_none() { "acknowledged" } else { "un-acknowledged" }, titles[0]);
             }
             let fs_: Vec<health::Finding> = health::check(&paths, &st).into_iter().filter(|f| all || f.severity != "acked").collect();
@@ -1278,31 +1287,22 @@ fn real_main() -> Result<()> {
             }
         }
         Cmd::Rollback { r#mod, to } => {
-            manage::ensure_idle(&paths)?;
-            safety::auto_snapshot(&paths, &format!("before rollback of {}", r#mod));
-            let msg = safety::rollback(&paths, &mut st, &r#mod, to)?;
-            st.save(&paths)?;
-            if paths.cfg.auto_sort {
-                auto_sort(&paths, &mut st);
-            }
-            let _ = loadorder::write_modlist(&paths, &st);
+            let msg = Change::setup()
+                .snapshot(format!("before rollback of {}", r#mod))
+                .apply(&paths, &mut st, |cx, st| safety::rollback(cx, st, &r#mod, to))?;
             println!("rolled back {msg}");
         }
         Cmd::UndoUpdate { batch } => {
-            manage::ensure_idle(&paths)?;
             let b = match batch {
                 Some(b) => b,
                 None => safety::batches(&paths, &st).into_iter().next().map(|b| b.batch).context("no update run to undo")?,
             };
-            safety::auto_snapshot(&paths, &format!("before undoing {b}"));
-            for m in safety::undo_batch(&paths, &mut st, &b)? {
-                println!("  rolled back {m}");
-            }
-            st.save(&paths)?;
-            if paths.cfg.auto_sort {
-                auto_sort(&paths, &mut st);
-            }
-            let _ = loadorder::write_modlist(&paths, &st);
+            Change::setup().snapshot(format!("before undoing {b}")).apply(&paths, &mut st, |cx, st| {
+                for m in safety::undo_batch(cx, st, &b)? {
+                    println!("  rolled back {m}");
+                }
+                Ok(())
+            })?;
             println!("undid {b}");
         }
         Cmd::Crashes { limit } => {
@@ -1386,9 +1386,8 @@ fn real_main() -> Result<()> {
                 println!("snapshot: {}", safety::snapshot_saves(&paths, "manual")?.unwrap_or("no saves found".into()));
             }
             if let Some(r) = restore {
-                if game_running() {
-                    bail!("quit the game before restoring saves");
-                }
+                // saves, not the mod setup: only the game process holds them
+                Idle::NoGame("quit the game before restoring saves").check(&paths)?;
                 println!("restored {} files from {r}", safety::restore_snapshot(&paths, &r)?);
             }
             for s in safety::list_snapshots(&paths) {
@@ -1608,21 +1607,43 @@ fn real_main() -> Result<()> {
     Ok(())
 }
 
+fn summary(st: &State, p: &profiles::Profile) -> String {
+    format!("{} of {} mods enabled", p.enabled.len(), st.mods.len())
+}
+
+/// Profile commands; all but listing are a change (a setup change when the active list moves).
 fn profile(paths: &Paths, st: &mut State, action: ProfileCmd) -> Result<()> {
-    let summary = |st: &State, p: &profiles::Profile| format!("{} of {} mods enabled", p.enabled.len(), st.mods.len());
-    match action {
-        ProfileCmd::List => {
-            st.sync_active_profile();
-            for p in &st.profiles {
-                let active = p.name == st.active_profile;
-                let saves = match p.own_saves_dir(paths) {
-                    Some(d) => format!("own saves ({})", profiles::count_saves(&d)),
-                    None => "shared saves".into(),
-                };
-                println!("{} {:<24} {:<26} {saves}", if active { "*" } else { " " }, p.name, summary(st, p));
-            }
+    if let ProfileCmd::List = action {
+        st.sync_active_profile();
+        for p in &st.profiles {
+            let active = p.name == st.active_profile;
+            let saves = match p.own_saves_dir(paths) {
+                Some(d) => format!("own saves ({})", profiles::count_saves(&d)),
+                None => "shared saves".into(),
+            };
+            println!("{} {:<24} {:<26} {saves}", if active { "*" } else { " " }, p.name, summary(st, p));
+        }
+        return Ok(());
+    }
+    let active = |st: &State, name: &str| st.profile_index(name).is_ok_and(|i| st.profiles[i].name == st.active_profile);
+    let change = match &action {
+        ProfileCmd::Switch { name } if active(st, name) => {
+            println!("{:?} is already the active profile", st.active_profile);
             return Ok(());
         }
+        // a different list for the next launch; the profile keeps its own order
+        ProfileCmd::Switch { .. } | ProfileCmd::Create { switch: true, .. } => Change::setup().keep_order(),
+        // the running game has the active profile's save folder in use
+        ProfileCmd::Saves { name, .. } if active(st, name) => Change::records().idle(Idle::Required),
+        _ => Change::records(),
+    };
+    change.apply(paths, st, |cx, st| profile_edit(cx, st, action))
+}
+
+fn profile_edit(cx: &mut Edit, st: &mut State, action: ProfileCmd) -> Result<()> {
+    let paths = cx.paths();
+    match action {
+        ProfileCmd::List => unreachable!("listing changes nothing"),
         ProfileCmd::Create { name, from, empty, own_saves, copy_saves, switch } => {
             let name = st.create_profile(&name, from.as_deref(), empty)?;
             println!(
@@ -1637,25 +1658,21 @@ fn profile(paths: &Paths, st: &mut State, action: ProfileCmd) -> Result<()> {
                 set_profile_saves(paths, st, &name, true, copy_saves)?;
             }
             if switch {
-                manage::ensure_idle(paths)?;
+                let from = st.active_profile.clone();
                 st.switch_profile(&name)?;
+                cx.journal("profile", std::slice::from_ref(&name), &format!("from {from}"));
                 println!("switched to {name:?}");
             }
         }
         ProfileCmd::Switch { name } => {
             let from = st.active_profile.clone();
-            if st.profiles[st.profile_index(&name)?].name == from {
-                println!("{from:?} is already the active profile");
-                return Ok(());
-            }
-            manage::ensure_idle(paths)?;
             let new = st.switch_profile(&name)?;
             let p = st.profiles[st.profile_index(&st.active_profile)?].clone();
             println!("switched {from:?} -> {:?}: {}", p.name, summary(st, &p));
             if !new.is_empty() {
                 println!("{} mod(s) new to this profile, added disabled: {}", new.len(), new.join(", "));
             }
-            safety::journal(paths, "profile", std::slice::from_ref(&p.name), &format!("from {from}"));
+            cx.journal("profile", std::slice::from_ref(&p.name), &format!("from {from}"));
             println!("takes effect at the next launch; `cpmm deps` / `cpmm doctor` check this list");
         }
         ProfileCmd::Rename { old, new } => {
@@ -1676,15 +1693,12 @@ fn profile(paths: &Paths, st: &mut State, action: ProfileCmd) -> Result<()> {
             }
         }
     }
-    st.save(paths)
+    Ok(())
 }
 
 fn set_profile_saves(paths: &Paths, st: &mut State, name: &str, own: bool, copy: bool) -> Result<()> {
     let i = st.profile_index(name)?;
     let name = st.profiles[i].name.clone();
-    if name == st.active_profile {
-        manage::ensure_idle(paths)?; // the running game has the current save folder in use
-    }
     let source = safety::saves_dir(paths); // the active profile's saves, before any change
     let dir = st.set_own_saves(paths, &name, own)?;
     if !own {
@@ -1804,11 +1818,66 @@ fn info(paths: &Paths, st: &State, key: &str) -> Result<()> {
     Ok(())
 }
 
-fn set_enabled(paths: &Paths, st: &mut State, keys: &[String], on: bool) -> Result<()> {
-    if !on {
-        safety::auto_snapshot(paths, &format!("before disabling {}", keys.join(", ")));
+/// Mods on the Nexus "Tracked" list; with a change (`--install`), install the missing ones.
+fn tracked(paths: &Paths, st: &mut State, mut install: Option<&mut Edit>, untrack: bool) -> Result<()> {
+    let nx = Catalogue::open(paths);
+    let ids = nx.gate().tracked()?;
+    if ids.is_empty() {
+        println!("no tracked Cyberpunk mods (press Track on a mod page on nexusmods.com)");
     }
-    safety::journal(paths, if on { "enable" } else { "disable" }, keys, "");
+    let mut done = vec![];
+    for gid in ids {
+        let name = nx.gate().mod_info(gid).map(|i| i.name).unwrap_or_default();
+        if let Some(m) = st.by_nexus(gid) {
+            println!("  {gid:<7} {name}: installed as {}", m.id);
+            done.push(gid);
+            continue;
+        }
+        let Some(cx) = install.as_deref_mut() else {
+            println!("  {gid:<7} {name}: not installed");
+            continue;
+        };
+        let o = InstallOpts {
+            file: None,
+            id: None,
+            name: None,
+            root: None,
+            dest: None,
+            with_deps: true,
+            ignore_deps: false,
+            disabled: false,
+            keep_archive: false,
+            nxm: None,
+            hooks: true,
+            fomod: None,
+            fomod_defaults: true,
+        };
+        match install_nexus(cx, st, &nx, gid, &o, 0, &mut BTreeSet::new()) {
+            Ok(()) => done.push(gid),
+            Err(e) => println!("  {gid} {name}: {e:#}"),
+        }
+    }
+    if untrack {
+        for gid in done {
+            nx.gate().untrack(gid)?;
+            println!("  untracked {gid}");
+        }
+    }
+    Ok(())
+}
+
+fn set_enabled(paths: &Paths, st: &mut State, keys: &[String], on: bool) -> Result<()> {
+    let mut change = Change::setup().idle(Idle::NotNeeded);
+    if !on {
+        change = change.snapshot(format!("before disabling {}", keys.join(", ")));
+    }
+    change.apply(paths, st, |cx, st| {
+        cx.journal(if on { "enable" } else { "disable" }, keys, "");
+        enable_edit(st, keys, on)
+    })
+}
+
+fn enable_edit(st: &mut State, keys: &[String], on: bool) -> Result<()> {
     for k in keys {
         let i = st.get(k)?;
         st.mods[i].enabled = on;
@@ -1828,11 +1897,6 @@ fn set_enabled(paths: &Paths, st: &mut State, keys: &[String], on: bool) -> Resu
             }
         }
     }
-    st.save(paths)?;
-    if paths.cfg.auto_sort {
-        auto_sort(paths, st);
-    }
-    warn_if_running(paths);
     Ok(())
 }
 
@@ -1914,7 +1978,7 @@ fn req_notes(r: &Requirement) -> String {
 /// Requirements the user chose to do without for this mod (`ignored`) are skipped.
 #[allow(clippy::too_many_arguments)]
 fn resolve_requirements(
-    paths: &Paths,
+    cx: &mut Edit,
     st: &mut State,
     nx: &Catalogue,
     label: &str,
@@ -1946,7 +2010,7 @@ fn resolve_requirements(
     if o.with_deps {
         for r in &missing {
             println!("{ind}  installing requirement {} {}{}", r.mod_id, r.name, req_notes(r));
-            install_nexus(paths, st, nx, r.mod_id, o, depth + 1, visiting)?;
+            install_nexus(cx, st, nx, r.mod_id, o, depth + 1, visiting)?;
         }
     } else if o.ignore_deps {
         for r in &missing {
@@ -1964,8 +2028,9 @@ fn resolve_requirements(
     Ok(())
 }
 
+/// Install (or update) a Nexus mod inside a change; each installed mod is saved as it lands.
 fn install_nexus(
-    paths: &Paths,
+    cx: &mut Edit,
     st: &mut State,
     nx: &Catalogue,
     gid: u64,
@@ -1973,6 +2038,7 @@ fn install_nexus(
     depth: usize,
     visiting: &mut BTreeSet<u64>,
 ) -> Result<()> {
+    let paths = cx.paths();
     if !visiting.insert(gid) {
         return Ok(());
     }
@@ -1995,7 +2061,7 @@ fn install_nexus(
     let sibling = existing.is_none() && st.by_nexus(gid).is_some();
     let ignored = existing.as_ref().and_then(|e| st.find(e)).map(|i| st.mods[i].ignored_reqs.clone()).unwrap_or_default();
     let label = existing.clone().unwrap_or_else(|| slugify(short_name(&info.name)));
-    resolve_requirements(paths, st, nx, &label, &stored, &ignored, o, depth, visiting)?;
+    resolve_requirements(cx, st, nx, &label, &stored, &ignored, o, depth, visiting)?;
     let checked = ReqCheck { at: now(), version_id: ver.id.clone() };
 
     if let Some(e) = &existing {
@@ -2006,8 +2072,7 @@ fn install_nexus(
             println!("{ind}  already installed as {e}");
             st.mods[i].requires = stored;
             st.mods[i].reqs_checked = Some(checked);
-            st.save(paths)?;
-            return Ok(());
+            return cx.save(st);
         }
     }
     let id = if depth == 0 { o.id.clone() } else { None }.or(existing.clone()).unwrap_or_else(|| {
@@ -2048,7 +2113,7 @@ fn install_nexus(
         }
         _ => (install::plan(&extracted, &id, root, dest)?, None),
     };
-    let staged = install::stage(paths, st, &id, &x, &plan)?;
+    let staged = install::stage(paths, st, &id, &x, &plan, cx.batch())?;
     let _ = fs::remove_dir_all(&x);
     let archive = if !o.keep_archive && !paths.cfg.keep_archives {
         let _ = fs::remove_file(&arc);
@@ -2094,7 +2159,7 @@ fn install_nexus(
                 installed_at: now(),
                 notes: String::new(),
             });
-            safety::journal(paths, "install", std::slice::from_ref(&id), &ver.version);
+            cx.journal("install", std::slice::from_ref(&id), &ver.version);
             println!(
                 "{ind}  installed {id}: {} files{}",
                 staged.len(),
@@ -2109,10 +2174,10 @@ fn install_nexus(
     if rh > 0 {
         println!("{ind}  re-hid {rh} files you hid earlier");
     }
-    st.save(paths)?;
+    cx.save(st)?;
     report_new_conflicts(paths, st, &id, &ind);
     if depth == 0 && o.hooks {
-        after_install(paths, st, &id);
+        after_install(cx, st, &id);
     }
     Ok(())
 }
@@ -2135,7 +2200,9 @@ fn report_new_conflicts(paths: &Paths, st: &State, id: &str, ind: &str) {
     }
 }
 
-fn install_local(paths: &Paths, st: &mut State, arc: &std::path::Path, nid: Option<u64>, o: &InstallOpts) -> Result<()> {
+/// Install a local archive or folder inside a change.
+fn install_local(cx: &mut Edit, st: &mut State, arc: &std::path::Path, nid: Option<u64>, o: &InstallOpts) -> Result<()> {
+    let paths = cx.paths();
     let stem = arc.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("mod".into());
     let name = o.name.clone().unwrap_or(stem.clone());
     let existing =
@@ -2154,7 +2221,7 @@ fn install_local(paths: &Paths, st: &mut State, arc: &std::path::Path, nid: Opti
         }
         let ignored = existing.as_ref().and_then(|e| st.find(e)).map(|i| st.mods[i].ignored_reqs.clone()).unwrap_or_default();
         let mut visiting = BTreeSet::from([gid]);
-        resolve_requirements(paths, st, &nx, &id, &stored, &ignored, o, 0, &mut visiting)?;
+        resolve_requirements(cx, st, &nx, &id, &stored, &ignored, o, 0, &mut visiting)?;
         checked = Some((stored, ReqCheck { at: now(), version_id: String::new() }));
     }
     paths.ensure_dirs()?;
@@ -2178,7 +2245,7 @@ fn install_local(paths: &Paths, st: &mut State, arc: &std::path::Path, nid: Opti
         }
         _ => (install::plan(&extracted, &id, o.root.as_deref(), o.dest.as_deref())?, None),
     };
-    let staged = install::stage(paths, st, &id, &x, &plan)?;
+    let staged = install::stage(paths, st, &id, &x, &plan, cx.batch())?;
     let _ = fs::remove_dir_all(&x);
     let (requires, reqs_checked) = match checked {
         Some((r, c)) => (r, Some(c)),
@@ -2219,10 +2286,10 @@ fn install_local(paths: &Paths, st: &mut State, arc: &std::path::Path, nid: Opti
         st.mods[i].fomod = serde_json::to_value(c).ok();
     }
     manage::reapply_hidden(paths, st, &id)?;
-    st.save(paths)?;
+    cx.save(st)?;
     report_new_conflicts(paths, st, &id, "");
     if o.hooks {
-        after_install(paths, st, &id);
+        after_install(cx, st, &id);
     }
     Ok(())
 }
@@ -2289,26 +2356,19 @@ fn update(paths: &Paths, st: &mut State, keys: &[String], all: bool) -> Result<(
         println!("nothing to update");
         return Ok(());
     }
-    if vfs::running(paths).is_some() {
-        bail!("game session running; quit first");
-    }
-    safety::auto_snapshot(paths, "before updating mods");
-    let batch = format!("update-{}", safety::now_unix());
-    if let Ok(mut b) = safety::BATCH.lock() {
-        *b = Some(batch.clone());
-    }
-    safety::journal(paths, "update", &wanted, &batch);
-    let nx = Catalogue::open(paths);
-    struct ClearBatch;
-    impl Drop for ClearBatch {
-        fn drop(&mut self) {
-            if let Ok(mut b) = safety::BATCH.lock() {
-                *b = None;
-            }
-        }
-    }
-    let _clear = ClearBatch;
-    for id in wanted.clone() {
+    // staged files are in use only through a session's overlay
+    Change::setup()
+        .idle(Idle::NoSession("game session running; quit first"))
+        .snapshot("before updating mods")
+        .batch(format!("update-{}", safety::now_unix()))
+        .apply(paths, st, |cx, st| update_edit(cx, st, wanted))
+}
+
+fn update_edit(cx: &mut Edit, st: &mut State, wanted: Vec<String>) -> Result<()> {
+    let batch = cx.batch().unwrap_or_default();
+    cx.journal("update", &wanted, batch);
+    let nx = Catalogue::open(cx.paths());
+    for id in wanted {
         let m = &st.mods[st.get(&id)?];
         let Some(n) = m.nexus.clone() else {
             println!("{id}: not from Nexus, skipping");
@@ -2334,18 +2394,16 @@ fn update(paths: &Paths, st: &mut State, keys: &[String], all: bool) -> Result<(
             fomod: None,
             fomod_defaults: true,
         };
-        let mut visiting = BTreeSet::new();
-        if let Err(e) = install_nexus(paths, st, &nx, n.mod_id, &o, 0, &mut visiting) {
+        if let Err(e) = install_nexus(cx, st, &nx, n.mod_id, &o, 0, &mut BTreeSet::new()) {
             println!("{id}: {e:#}");
         }
-    }
-    if paths.cfg.auto_sort {
-        auto_sort(paths, st);
     }
     Ok(())
 }
 
-fn deps(paths: &Paths, st: &mut State, refresh: bool) -> Result<()> {
+/// Refresh the stored requirements (inside a records change) and report unmet ones.
+fn deps(cx: &mut Edit, st: &mut State, refresh: bool) -> Result<()> {
+    let paths = cx.paths();
     let requirements::Stale { mods: stale, migrated } = requirements::stale(st, refresh);
     let total = st.mods.iter().filter(|m| m.nexus.is_some()).count();
     if !stale.is_empty() {
@@ -2363,11 +2421,11 @@ fn deps(paths: &Paths, st: &mut State, refresh: bool) -> Result<()> {
                 Err(e) => println!("  {}: couldn't check requirements: {e:#}", st.mods[i].id),
             }
         }
-        st.save(paths)?;
+        cx.save(st)?;
         println!("checked requirements of {} mod(s) on Nexus; {} cached", stale.len(), total - stale.len());
     } else {
         if migrated {
-            st.save(paths)?;
+            cx.save(st)?;
         }
         println!("requirements of all {total} Nexus mods are cached (re-check with --refresh)");
     }
@@ -2529,13 +2587,13 @@ fn install_download(
         fomod,
         fomod_defaults,
     };
-    match (d.meta.mod_id, d.meta.version_gsid.is_empty()) {
+    // a new mod doesn't touch a running session; replacing a mounted one is refused by staging
+    Change::setup().idle(Idle::NotNeeded).apply(paths, st, |cx, st| match (d.meta.mod_id, d.meta.version_gsid.is_empty()) {
         (Some(gid), false) => {
-            let mut visiting = BTreeSet::new();
-            install_nexus(paths, st, &Catalogue::open(paths), gid, &InstallOpts { name: None, ..o }, 0, &mut visiting)
+            install_nexus(cx, st, &Catalogue::open(cx.paths()), gid, &InstallOpts { name: None, ..o }, 0, &mut BTreeSet::new())
         }
-        (gid, _) => install_local(paths, st, &d.path, gid, &o),
-    }
+        (gid, _) => install_local(cx, st, &d.path, gid, &o),
+    })
 }
 
 fn coll_status(st: &State, m: &collections::CollMod) -> &'static str {
@@ -2582,7 +2640,6 @@ fn collection_install(
     into_current: bool,
     profile: Option<String>,
 ) -> Result<()> {
-    manage::ensure_idle(paths)?;
     let nx = Catalogue::open(paths);
     let (slug, rv, man, dir) = nx.collection(reference)?;
     let name = rv.pointer("/collection/name").and_then(|v| v.as_str()).unwrap_or(&man.name).to_string();
@@ -2591,18 +2648,61 @@ fn collection_install(
     if !into_current && paths.cfg.profiles_enabled {
         let pname = profile.unwrap_or_else(|| name.clone());
         let pname = profiles::valid_name(&pname).unwrap_or_else(|_| format!("Collection {slug}"));
-        if st.profile_index(&pname).is_err() {
-            st.create_profile(&pname, None, true)?;
-            println!("created profile {pname:?} (your other profiles are untouched)");
-        }
-        st.switch_profile(&pname)?;
-        st.save(paths)?;
+        // a change of its own, so the install's save snapshot is of this profile's saves
+        Change::setup().keep_order().apply(paths, st, |cx, st| {
+            if st.profile_index(&pname).is_err() {
+                st.create_profile(&pname, None, true)?;
+                println!("created profile {pname:?} (your other profiles are untouched)");
+            }
+            let from = st.active_profile.clone();
+            st.switch_profile(&pname)?;
+            cx.journal("profile", std::slice::from_ref(&pname), &format!("from {from}"));
+            Ok(())
+        })?;
         println!("installing into profile {pname:?}");
     }
-    safety::auto_snapshot(paths, &format!("before installing collection {name}"));
-    if let Ok(mut b) = safety::BATCH.lock() {
-        *b = Some(format!("collection-{slug}-{rev}"));
+    let (installed, skipped, added, failed, manual) = Change::setup()
+        .snapshot(format!("before installing collection {name}"))
+        .batch(format!("collection-{slug}-{rev}"))
+        .always_sort() // the curator's rules only matter once the order reflects them
+        .apply(paths, st, |cx, st| collection_edit(cx, st, &nx, &slug, &name, rev, &man, &dir, optional))?;
+    println!(
+        "\n{name}: {installed} installed, {skipped} optional skipped{}, {added} load-order rules",
+        if optional { "" } else { " (--optional adds them)" }
+    );
+    if !failed.is_empty() {
+        println!("{} failed (run the same command again to retry just those):", failed.len());
+        for f in &failed {
+            println!("  {f}");
+        }
     }
+    for m in &manual {
+        println!("  manual: {m}");
+    }
+    if !man.instructions.trim().is_empty() {
+        println!("\nCurator's notes: {}", man.instructions.chars().take(400).collect::<String>().replace('\n', " "));
+    }
+    Ok(())
+}
+
+/// What a collection install did: mods installed, optional ones skipped, rules added,
+/// failures, and steps left to the user.
+type CollDone = (usize, usize, usize, Vec<String>, Vec<String>);
+
+/// The collection's mods in phase order, then enabled in the active profile with the
+/// curator's rules. Runs inside the collection's change (its batch tags replaced versions).
+#[allow(clippy::too_many_arguments)]
+fn collection_edit(
+    cx: &mut Edit,
+    st: &mut State,
+    nx: &Catalogue,
+    slug: &str,
+    name: &str,
+    rev: u64,
+    man: &collections::Manifest,
+    dir: &std::path::Path,
+    optional: bool,
+) -> Result<CollDone> {
     let mut mods = man.mods.clone();
     mods.sort_by_key(|m| m.phase);
     let (mut ok_ids, mut failed, mut manual, mut skipped) = (BTreeMap::<u64, Vec<String>>::new(), vec![], vec![], 0);
@@ -2632,8 +2732,7 @@ fn collection_install(
                     fomod: m.choices.clone(),
                     fomod_defaults: true,
                 };
-                let mut visiting = BTreeSet::new();
-                install_nexus(paths, st, &nx, m.mod_id, &o, 0, &mut visiting).map(|_| {
+                install_nexus(cx, st, nx, m.mod_id, &o, 0, &mut BTreeSet::new()).map(|_| {
                     st.mods
                         .iter()
                         .find(|x| x.nexus.as_ref().is_some_and(|nx| nx.mod_id == m.mod_id && nx.version_gsid == m.file_id))
@@ -2659,7 +2758,7 @@ fn collection_install(
                         fomod: m.choices.clone(),
                         fomod_defaults: true,
                     };
-                    install_local(paths, st, &p, None, &o).map(|_| st.mods.iter().rev().find(|x| x.name == m.name).map(|x| x.id.clone()))
+                    install_local(cx, st, &p, None, &o).map(|_| st.mods.iter().rev().find(|x| x.name == m.name).map(|x| x.id.clone()))
                 } else {
                     Err(anyhow::anyhow!("bundled file {} is missing from the collection", m.bundle))
                 }
@@ -2686,9 +2785,6 @@ fn collection_install(
             }
         }
     }
-    if let Ok(mut b) = safety::BATCH.lock() {
-        *b = None;
-    }
     // every collection mod is on in this profile, including ones installed before
     let ids: BTreeSet<String> = ok_ids.values().flatten().cloned().collect();
     for m in st.mods.iter_mut().filter(|m| ids.contains(&m.id)) {
@@ -2710,34 +2806,15 @@ fn collection_install(
     }
     st.collections.retain(|c| c.slug != slug);
     st.collections.push(InstalledCollection {
-        slug: slug.clone(),
-        name: name.clone(),
+        slug: slug.to_string(),
+        name: name.to_string(),
         revision: rev,
         profile: st.active_profile.clone(),
         mods: ids.iter().cloned().collect(),
         installed_at: now(),
     });
-    st.save(paths)?;
-    auto_sort(paths, st);
-    let _ = loadorder::write_modlist(paths, st);
-    println!(
-        "\n{name}: {} installed, {skipped} optional skipped{}, {added} load-order rules",
-        ids.len(),
-        if optional { "" } else { " (--optional adds them)" }
-    );
-    if !failed.is_empty() {
-        println!("{} failed (run the same command again to retry just those):", failed.len());
-        for f in &failed {
-            println!("  {f}");
-        }
-    }
-    for m in &manual {
-        println!("  manual: {m}");
-    }
-    if !man.instructions.trim().is_empty() {
-        println!("\nCurator's notes: {}", man.instructions.chars().take(400).collect::<String>().replace('\n', " "));
-    }
-    Ok(())
+    cx.journal("collection", &[slug.to_string()], &format!("revision {rev}, {} mods, {added} load-order rules", ids.len()));
+    Ok((ids.len(), skipped, added, failed, manual))
 }
 
 /// The cpmm binary Steam should run (the installed copy, not a cargo target dir).
@@ -2877,7 +2954,7 @@ fn settings_cmd(paths: &Paths, st: &State, action: SettingsCmd) -> Result<()> {
     np.cfg = new.clone();
     let (old_dir, new_dir) = (paths.mods(), np.mods());
     if old_dir != new_dir && old_dir.exists() {
-        manage::ensure_idle(paths)?;
+        Idle::Required.check(paths)?; // the staged mods are mounted while the game runs
         if new_dir.starts_with(&old_dir) {
             bail!("the new staging folder can't be inside the current one");
         }
@@ -2909,11 +2986,10 @@ fn settings_cmd(paths: &Paths, st: &State, action: SettingsCmd) -> Result<()> {
     Ok(())
 }
 
-/// Settings-driven tasks after a mod is installed.
-fn after_install(paths: &Paths, st: &mut State, id: &str) {
-    if paths.cfg.auto_sort {
-        auto_sort(paths, st);
-    }
+/// Settings-driven tasks after a mod is installed (on the sorted order).
+fn after_install(cx: &mut Edit, st: &mut State, id: &str) {
+    let paths = cx.paths();
+    cx.sort(st);
     if paths.cfg.after_install_verify {
         let _ = verify(paths, st, &[id.to_string()]);
     }
@@ -2950,18 +3026,6 @@ fn after_install(paths: &Paths, st: &mut State, id: &str) {
     }
 }
 
-/// Apply the automatic load order if it would move anything.
-fn auto_sort(paths: &Paths, st: &mut State) {
-    let p = loadorder::plan(paths, st);
-    if !p.moved.is_empty() {
-        loadorder::apply(st, &p.order);
-        if st.save(paths).is_ok() {
-            let _ = loadorder::write_modlist(paths, st);
-            println!("  auto-sorted the load order ({} moves)", p.moved.len());
-        }
-    }
-}
-
 fn deps_fix(paths: &Paths, st: &mut State) -> Result<()> {
     let mut missing = BTreeSet::new();
     let mut to_enable = BTreeSet::new();
@@ -2978,15 +3042,23 @@ fn deps_fix(paths: &Paths, st: &mut State) -> Result<()> {
             }
         }
     }
-    for id in to_enable {
-        let i = st.get(&id)?;
-        st.mods[i].enabled = true;
-        println!("enabled {id}");
+    if !to_enable.is_empty() {
+        let ids: Vec<String> = to_enable.into_iter().collect();
+        Change::setup().idle(Idle::NotNeeded).apply(paths, st, |cx, st| {
+            cx.journal("enable", &ids, "");
+            for id in &ids {
+                let i = st.get(id)?;
+                st.mods[i].enabled = true;
+                println!("enabled {id}");
+            }
+            Ok(())
+        })?;
     }
-    st.save(paths)?;
-    if !missing.is_empty() {
-        manage::ensure_idle(paths)?;
-        let nx = Catalogue::open(paths);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Change::setup().apply(paths, st, |cx, st| {
+        let nx = Catalogue::open(cx.paths());
         let o = InstallOpts {
             file: None,
             id: None,
@@ -3004,12 +3076,12 @@ fn deps_fix(paths: &Paths, st: &mut State) -> Result<()> {
         };
         let mut visiting = BTreeSet::new();
         for gid in missing {
-            if let Err(e) = install_nexus(paths, st, &nx, gid, &o, 0, &mut visiting) {
+            if let Err(e) = install_nexus(cx, st, &nx, gid, &o, 0, &mut visiting) {
                 println!("  {gid}: {e:#}");
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn verify(paths: &Paths, st: &State, keys: &[String]) -> Result<()> {
@@ -3115,9 +3187,7 @@ fn overwrite(paths: &Paths, st: &State) -> Result<()> {
 }
 
 fn eject(paths: &Paths, st: &State, apply: bool) -> Result<()> {
-    if vfs::running(paths).is_some() {
-        bail!("game session running; quit first");
-    }
+    Idle::NoSession("game session running; quit first").check(paths)?;
     let own = conflicts::ownership(paths, &st.mods, true);
     let mut n = 0;
     for (rel, owners) in own.values() {
