@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { type AppState, api, api4, type SettingsData } from "./cpmm";
+import { type AppState, api, api4, api7, type SettingsData } from "./cpmm";
 import { useJobs } from "./jobs";
 
 /**
@@ -9,6 +9,7 @@ import { useJobs } from "./jobs";
 export function useAutomation(state: AppState | undefined, settings: SettingsData | undefined) {
   const { run, busy, toast } = useJobs();
   const started = useRef(false);
+  const toldModio = useRef("");
   const latest = useRef({ state, settings, busy });
   latest.current = { state, settings, busy };
 
@@ -27,6 +28,18 @@ export function useAutomation(state: AppState | undefined, settings: SettingsDat
         } catch {
           /* offline: try again next interval */
         }
+      }
+      // mod.io watcher: say once when new subscriptions appear (the in-game menu makes that easy)
+      try {
+        const m = await api7.modio();
+        const added = m.changes.first_look ? [] : m.changes.added;
+        const key = added.join("|");
+        if (added.length && key !== toldModio.current) {
+          toldModio.current = key;
+          toast("error", `New mod.io subscription${added.length > 1 ? "s" : ""}: ${added.join(", ")}. Check Health & order for conflicts.`);
+        }
+      } catch {
+        /* no mod.io folder */
       }
       if (v.auto_install_downloads && !gameUp) {
         try {

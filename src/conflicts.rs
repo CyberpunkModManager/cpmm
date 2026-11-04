@@ -120,6 +120,12 @@ pub fn redscript_conflicts(paths: &Paths, mods: &[Mod], unmanaged: &[(String, St
             scan(&format!("(unmanaged) {owner}"), &s);
         }
     }
+    // mod.io scripts compile together with everything else
+    for (owner, p) in crate::modio::scripts(paths) {
+        if let Ok(s) = fs::read_to_string(&p) {
+            scan(&owner, &s);
+        }
+    }
     let modules: BTreeSet<String> =
         sources.iter().flat_map(|(_, s)| module_re.captures_iter(s).map(|c| c[1].to_string()).collect::<Vec<_>>()).collect();
     for (owner, src) in &sources {

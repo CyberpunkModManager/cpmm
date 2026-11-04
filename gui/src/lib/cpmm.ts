@@ -261,3 +261,12 @@ export interface Changelog {
 export const api6 = {
   changelog: (id: string) => invoke<Changelog>("api", { args: ["changelog", id] }),
 };
+
+export interface ModioData {
+  mods: { id: string; name: string; author: string; version: string; files: number }[];
+  changes: { first_look: boolean; added: string[]; removed: string[]; updated: string[] };
+  conflicts: { modio: string; kind: string; with: string; detail: string; severe: boolean }[];
+}
+export const api7 = {
+  modio: () => invoke<ModioData>("api", { args: ["modio"] }),
+};

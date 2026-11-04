@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Badge, Button, Card, Empty, ErrorBox, PageHeader, Spinner, Stat } from "../components/ui";
 import { type AppState, api2, type Finding, ownerLabel } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
+import { ModioCard } from "./Modio";
 import { SafetyPanel } from "./Safety";
 
 const sev: Record<Finding["severity"], { tone: "red" | "amber" | "violet" | "muted" | "cyan"; label: string; icon: typeof CircleAlert }> = {
@@ -51,6 +52,7 @@ export function HealthView({ state }: { state: AppState }) {
       </div>
 
       <SafetyPanel state={state} />
+      <ModioCard state={state} />
 
       <section className="mb-8">
         <div className="mb-3 flex items-center justify-between">

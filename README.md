@@ -62,6 +62,7 @@ cpmm launch-options     # prints your line, i.e. … game-performance /home/…/
 | `verify [mod…]` | staged files vs Nexus manifest hashes |
 | `uninstall`/`remove <mod>` | moves staged files to `trash/` |
 | `overwrite` | what the game wrote at runtime (and what it shadows) |
+| `modio [--ack]` | mod.io watcher: subscriptions from the in-game Mods menu, what's new since you last reviewed (`--ack`), and conflicts with cpmm's mods: the same mod installed both ways, shared files, archive resources and redscript clashes |
 | `unmanaged [--modified] [--flat]` | non-vanilla files in the base dir that no mod owns; edited vanilla files (from Steam's depot manifest) |
 | `steam-shortcut [--remove] [--dry-run]` | add the GUI to the Steam library with artwork (live via Steam's CEF debugger, or via shortcuts.vdf when Steam is closed) |
 | `register-handler [--check \| --unregister]` | make cpmm the default for Nexus "Mod Manager Download" (`nxm://`) links; installs with requirements, logs to `~/.local/share/cpmm/nxm.log` |

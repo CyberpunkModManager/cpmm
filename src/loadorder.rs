@@ -554,6 +554,52 @@ pub fn doctor(paths: &Paths, st: &State) -> Vec<Finding> {
             actions: vec![act("Reset to the mods' shipped versions", &clear, "secondary")],
         });
     }
+    // --- mod.io watcher ---
+    let ch = crate::modio::changes(paths);
+    if !ch.first_look && (!ch.added.is_empty() || !ch.updated.is_empty()) {
+        f.push(Finding {
+            severity: "warning",
+            title: format!("mod.io subscriptions changed: {} new, {} updated", ch.added.len(), ch.updated.len()),
+            detail: format!(
+                "{}{}. mod.io mods load outside cpmm's control; check the conflicts below, then mark them reviewed.",
+                ch.added.iter().map(|a| format!("new: {a}")).collect::<Vec<_>>().join("; "),
+                if ch.updated.is_empty() { String::new() } else { format!("; updated: {}", ch.updated.join("; ")) }
+            ),
+            fix: Some("Unsubscribe in the in-game Mods menu if you didn't mean to add them.".into()),
+            actions: vec![act("Mark as reviewed", &["modio", "--ack"], "secondary")],
+        });
+    }
+    // archive and script clashes with mod.io mods are already reported by the general checks
+    for c in crate::modio::conflicts(paths, st).into_iter().filter(|c| c.kind != "archive" && c.kind != "script") {
+        let title = match c.kind {
+            "same mod" => format!("Same mod installed twice: {} and mod.io: {}", c.with, c.modio),
+            "script" => format!("mod.io: {} clashes with {} in a script", c.modio, c.with),
+            _ => format!("mod.io: {} and {} ship the same files", c.modio, c.with),
+        };
+        if f.iter().any(|x| {
+            x.title == title || (c.kind == "same mod" && x.title.starts_with("Same mod installed twice") && x.title.contains(&c.modio))
+        }) {
+            continue;
+        }
+        let disable = if st.find(&c.with).is_some() {
+            vec![act(format!("Disable {}", name(&c.with)), &["disable", &c.with], "secondary")]
+        } else {
+            vec![]
+        };
+        f.push(Finding {
+            severity: if c.kind == "same mod" {
+                "crash"
+            } else if c.severe {
+                "warning"
+            } else {
+                "info"
+            },
+            title,
+            detail: c.detail.clone(),
+            fix: Some("To drop the mod.io copy, unsubscribe in the in-game Mods menu (quit the game afterwards).".into()),
+            actions: disable,
+        });
+    }
     // --- safety net findings ---
     let sess = crate::safety::sessions(paths);
     if let Some(c) = crate::safety::crashes(paths, 1).into_iter().next() {

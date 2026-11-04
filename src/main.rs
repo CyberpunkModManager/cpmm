@@ -8,6 +8,7 @@ mod import;
 mod install;
 mod loadorder;
 mod manage;
+mod modio;
 mod nexus;
 mod profiles;
 mod safety;
@@ -217,6 +218,12 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// mod.io subscriptions: conflicts with cpmm's mods and changes since you last reviewed them.
+    Modio {
+        /// Mark the current subscriptions as reviewed
+        #[arg(long)]
+        ack: bool,
+    },
     /// Show or change settings: `cpmm settings`, `set <key> <value>`, `reset [key]`.
     Settings {
         #[command(subcommand)]
@@ -415,6 +422,8 @@ enum SettingsCmd {
 enum ApiCmd {
     /// Settings values, their schema and the resolved folders
     Settings,
+    /// mod.io subscriptions, changes since the last review, conflicts
+    Modio,
     /// Nexus changelog of one mod, with entries newer than the installed version marked
     Changelog {
         r#mod: String,
@@ -934,6 +943,11 @@ fn real_main() -> Result<()> {
                         })).collect::<Vec<_>>(),
                     })
                 }
+                ApiCmd::Modio => serde_json::json!({
+                    "mods": modio::list(&paths).into_iter().map(|m| serde_json::json!({"id": m.id, "name": m.name, "author": m.author, "version": m.version, "files": m.files.len()})).collect::<Vec<_>>(),
+                    "changes": modio::changes(&paths),
+                    "conflicts": modio::conflicts(&paths, &st),
+                }),
                 ApiCmd::Settings => serde_json::json!({
                     "values": paths.cfg,
                     "schema": settings::schema(),
@@ -1269,6 +1283,45 @@ fn real_main() -> Result<()> {
                 }
                 if !all && !newer {
                     break; // the installed/older entry gives context; stop there
+                }
+            }
+        }
+        Cmd::Modio { ack } => {
+            if ack {
+                println!("marked {} mod.io subscriptions as reviewed", modio::ack(&paths)?);
+                return Ok(());
+            }
+            let mods = modio::list(&paths);
+            if mods.is_empty() {
+                println!("no mod.io subscriptions (the in-game Mods menu manages them)");
+            }
+            let cs = modio::conflicts(&paths, &st);
+            for m in &mods {
+                let mine: Vec<&modio::Conflict> = cs.iter().filter(|c| c.modio == m.name).collect();
+                println!(
+                    "  {:<10} {} {} by {}{}",
+                    m.id,
+                    m.name,
+                    m.version,
+                    m.author,
+                    if mine.is_empty() { String::new() } else { format!("  [{} conflicts]", mine.len()) }
+                );
+                for c in mine {
+                    println!("      {}{} with {}: {}", if c.severe { "! " } else { "" }, c.kind, c.with, c.detail);
+                }
+            }
+            let ch = modio::changes(&paths);
+            if ch.first_look && !mods.is_empty() {
+                println!("first look: `cpmm modio --ack` marks these as reviewed; cpmm then reports new subscriptions");
+            } else {
+                for a in &ch.added {
+                    println!("  NEW since last review: {a}");
+                }
+                for u in &ch.updated {
+                    println!("  updated: {u}");
+                }
+                for r in &ch.removed {
+                    println!("  unsubscribed: {r}");
                 }
             }
         }
