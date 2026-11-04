@@ -222,6 +222,23 @@ paths are matched case-insensitively.
 
 Several files from one Nexus page (a car and its tuning-parts installer) install as separate mods.
 
+## Nexus Collections
+
+```
+cpmm collection show <slug | collection URL>      # contents, and what you already have
+cpmm collection install <slug | URL> [--optional] [--into-current | --profile NAME]
+cpmm collection list
+```
+
+A collection installs into a new profile named after it (your other profiles are untouched;
+`--into-current` merges it into the active one). cpmm installs the curator's exact file versions in
+the collection's phase order, applies the FOMOD options the curator chose, turns their "load after"
+rules into cpmm rules and sorts. Mods you already have are reused (and set to the curator's version);
+the replaced versions are kept for rollback. Optional mods are skipped unless `--optional`.
+Downloading mods from the API needs a Nexus premium account; if a large collection runs into the
+API's hourly limit, run the same command again to continue. Vortex-only binary patches and
+non-Nexus sources are listed for manual steps. The GUI has the same on the Install page.
+
 ## Settings
 
 Settings live in `~/.local/share/cpmm/settings.json` (every key has a default) and are shared by

@@ -455,6 +455,41 @@ impl Nexus {
         Ok(out)
     }
 
+    /// One GraphQL request through the same rate gate as everything else.
+    pub fn gql(&self, query: &str, vars: Value) -> Result<Value> {
+        let body = json!({"query": query, "variables": vars});
+        let r: Value = self.api_call("POST", GQL, true, Body::Json(body))?.map_err(|e| anyhow::anyhow!("GraphQL: {e}"))?.into_json()?;
+        if let Some(e) = r.get("errors") {
+            bail!("GraphQL errors: {}", e.to_string().chars().take(500).collect::<String>());
+        }
+        Ok(r["data"].clone())
+    }
+
+    /// A collection revision (the latest published one when `revision` is None).
+    pub fn collection_revision(&self, slug: &str, revision: Option<u64>) -> Result<Value> {
+        let q = "query($slug:String!,$rev:Int){ collectionRevision(slug:$slug, revision:$rev, domainName:\"cyberpunk2077\", viewAdultContent:true){ revisionNumber downloadLink totalSize modCount gameVersions { reference } collection { name slug summary user { name } } } }";
+        let d = self.gql(q, json!({"slug": slug, "rev": revision}))?;
+        let r = d["collectionRevision"].clone();
+        if r.is_null() {
+            bail!("no collection {slug:?} for Cyberpunk 2077");
+        }
+        Ok(r)
+    }
+
+    /// Download a collection's own archive (collection.json + bundled files).
+    pub fn download_collection(&self, download_link: &str, dest: &Path) -> Result<()> {
+        let url =
+            if download_link.starts_with("http") { download_link.to_string() } else { format!("https://api.nexusmods.com{download_link}") };
+        let links: Value =
+            self.api_call("GET", &url, true, Body::None)?.map_err(|e| anyhow::anyhow!("collection download link: {e}"))?.into_json()?;
+        let uri =
+            links.pointer("/download_links/0/URI").and_then(Value::as_str).context("Nexus returned no download link for the collection")?;
+        let r = self.agent.get(uri).set("User-Agent", UA).call().map_err(|e| anyhow::anyhow!("downloading the collection: {e}"))?;
+        let mut f = fs::File::create(dest)?;
+        std::io::copy(&mut r.into_reader(), &mut f)?;
+        Ok(())
+    }
+
     /// Check the API key; returns the account name.
     pub fn validate(&self) -> Result<(String, bool)> {
         let v = self.v1("GET", "users/validate.json", None)?;

@@ -2,6 +2,7 @@
 
 mod api;
 mod archive;
+mod collections;
 mod conflicts;
 mod files;
 mod fomod;
@@ -22,7 +23,7 @@ mod vfs;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use nexus::Nexus;
-use state::{Mod, NexusSource, Paths, ReqCheck, Requirement, State, now, short_name, slugify};
+use state::{InstalledCollection, Mod, NexusSource, Paths, ReqCheck, Requirement, State, now, short_name, slugify};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
@@ -231,6 +232,11 @@ enum Cmd {
         #[arg(long)]
         ack: bool,
     },
+    /// Nexus collections: `show <slug|url>`, `install <slug|url>`, `list`.
+    Collection {
+        #[command(subcommand)]
+        action: CollectionCmd,
+    },
     /// Show or change settings: `cpmm settings`, `set <key> <value>`, `reset [key]`.
     Settings {
         #[command(subcommand)]
@@ -409,6 +415,27 @@ enum ProfileCmd {
 }
 
 #[derive(Subcommand)]
+enum CollectionCmd {
+    /// What a collection contains and what you already have
+    Show { reference: String },
+    /// Install a collection: exact file versions, the curator's FOMOD choices and load-order rules
+    Install {
+        reference: String,
+        /// Also install the collection's optional mods
+        #[arg(long)]
+        optional: bool,
+        /// Add to the active profile instead of a new profile named after the collection
+        #[arg(long)]
+        into_current: bool,
+        /// Profile to install into (created if missing)
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    /// Collections installed through cpmm
+    List,
+}
+
+#[derive(Subcommand)]
 enum SettingsCmd {
     /// Print every setting (default)
     Show {
@@ -429,6 +456,10 @@ enum SettingsCmd {
 enum ApiCmd {
     /// Settings values, their schema and the resolved folders
     Settings,
+    /// A Nexus collection's contents with install status
+    Collection {
+        reference: String,
+    },
     /// FOMOD installer options of an archive or Nexus mod (downloads it if needed)
     Fomod {
         source: String,
@@ -1023,6 +1054,7 @@ fn real_main() -> Result<()> {
                     let _ = fs::remove_dir_all(&x);
                     v
                 }
+                ApiCmd::Collection { reference } => collection_json(&paths, &st, &reference)?,
                 ApiCmd::Settings => serde_json::json!({
                     "values": paths.cfg,
                     "schema": settings::schema(),
@@ -1400,6 +1432,44 @@ fn real_main() -> Result<()> {
                 }
             }
         }
+        Cmd::Collection { action } => match action {
+            CollectionCmd::Show { reference } => {
+                let v = collection_json(&paths, &st, &reference)?;
+                println!("{} (revision {}) by {}", v["name"].as_str().unwrap_or(""), v["revision"], v["author"].as_str().unwrap_or(""));
+                println!(
+                    "{} mods ({} optional), {:.1} GB, {} load-order rules",
+                    v["mods"].as_array().map_or(0, |a| a.len()),
+                    v["optional"],
+                    v["total_size"].as_f64().unwrap_or(0.0) / 1e9,
+                    v["rules"]
+                );
+                let mut by: BTreeMap<String, usize> = BTreeMap::new();
+                for m in v["mods"].as_array().cloned().unwrap_or_default() {
+                    *by.entry(m["status"].as_str().unwrap_or("").to_string()).or_default() += 1;
+                }
+                println!("status: {}", by.iter().map(|(k, n)| format!("{n} {k}")).collect::<Vec<_>>().join(", "));
+                println!("install with: cpmm collection install {reference}");
+            }
+            CollectionCmd::Install { reference, optional, into_current, profile } => {
+                collection_install(&paths, &mut st, &reference, optional, into_current, profile)?
+            }
+            CollectionCmd::List => {
+                if st.collections.is_empty() {
+                    println!("no collections installed through cpmm");
+                }
+                for c in &st.collections {
+                    println!(
+                        "  {}  {} (revision {}), {} mods, profile {:?}, {}",
+                        c.slug,
+                        c.name,
+                        c.revision,
+                        c.mods.len(),
+                        c.profile,
+                        c.installed_at
+                    );
+                }
+            }
+        },
         Cmd::Settings { action } => settings_cmd(&paths, &st, action.unwrap_or(SettingsCmd::Show { json: false }))?,
         Cmd::Downloads { install } => {
             let found = scan_downloads(&paths)?;
@@ -1839,6 +1909,14 @@ pub struct InstallOpts {
 
 fn pick_file(nx: &Nexus, info: &nexus::ModInfo, sel: Option<&str>) -> Result<nexus::Version> {
     let files = nx.mod_files(&info.id)?;
+    // A numeric selection that is a version id (collections, nxm links): one lookup instead of
+    // listing every file's versions.
+    if let Some(s) = sel.filter(|s| s.chars().all(|c| c.is_ascii_digit()) && !files.iter().any(|f| f.id == *s))
+        && let Ok(v) = nx.version_by_gsid(s)
+        && files.iter().any(|f| f.id == v.file.id)
+    {
+        return Ok(v);
+    }
     let mut cands = vec![];
     for f in files.iter().filter(|f| f.is_active) {
         if let Some(v) = nx.versions(&f.id)?.into_iter().next() {
@@ -2529,6 +2607,226 @@ fn fetch_archive(paths: &Paths, source: &str, file: Option<&str>) -> Result<Path
     let arc = paths.downloads().join(format!("{}-{}", ver.game_scoped_id, slugify(&ver.file.name)));
     nx.download(&ver, &man, &arc, None)?;
     Ok(arc)
+}
+
+/// Revision info + manifest of a collection (the archive is cached per revision).
+fn fetch_collection(paths: &Paths, nx: &Nexus, reference: &str) -> Result<(String, serde_json::Value, collections::Manifest, PathBuf)> {
+    let (slug, rev) = collections::parse_ref(reference)?;
+    let rv = nx.collection_revision(&slug, rev)?;
+    let n = rv["revisionNumber"].as_u64().unwrap_or(0);
+    let dir = paths.cache().join("collections").join(format!("{slug}-{n}"));
+    if !dir.join("collection.json").is_file() {
+        fs::create_dir_all(&dir)?;
+        let arc = dir.join("collection.7z");
+        nx.download_collection(rv["downloadLink"].as_str().context("no download link for this collection")?, &arc)?;
+        install::extract(&arc, &dir)?;
+        let _ = fs::remove_file(&arc);
+    }
+    let man = collections::read_manifest(&dir)?;
+    Ok((slug, rv, man, dir))
+}
+
+fn coll_status(st: &State, m: &collections::CollMod) -> &'static str {
+    let same = st.mods.iter().filter(|x| x.nexus.as_ref().is_some_and(|n| n.mod_id == m.mod_id)).collect::<Vec<_>>();
+    if m.source != "nexus" {
+        if m.source == "bundle" { "bundled" } else { "manual" }
+    } else if same.iter().any(|x| x.nexus.as_ref().is_some_and(|n| n.version_gsid == m.file_id)) {
+        "installed"
+    } else if same.is_empty() {
+        "missing"
+    } else {
+        "other version"
+    }
+}
+
+fn collection_json(paths: &Paths, st: &State, reference: &str) -> Result<serde_json::Value> {
+    let nx = nexus(paths);
+    let (slug, rv, man, _) = fetch_collection(paths, &nx, reference)?;
+    Ok(serde_json::json!({
+        "slug": slug,
+        "revision": rv["revisionNumber"],
+        "name": rv.pointer("/collection/name").cloned().unwrap_or(serde_json::json!(man.name)),
+        "author": rv.pointer("/collection/user/name").cloned().unwrap_or(serde_json::json!(man.author)),
+        "summary": rv.pointer("/collection/summary"),
+        "total_size": rv["totalSize"].as_str().and_then(|s| s.parse::<f64>().ok()).or(rv["totalSize"].as_f64()).unwrap_or(0.0),
+        "instructions": man.instructions.chars().take(2000).collect::<String>(),
+        "rules": man.rules.len(),
+        "optional": man.mods.iter().filter(|m| m.optional).count(),
+        "installed": st.collections.iter().any(|c| c.slug == slug),
+        "mods": man.mods.iter().map(|m| serde_json::json!({
+            "name": m.name, "version": m.version, "mod_id": m.mod_id, "file_id": m.file_id, "optional": m.optional,
+            "phase": m.phase, "source": m.source, "fomod": m.choices.is_some(), "patches": m.has_patches,
+            "status": coll_status(st, m),
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+/// Install a collection: exact files in phase order with the curator's FOMOD choices, enable
+/// them in the target profile, add the curator's load-order rules, then sort.
+fn collection_install(
+    paths: &Paths,
+    st: &mut State,
+    reference: &str,
+    optional: bool,
+    into_current: bool,
+    profile: Option<String>,
+) -> Result<()> {
+    manage::ensure_idle(paths)?;
+    let nx = nexus(paths);
+    let (slug, rv, man, dir) = fetch_collection(paths, &nx, reference)?;
+    let name = rv.pointer("/collection/name").and_then(|v| v.as_str()).unwrap_or(&man.name).to_string();
+    let rev = rv["revisionNumber"].as_u64().unwrap_or(0);
+    println!("{name} (revision {rev}) by {}: {} mods", man.author, man.mods.len());
+    if !into_current && paths.cfg.profiles_enabled {
+        let pname = profile.unwrap_or_else(|| name.clone());
+        let pname = profiles::valid_name(&pname).unwrap_or_else(|_| format!("Collection {slug}"));
+        if st.profile_index(&pname).is_err() {
+            st.create_profile(&pname, None, true)?;
+            println!("created profile {pname:?} (your other profiles are untouched)");
+        }
+        st.switch_profile(&pname)?;
+        st.save(paths)?;
+        println!("installing into profile {pname:?}");
+    }
+    safety::auto_snapshot(paths, &format!("before installing collection {name}"));
+    if let Ok(mut b) = safety::BATCH.lock() {
+        *b = Some(format!("collection-{slug}-{rev}"));
+    }
+    let mut mods = man.mods.clone();
+    mods.sort_by_key(|m| m.phase);
+    let (mut ok_ids, mut failed, mut manual, mut skipped) = (BTreeMap::<u64, Vec<String>>::new(), vec![], vec![], 0);
+    let total = mods.iter().filter(|m| optional || !m.optional).count();
+    let mut n = 0;
+    for m in &mods {
+        if m.optional && !optional {
+            skipped += 1;
+            continue;
+        }
+        n += 1;
+        println!("[{n}/{total}] {} {}", m.name, m.version);
+        let r: Result<Option<String>> = match m.source.as_str() {
+            "nexus" if m.mod_id > 0 => {
+                let o = InstallOpts {
+                    file: Some(m.file_id.clone()),
+                    id: None,
+                    name: None,
+                    root: None,
+                    dest: None,
+                    with_deps: false,
+                    ignore_deps: true,
+                    disabled: false,
+                    keep_archive: false,
+                    nxm: None,
+                    hooks: false,
+                    fomod: m.choices.clone(),
+                    fomod_defaults: true,
+                };
+                let mut visiting = BTreeSet::new();
+                install_nexus(paths, st, &nx, m.mod_id, &o, 0, &mut visiting).map(|_| {
+                    st.mods
+                        .iter()
+                        .find(|x| x.nexus.as_ref().is_some_and(|nx| nx.mod_id == m.mod_id && nx.version_gsid == m.file_id))
+                        .or_else(|| st.by_nexus(m.mod_id))
+                        .map(|x| x.id.clone())
+                })
+            }
+            "bundle" => {
+                let p = dir.join("bundled").join(&m.bundle);
+                if p.exists() {
+                    let o = InstallOpts {
+                        file: None,
+                        id: None,
+                        name: Some(m.name.clone()),
+                        root: None,
+                        dest: None,
+                        with_deps: false,
+                        ignore_deps: true,
+                        disabled: false,
+                        keep_archive: true,
+                        nxm: None,
+                        hooks: false,
+                        fomod: m.choices.clone(),
+                        fomod_defaults: true,
+                    };
+                    install_local(paths, st, &p, None, &o).map(|_| st.mods.iter().rev().find(|x| x.name == m.name).map(|x| x.id.clone()))
+                } else {
+                    Err(anyhow::anyhow!("bundled file {} is missing from the collection", m.bundle))
+                }
+            }
+            _ => {
+                manual.push(format!("{} ({}): {}", m.name, m.source, m.instructions.lines().next().unwrap_or("install it by hand")));
+                Ok(None)
+            }
+        };
+        match r {
+            Ok(Some(id)) => {
+                ok_ids.entry(m.mod_id).or_default().push(id);
+                if m.has_patches {
+                    manual.push(format!(
+                        "{}: the curator patches some of its files with Vortex-only binary patches, which cpmm doesn't apply",
+                        m.name
+                    ));
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                println!("  failed: {e:#}");
+                failed.push(format!("{}: {e:#}", m.name));
+            }
+        }
+    }
+    if let Ok(mut b) = safety::BATCH.lock() {
+        *b = None;
+    }
+    // every collection mod is on in this profile, including ones installed before
+    let ids: BTreeSet<String> = ok_ids.values().flatten().cloned().collect();
+    for m in st.mods.iter_mut().filter(|m| ids.contains(&m.id)) {
+        m.enabled = true;
+    }
+    // the curator's load order
+    let mut added = 0;
+    for r in &man.rules {
+        let (Some(src), Some(refm)) = (ok_ids.get(&r.source.0).and_then(|v| v.first()), ok_ids.get(&r.reference.0).and_then(|v| v.first()))
+        else {
+            continue;
+        };
+        let (a, b) = if r.kind == "after" { (src.clone(), refm.clone()) } else { (refm.clone(), src.clone()) };
+        if a != b && !st.rules.iter().any(|x| x.r#mod == a && x.after == b) {
+            st.rules.retain(|x| !(x.r#mod == b && x.after == a));
+            st.rules.push(loadorder::Rule { r#mod: a, after: b });
+            added += 1;
+        }
+    }
+    st.collections.retain(|c| c.slug != slug);
+    st.collections.push(InstalledCollection {
+        slug: slug.clone(),
+        name: name.clone(),
+        revision: rev,
+        profile: st.active_profile.clone(),
+        mods: ids.iter().cloned().collect(),
+        installed_at: now(),
+    });
+    st.save(paths)?;
+    auto_sort(paths, st);
+    let _ = loadorder::write_modlist(paths, st);
+    println!(
+        "\n{name}: {} installed, {skipped} optional skipped{}, {added} load-order rules",
+        ids.len(),
+        if optional { "" } else { " (--optional adds them)" }
+    );
+    if !failed.is_empty() {
+        println!("{} failed (run the same command again to retry just those):", failed.len());
+        for f in &failed {
+            println!("  {f}");
+        }
+    }
+    for m in &manual {
+        println!("  manual: {m}");
+    }
+    if !man.instructions.trim().is_empty() {
+        println!("\nCurator's notes: {}", man.instructions.chars().take(400).collect::<String>().replace('\n', " "));
+    }
+    Ok(())
 }
 
 /// The cpmm binary Steam should run (the installed copy, not a cargo target dir).

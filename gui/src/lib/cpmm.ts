@@ -291,3 +291,31 @@ export const api8 = {
       args: ["fomod", source, ...(file ? ["--file", file] : []), ...(choices && Object.keys(choices).length ? ["--choices", JSON.stringify(choices)] : [])],
     }),
 };
+
+export interface CollectionInfo {
+  slug: string;
+  revision: number;
+  name: string;
+  author: string;
+  summary: string | null;
+  total_size: number;
+  instructions: string;
+  rules: number;
+  optional: number;
+  installed: boolean;
+  mods: {
+    name: string;
+    version: string;
+    mod_id: number;
+    file_id: string;
+    optional: boolean;
+    phase: number;
+    source: string;
+    fomod: boolean;
+    patches: boolean;
+    status: string;
+  }[];
+}
+export const api9 = {
+  collection: (reference: string) => invoke<CollectionInfo>("api", { args: ["collection", reference] }),
+};

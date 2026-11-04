@@ -170,6 +170,18 @@ pub struct Mod {
     pub notes: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct InstalledCollection {
+    pub slug: String,
+    pub name: String,
+    pub revision: u64,
+    #[serde(default)]
+    pub profile: String,
+    /// cpmm mod ids that came from this collection
+    pub mods: Vec<String>,
+    pub installed_at: String,
+}
+
 #[derive(Serialize, Deserialize, Default, Debug)]
 pub struct State {
     pub version: u32,
@@ -178,6 +190,9 @@ pub struct State {
     /// Load order rules from the user ("X after Y"), enforced by `cpmm sort`.
     #[serde(default)]
     pub rules: Vec<crate::loadorder::Rule>,
+    /// Nexus collections installed through cpmm.
+    #[serde(default)]
+    pub collections: Vec<InstalledCollection>,
     /// Doctor findings the user marked as known/accepted (by title).
     #[serde(default)]
     pub acked: Vec<String>,
@@ -197,8 +212,15 @@ impl State {
                 Ok(st)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut st =
-                    State { version: 1, mods: vec![], rules: vec![], acked: vec![], profiles: vec![], active_profile: String::new() };
+                let mut st = State {
+                    version: 1,
+                    mods: vec![],
+                    rules: vec![],
+                    acked: vec![],
+                    profiles: vec![],
+                    active_profile: String::new(),
+                    collections: vec![],
+                };
                 st.ensure_profiles();
                 Ok(st)
             }

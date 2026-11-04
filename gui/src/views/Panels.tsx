@@ -28,6 +28,7 @@ import { type AppState, api, api2, api3, api8, ownerLabel, timeAgo } from "../li
 import { useJobs } from "../lib/jobs";
 import { openLink, openNexus } from "../lib/nexus";
 import { ChangelogDrawer } from "./Changelog";
+import { CollectionsCard } from "./Collections";
 import { FomodDialog } from "./Fomod";
 import { ReqBadge } from "./Mods";
 
@@ -613,6 +614,8 @@ export function InstallView({ state }: { state: AppState }) {
           </div>
         )}
       </Card>
+
+      <CollectionsCard state={state} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card className="p-5">
