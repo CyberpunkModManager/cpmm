@@ -275,7 +275,7 @@ export function DepsView({ state }: { state: AppState }) {
                   Install
                 </Button>
               )}
-              {r.status === "disabled" && r.installed_as && (
+              {(r.status === "disabled" || r.status === "optional-disabled") && r.installed_as && (
                 <Button size="sm" disabled={busy} onClick={() => run(`Enable ${r.name}`, ["enable", r.installed_as!])}>
                   Enable
                 </Button>
