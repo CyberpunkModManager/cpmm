@@ -24,9 +24,10 @@ mod vfs;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use install::OnMissing;
 use nexus::Nexus;
 use requirements::Status;
-use state::{InstalledCollection, Mod, NexusSource, Paths, ReqCheck, Requirement, State, now, short_name, slugify};
+use state::{InstalledCollection, Mod, Paths, ReqCheck, Requirement, State, now, slugify};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
@@ -757,28 +758,29 @@ fn real_main() -> Result<()> {
                 .map(|j| serde_json::from_str::<fomod::Choices>(&j))
                 .transpose()
                 .context("--fomod-choices must be JSON: {\"Step/Group\": [\"Option\"]}")?;
-            let o = InstallOpts {
-                file,
+            let policy = install::Policy {
                 id,
                 name,
                 root,
                 dest,
-                with_deps,
-                ignore_deps,
+                fomod,
+                ask: !fomod_defaults,
+                missing: if with_deps {
+                    OnMissing::Install
+                } else if ignore_deps {
+                    OnMissing::Warn
+                } else {
+                    OnMissing::Refuse
+                },
                 disabled,
                 keep_archive,
-                nxm: None,
-                hooks: true,
-                fomod,
-                fomod_defaults,
+                ..Default::default()
             };
-            if let Some(gid) = parse_nexus(&source) {
-                let nx = nexus(&paths);
-                let mut visiting = BTreeSet::new();
-                install_nexus(&paths, &mut st, &nx, gid, &o, 0, &mut visiting)?;
-            } else {
-                install_local(&paths, &mut st, &expand(&source), nid, &o)?;
-            }
+            let source = match parse_nexus(&source) {
+                Some(gid) => install::Source::Nexus { mod_id: gid, file },
+                None => install::Source::Local { path: expand(&source), nexus: nid },
+            };
+            install::run(&paths, &mut st, &nexus(&paths), source, &policy, install::print)?;
             warn_if_running(&paths);
         }
         Cmd::Updates { refresh } => updates(&paths, &st, refresh)?,
@@ -896,24 +898,10 @@ fn real_main() -> Result<()> {
                         done.push(gid);
                     }
                     None if install => {
-                        let o = InstallOpts {
-                            file: None,
-                            id: None,
-                            name: None,
-                            root: None,
-                            dest: None,
-                            with_deps: true,
-                            ignore_deps: false,
-                            disabled: false,
-                            keep_archive: false,
-                            nxm: None,
-                            hooks: true,
-                            fomod: None,
-                            fomod_defaults: true,
-                        };
-                        let mut visiting = BTreeSet::new();
-                        match install_nexus(&paths, &mut st, &nx, gid, &o, 0, &mut visiting) {
-                            Ok(()) => done.push(gid),
+                        let source = install::Source::Nexus { mod_id: gid, file: None };
+                        let policy = install::Policy { missing: OnMissing::Install, ..Default::default() };
+                        match install::run(&paths, &mut st, &nx, source, &policy, install::print) {
+                            Ok(_) => done.push(gid),
                             Err(e) => println!("  {gid} {name}: {e:#}"),
                         }
                     }
@@ -967,8 +955,9 @@ fn real_main() -> Result<()> {
                 let file = arc.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let d = downloads::find(&paths, &st, &file)?;
                 if paths.cfg.auto_install_downloads {
-                    match install_download(&paths, &mut st, &d, None, true, true) {
-                        Ok(()) => {
+                    let policy = install::Policy { missing: OnMissing::Install, ..Default::default() };
+                    match install::run(&paths, &mut st, &nx, install::Source::Download(&d), &policy, install::print) {
+                        Ok(_) => {
                             let name = st.by_nexus(l.mod_id).map(|m| format!("{} {}", m.name, m.version)).unwrap_or_default();
                             manage::notify("Mod installed", &format!("{name}\n(applies on next launch)"));
                         }
@@ -1542,7 +1531,13 @@ fn real_main() -> Result<()> {
                     .map(|j| serde_json::from_str::<fomod::Choices>(&j))
                     .transpose()
                     .context("--fomod-choices must be JSON")?;
-                install_download(&paths, &mut st, &d, fomod, fomod_defaults, with_deps)?;
+                let policy = install::Policy {
+                    fomod,
+                    ask: !fomod_defaults,
+                    missing: if with_deps { OnMissing::Install } else { OnMissing::Warn },
+                    ..Default::default()
+                };
+                install::run(&paths, &mut st, &nexus(&paths), install::Source::Download(&d), &policy, install::print)?;
             }
             DownloadsCmd::Remove { key } => {
                 let d = downloads::find(&paths, &st, &key)?;
@@ -1555,7 +1550,8 @@ fn real_main() -> Result<()> {
                 println!("added {file} to Downloads");
                 if auto && paths.cfg.auto_install_downloads {
                     let d = downloads::find(&paths, &st, &file)?;
-                    install_download(&paths, &mut st, &d, None, true, true)?;
+                    let policy = install::Policy { missing: OnMissing::Install, ..Default::default() };
+                    install::run(&paths, &mut st, &nexus(&paths), install::Source::Download(&d), &policy, install::print)?;
                 }
             }
         },
@@ -1937,25 +1933,6 @@ fn unmanaged_reds(paths: &Paths, st: &State) -> Vec<(String, String)> {
         .collect()
 }
 
-pub struct InstallOpts {
-    file: Option<String>,
-    id: Option<String>,
-    name: Option<String>,
-    root: Option<String>,
-    dest: Option<String>,
-    with_deps: bool,
-    ignore_deps: bool,
-    disabled: bool,
-    keep_archive: bool,
-    /// key/expires from an nxm:// link (lets non-premium accounts download)
-    nxm: Option<(String, String)>,
-    /// Run the after-install tasks from settings (off for bulk updates, which sort once at the end)
-    hooks: bool,
-    /// FOMOD choices; None: the mod's saved choices, else ask (terminal) or the installer's defaults
-    fomod: Option<fomod::Choices>,
-    fomod_defaults: bool,
-}
-
 fn pick_file(nx: &Nexus, info: &nexus::ModInfo, sel: Option<&str>) -> Result<nexus::Version> {
     let files = nx.mod_files(&info.id)?;
     // A numeric selection that is a version id (collections, nxm links): one lookup instead of
@@ -2050,331 +2027,6 @@ fn fetch_requirements(
         }
     }
     Ok((reqs.into_iter().filter(|r| r.external).collect(), stored))
-}
-
-fn req_notes(r: &Requirement) -> String {
-    if r.notes.is_empty() { String::new() } else { format!(" — {}", r.notes) }
-}
-
-/// Check a mod's requirements at install time. Missing hard requirements are installed
-/// (--with-deps), refused (default), or, with --ignore-deps (updates), reported with the fix.
-/// Requirements the user chose to do without for this mod (`ignored`) are skipped.
-#[allow(clippy::too_many_arguments)]
-fn resolve_requirements(
-    paths: &Paths,
-    st: &mut State,
-    nx: &Nexus,
-    label: &str,
-    stored: &[Requirement],
-    ignored: &[u64],
-    o: &InstallOpts,
-    depth: usize,
-    visiting: &mut BTreeSet<u64>,
-) -> Result<()> {
-    let ind = "  ".repeat(depth);
-    let mut missing = vec![];
-    for c in requirements::check(st, stored, ignored) {
-        let r = c.req;
-        match (c.status, c.dep) {
-            (Status::Ignored, _) => println!("{ind}  requires {} {}: not installed, ignored by your choice", r.mod_id, r.name),
-            (Status::Ok, _) => println!("{ind}  requires {} {}: installed", r.mod_id, r.name),
-            (Status::Disabled | Status::OptionalDisabled, Some(m)) => {
-                println!("{ind}  requires {} {}: installed but DISABLED ({}; cpmm enable {})", r.mod_id, r.name, m.id, m.id)
-            }
-            (Status::OptionalMissing, _) => println!("{ind}  optional {} {}: not installed{}", r.mod_id, r.name, req_notes(r)),
-            (Status::Missing, _) if visiting.contains(&r.mod_id) => {}
-            (Status::Missing, _) => missing.push(r.clone()),
-            (Status::Disabled | Status::OptionalDisabled, None) => unreachable!("a disabled requirement has an installed mod"),
-        }
-    }
-    if missing.is_empty() {
-        return Ok(());
-    }
-    if o.with_deps {
-        for r in &missing {
-            println!("{ind}  installing requirement {} {}{}", r.mod_id, r.name, req_notes(r));
-            install_nexus(paths, st, nx, r.mod_id, o, depth + 1, visiting)?;
-        }
-    } else if o.ignore_deps {
-        for r in &missing {
-            println!("{ind}  WARNING: requires {} {}, which is NOT installed{}", r.mod_id, r.name, req_notes(r));
-            println!("{ind}           `cpmm deps --fix` installs it; `cpmm deps --ignore {label} {}` accepts it", r.mod_id);
-        }
-    } else {
-        let mut msg = String::from("missing hard requirements:\n");
-        for r in &missing {
-            msg += &format!("  {} {}{}\n", r.mod_id, r.name, req_notes(r));
-        }
-        msg += "re-run with --with-deps to install them, or --ignore-deps";
-        bail!(msg);
-    }
-    Ok(())
-}
-
-fn install_nexus(
-    paths: &Paths,
-    st: &mut State,
-    nx: &Nexus,
-    gid: u64,
-    o: &InstallOpts,
-    depth: usize,
-    visiting: &mut BTreeSet<u64>,
-) -> Result<()> {
-    if !visiting.insert(gid) {
-        return Ok(());
-    }
-    let info = nx.mod_info(gid)?;
-    let ind = "  ".repeat(depth);
-    let ver = pick_file(nx, &info, if depth == 0 { o.file.as_deref() } else { None })?;
-    println!("{ind}{} ({gid}): file {:?} v{} [{}]", info.name, ver.file.name, ver.version, ver.category);
-
-    // Requirements of this exact file version: checked now, then stored on the mod.
-    let (external, stored) = fetch_requirements(nx, gid, &ver.id, false, false)?;
-    for r in &external {
-        println!("{ind}  external requirement: {} {}", r.name, r.url);
-    }
-    // The same install only if it's the same Nexus *file*: a page can offer several (a car and
-    // its tuning-parts FOMOD), and installing one must not replace the other.
-    let existing = st
-        .mods
-        .iter()
-        .find(|m| m.nexus.as_ref().is_some_and(|n| n.mod_id == gid && (n.file_id.is_empty() || n.file_id == ver.file.id)))
-        .map(|m| m.id.clone());
-    let sibling = existing.is_none() && st.by_nexus(gid).is_some();
-    let ignored = existing.as_ref().and_then(|e| st.find(e)).map(|i| st.mods[i].ignored_reqs.clone()).unwrap_or_default();
-    let label = existing.clone().unwrap_or_else(|| slugify(short_name(&info.name)));
-    resolve_requirements(paths, st, nx, &label, &stored, &ignored, o, depth, visiting)?;
-    let checked = ReqCheck { at: now(), version_id: ver.id.clone() };
-
-    if let Some(e) = &existing {
-        let i = st.get(e)?;
-        // explicit FOMOD choices mean "reinstall with these options"
-        let reconfigure = depth == 0 && o.fomod.is_some();
-        if !reconfigure && st.mods[i].nexus.as_ref().is_some_and(|n| n.version_id == ver.id) {
-            println!("{ind}  already installed as {e}");
-            st.mods[i].requires = stored;
-            st.mods[i].reqs_checked = Some(checked);
-            st.save(paths)?;
-            return Ok(());
-        }
-    }
-    let id = if depth == 0 { o.id.clone() } else { None }.or(existing.clone()).unwrap_or_else(|| {
-        let base = slugify(short_name(&info.name));
-        st.unique_id(&if sibling { slugify(&format!("{base} {}", ver.file.name)) } else { base })
-    });
-    let manifest_url = ver.manifest_url.clone().context("version has no manifest")?;
-    let man = nx.manifest(&manifest_url)?;
-    paths.ensure_dirs()?;
-    let arc = paths.downloads().join(format!("{}-{}", ver.game_scoped_id, slugify(&ver.file.name)));
-    if !arc.exists() {
-        println!("{ind}  downloading {:.1} MB", man.archive.size as f64 / 1048576.0);
-    }
-    nx.download(&ver, &man, &arc, o.nxm.as_ref().map(|(k, e)| (k.as_str(), e.as_str())))?;
-    record_download(&arc, &info.name, gid, &ver, if o.nxm.is_some() { "nxm" } else { "nexus" });
-
-    let x = install::tmp_extract_dir(paths, &id);
-    if x.exists() {
-        fs::remove_dir_all(&x)?;
-    }
-    install::extract(&arc, &x)?;
-    let extracted = files::list_tree(&x);
-    // per-file hash check against the manifest
-    let mut bad = 0;
-    for mf in man.files.iter().filter(|f| !f.file_path.ends_with('/')) {
-        match files::sha256_file(&x.join(&mf.file_path)) {
-            Ok(h) if h == mf.file_hashes.sha256 => {}
-            _ => bad += 1,
-        }
-    }
-    if bad > 0 {
-        bail!("{bad} extracted files don't match the Nexus manifest");
-    }
-    let (root, dest) = if depth == 0 { (o.root.as_deref(), o.dest.as_deref()) } else { (None, None) };
-    let saved = st.find(&id).and_then(|i| st.mods[i].fomod.clone()).and_then(|v| serde_json::from_value(v).ok());
-    let (plan, fomod_choices) = match fomod::detect(&extracted) {
-        Some(cfg) if root.is_none() && dest.is_none() => {
-            let (p, c) = fomod_plan(paths, st, &x, &extracted, &cfg, o, saved, &ind)?;
-            (p, Some(c))
-        }
-        _ => (install::plan(&extracted, &id, root, dest)?, None),
-    };
-    let staged = install::stage(paths, st, &id, &x, &plan)?;
-    let _ = fs::remove_dir_all(&x);
-    let archive = if !o.keep_archive && !paths.cfg.keep_archives {
-        let _ = fs::remove_file(&arc);
-        let _ = fs::remove_file(format!("{}.cpmm.json", arc.display()));
-        None
-    } else {
-        arc.file_name().map(|n| n.to_string_lossy().into_owned())
-    };
-    let src = NexusSource {
-        mod_id: gid,
-        mod_uid: info.id.clone(),
-        file_id: ver.file.id.clone(),
-        file_name: ver.file.name.clone(),
-        version_id: ver.id.clone(),
-        version_gsid: ver.game_scoped_id.clone(),
-        uploaded_at: ver.uploaded_at.clone(),
-        manifest_url,
-    };
-    match existing.and_then(|e| st.find(&e)) {
-        Some(i) => {
-            let m = &mut st.mods[i];
-            println!("{ind}  updated {}: {} -> {}", m.id, m.version, ver.version);
-            m.version = ver.version.clone();
-            m.nexus = Some(src);
-            m.requires = stored;
-            m.reqs_checked = Some(checked);
-            m.installed_at = now();
-            m.archive = archive.clone();
-        }
-        None => {
-            st.mods.push(Mod {
-                id: id.clone(),
-                name: o.name.clone().filter(|_| depth == 0).unwrap_or(info.name.clone()),
-                enabled: !o.disabled,
-                version: ver.version.clone(),
-                nexus: Some(src),
-                requires: stored,
-                reqs_checked: Some(checked),
-                hidden: vec![],
-                ignored_reqs: vec![],
-                fomod: None,
-                archive: archive.clone(),
-                installed_at: now(),
-                notes: String::new(),
-            });
-            safety::journal(paths, "install", std::slice::from_ref(&id), &ver.version);
-            println!(
-                "{ind}  installed {id}: {} files{}",
-                staged.len(),
-                if plan.skipped.is_empty() { String::new() } else { format!(" ({} docs skipped)", plan.skipped.len()) }
-            );
-        }
-    }
-    if let (Some(c), Some(i)) = (&fomod_choices, st.find(&id)) {
-        st.mods[i].fomod = serde_json::to_value(c).ok();
-    }
-    let rh = manage::reapply_hidden(paths, st, &id)?;
-    if rh > 0 {
-        println!("{ind}  re-hid {rh} files you hid earlier");
-    }
-    st.save(paths)?;
-    report_new_conflicts(paths, st, &id, &ind);
-    if depth == 0 && o.hooks {
-        after_install(paths, st, &id);
-    }
-    Ok(())
-}
-
-fn report_new_conflicts(paths: &Paths, st: &State, id: &str, ind: &str) {
-    let fc = conflicts::file_conflicts(paths, &st.mods, true);
-    let mine: Vec<&conflicts::FileConflict> =
-        fc.iter().filter(|c| c.mods.len() > 1 && !c.identical && c.mods.iter().any(|m| m == id)).collect();
-    for c in mine.iter().take(15) {
-        println!("{ind}  conflict: {}  {}", c.path, c.mods.join(" < "));
-    }
-    if mine.len() > 15 {
-        println!("{ind}  … {} conflicting files in total (cpmm conflicts {id})", mine.len());
-    }
-    // shadowed by runtime writes in the overlay upper dir
-    let up = paths.upper();
-    let shadow: Vec<String> = files::list_tree(&paths.mod_files(id)).into_iter().filter(|f| up.join(f).exists()).collect();
-    if !shadow.is_empty() {
-        println!("{ind}  note: {} of its files are shadowed by game-written copies in overwrite/ (cpmm overwrite)", shadow.len());
-    }
-}
-
-fn install_local(paths: &Paths, st: &mut State, arc: &std::path::Path, nid: Option<u64>, o: &InstallOpts) -> Result<()> {
-    let stem = arc.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("mod".into());
-    let name = o.name.clone().unwrap_or(stem.clone());
-    let existing =
-        o.id.clone()
-            .map(|i| slugify(&i))
-            .filter(|i| st.find(i).is_some())
-            .or_else(|| nid.and_then(|g| st.by_nexus(g)).map(|m| m.id.clone()));
-    let id = existing.clone().unwrap_or_else(|| o.id.clone().map(|i| slugify(&i)).unwrap_or_else(|| st.unique_id(&slugify(&name))));
-    // Tagged with a Nexus mod: check its requirements before anything is staged.
-    let mut checked = None;
-    if let Some(gid) = nid {
-        let nx = nexus(paths);
-        let (external, stored) = fetch_requirements(&nx, gid, "", false, false)?;
-        for r in &external {
-            println!("  external requirement: {} {}", r.name, r.url);
-        }
-        let ignored = existing.as_ref().and_then(|e| st.find(e)).map(|i| st.mods[i].ignored_reqs.clone()).unwrap_or_default();
-        let mut visiting = BTreeSet::from([gid]);
-        resolve_requirements(paths, st, &nx, &id, &stored, &ignored, o, 0, &mut visiting)?;
-        checked = Some((stored, ReqCheck { at: now(), version_id: String::new() }));
-    }
-    paths.ensure_dirs()?;
-    let x = install::tmp_extract_dir(paths, &id);
-    if x.exists() {
-        fs::remove_dir_all(&x)?;
-    }
-    if arc.is_dir() {
-        for f in files::list_tree(arc) {
-            files::reflink_or_copy(&arc.join(&f), &x.join(&f))?;
-        }
-    } else {
-        install::extract(arc, &x)?;
-    }
-    let extracted = files::list_tree(&x);
-    let saved = st.find(&id).and_then(|i| st.mods[i].fomod.clone()).and_then(|v| serde_json::from_value(v).ok());
-    let (plan, fomod_choices) = match fomod::detect(&extracted) {
-        Some(cfg) if o.root.is_none() && o.dest.is_none() => {
-            let (p, c) = fomod_plan(paths, st, &x, &extracted, &cfg, o, saved, "")?;
-            (p, Some(c))
-        }
-        _ => (install::plan(&extracted, &id, o.root.as_deref(), o.dest.as_deref())?, None),
-    };
-    let staged = install::stage(paths, st, &id, &x, &plan)?;
-    let _ = fs::remove_dir_all(&x);
-    let (requires, reqs_checked) = match checked {
-        Some((r, c)) => (r, Some(c)),
-        None => (vec![], None),
-    };
-    // installed from the Downloads list? remember which download
-    let from_library = arc.strip_prefix(paths.downloads()).ok().map(|r| r.to_string_lossy().into_owned());
-    match st.find(&id) {
-        Some(i) => {
-            st.mods[i].installed_at = now();
-            st.mods[i].archive = from_library.clone();
-            if reqs_checked.is_some() {
-                st.mods[i].requires = requires;
-                st.mods[i].reqs_checked = reqs_checked;
-            }
-            println!("replaced files of {id}: {} files", staged.len());
-        }
-        None => {
-            st.mods.push(Mod {
-                id: id.clone(),
-                name,
-                enabled: !o.disabled,
-                version: String::new(),
-                nexus: nid.map(|g| NexusSource { mod_id: g, ..Default::default() }),
-                requires,
-                reqs_checked,
-                hidden: vec![],
-                ignored_reqs: vec![],
-                fomod: None,
-                archive: from_library.clone(),
-                installed_at: now(),
-                notes: format!("from {}", arc.display()),
-            });
-            println!("installed {id}: {} files", staged.len());
-        }
-    }
-    if let (Some(c), Some(i)) = (&fomod_choices, st.find(&id)) {
-        st.mods[i].fomod = serde_json::to_value(c).ok();
-    }
-    manage::reapply_hidden(paths, st, &id)?;
-    st.save(paths)?;
-    report_new_conflicts(paths, st, &id, "");
-    if o.hooks {
-        after_install(paths, st, &id);
-    }
-    Ok(())
 }
 
 struct UpdateStatus {
@@ -2503,23 +2155,9 @@ fn update(paths: &Paths, st: &mut State, keys: &[String], all: bool) -> Result<(
             continue;
         }
         let newest = nx.versions(&n.file_id)?.into_iter().next().context("no versions")?;
-        let o = InstallOpts {
-            file: Some(newest.game_scoped_id.clone()),
-            id: Some(id.clone()),
-            name: None,
-            root: None,
-            dest: None,
-            with_deps: false,
-            ignore_deps: true,
-            disabled: false,
-            keep_archive: false,
-            nxm: None,
-            hooks: false,
-            fomod: None,
-            fomod_defaults: true,
-        };
-        let mut visiting = BTreeSet::new();
-        if let Err(e) = install_nexus(paths, st, &nx, n.mod_id, &o, 0, &mut visiting) {
+        let source = install::Source::Nexus { mod_id: n.mod_id, file: Some(newest.game_scoped_id.clone()) };
+        let policy = install::Policy { id: Some(id.clone()), missing: OnMissing::Warn, hooks: false, ..Default::default() };
+        if let Err(e) = install::run(paths, st, &nx, source, &policy, install::print) {
             println!("{id}: {e:#}");
         }
     }
@@ -2593,50 +2231,6 @@ fn file_active<'a>(paths: &'a Paths, st: &'a State) -> impl Fn(&str) -> bool + '
     move |f: &str| own.contains_key(&f.to_lowercase()) || paths.game.join(f).exists()
 }
 
-/// Plan an install from a FOMOD installer: explicit choices, else the mod's saved choices,
-/// else ask in a terminal, else the installer's defaults.
-#[allow(clippy::too_many_arguments)]
-fn fomod_plan(
-    paths: &Paths,
-    st: &State,
-    x: &std::path::Path,
-    extracted: &[String],
-    cfg: &str,
-    o: &InstallOpts,
-    saved: Option<fomod::Choices>,
-    ind: &str,
-) -> Result<(install::Plan, fomod::Choices)> {
-    let f = fomod::parse(&fs::read(x.join(cfg))?, cfg)?;
-    let fa = file_active(paths, st);
-    let tty = unsafe { libc::isatty(0) } == 1 && unsafe { libc::isatty(1) } == 1;
-    let choices = match (&o.fomod, saved) {
-        (Some(c), _) => c.clone(),
-        (None, Some(s)) => {
-            println!("{ind}  FOMOD: using the options you chose last time");
-            s
-        }
-        (None, None) if tty && !o.fomod_defaults => fomod::ask(&f, &fa)?,
-        _ => {
-            println!("{ind}  FOMOD: using the installer's suggested options");
-            fomod::Choices::new()
-        }
-    };
-    // saved choices may name options a newer installer dropped: fall back to defaults
-    let r = match fomod::resolve(&f, &choices, &fa) {
-        Ok(r) => r,
-        Err(e) if o.fomod.is_none() => {
-            println!("{ind}  FOMOD: saved options no longer fit ({e:#}); using the suggested ones");
-            fomod::resolve(&f, &fomod::Choices::new(), &fa)?
-        }
-        Err(e) => return Err(e),
-    };
-    let moves = fomod::moves(&f, &r.ops, extracted)?;
-    for (k, v) in &r.choices {
-        println!("{ind}  FOMOD {k}: {}", if v.is_empty() { "(none)".into() } else { v.join(", ") });
-    }
-    Ok((install::Plan { moves, skipped: vec![] }, r.choices))
-}
-
 /// The archive for a source: a local path, or the Nexus file downloaded into the cache.
 fn fetch_archive(paths: &Paths, source: &str, file: Option<&str>) -> Result<PathBuf> {
     match parse_nexus(source) {
@@ -2688,40 +2282,6 @@ fn download_nexus(paths: &Paths, nx: &Nexus, gid: u64, file: Option<&str>, nxm: 
     nx.download(&ver, &man, &arc, nxm)?;
     record_download(&arc, &info.name, gid, &ver, source);
     Ok(arc)
-}
-
-/// Install an entry of the Downloads list. Nexus downloads go through the Nexus install (which
-/// reuses the archive on disk and keeps update tracking exact); others install as archives.
-fn install_download(
-    paths: &Paths,
-    st: &mut State,
-    d: &downloads::Download,
-    fomod: Option<fomod::Choices>,
-    fomod_defaults: bool,
-    with_deps: bool,
-) -> Result<()> {
-    let o = InstallOpts {
-        file: (!d.meta.version_gsid.is_empty()).then(|| d.meta.version_gsid.clone()),
-        id: None,
-        name: (!d.meta.name.is_empty()).then(|| d.meta.name.clone()),
-        root: None,
-        dest: None,
-        with_deps,
-        ignore_deps: !with_deps,
-        disabled: false,
-        keep_archive: true,
-        nxm: None,
-        hooks: true,
-        fomod,
-        fomod_defaults,
-    };
-    match (d.meta.mod_id, d.meta.version_gsid.is_empty()) {
-        (Some(gid), false) => {
-            let mut visiting = BTreeSet::new();
-            install_nexus(paths, st, &nexus(paths), gid, &InstallOpts { name: None, ..o }, 0, &mut visiting)
-        }
-        (gid, _) => install_local(paths, st, &d.path, gid, &o),
-    }
 }
 
 /// Revision info + manifest of a collection (the archive is cached per revision).
@@ -2819,51 +2379,18 @@ fn collection_install(
         }
         n += 1;
         println!("[{n}/{total}] {} {}", m.name, m.version);
+        let policy = install::Policy { fomod: m.choices.clone(), missing: OnMissing::Warn, hooks: false, ..Default::default() };
         let r: Result<Option<String>> = match m.source.as_str() {
             "nexus" if m.mod_id > 0 => {
-                let o = InstallOpts {
-                    file: Some(m.file_id.clone()),
-                    id: None,
-                    name: None,
-                    root: None,
-                    dest: None,
-                    with_deps: false,
-                    ignore_deps: true,
-                    disabled: false,
-                    keep_archive: false,
-                    nxm: None,
-                    hooks: false,
-                    fomod: m.choices.clone(),
-                    fomod_defaults: true,
-                };
-                let mut visiting = BTreeSet::new();
-                install_nexus(paths, st, &nx, m.mod_id, &o, 0, &mut visiting).map(|_| {
-                    st.mods
-                        .iter()
-                        .find(|x| x.nexus.as_ref().is_some_and(|nx| nx.mod_id == m.mod_id && nx.version_gsid == m.file_id))
-                        .or_else(|| st.by_nexus(m.mod_id))
-                        .map(|x| x.id.clone())
-                })
+                let source = install::Source::Nexus { mod_id: m.mod_id, file: Some(m.file_id.clone()) };
+                install::run(paths, st, &nx, source, &policy, install::print).map(|r| Some(r.requested().id.clone()))
             }
             "bundle" => {
                 let p = dir.join("bundled").join(&m.bundle);
                 if p.exists() {
-                    let o = InstallOpts {
-                        file: None,
-                        id: None,
-                        name: Some(m.name.clone()),
-                        root: None,
-                        dest: None,
-                        with_deps: false,
-                        ignore_deps: true,
-                        disabled: false,
-                        keep_archive: true,
-                        nxm: None,
-                        hooks: false,
-                        fomod: m.choices.clone(),
-                        fomod_defaults: true,
-                    };
-                    install_local(paths, st, &p, None, &o).map(|_| st.mods.iter().rev().find(|x| x.name == m.name).map(|x| x.id.clone()))
+                    let source = install::Source::Local { path: p, nexus: None };
+                    let policy = install::Policy { name: Some(m.name.clone()), ..policy };
+                    install::run(paths, st, &nx, source, &policy, install::print).map(|r| Some(r.requested().id.clone()))
                 } else {
                     Err(anyhow::anyhow!("bundled file {} is missing from the collection", m.bundle))
                 }
@@ -3117,47 +2644,6 @@ fn settings_cmd(paths: &Paths, st: &State, action: SettingsCmd) -> Result<()> {
     Ok(())
 }
 
-/// Settings-driven tasks after a mod is installed.
-fn after_install(paths: &Paths, st: &mut State, id: &str) {
-    if paths.cfg.auto_sort {
-        auto_sort(paths, st);
-    }
-    if paths.cfg.after_install_verify {
-        let _ = verify(paths, st, &[id.to_string()]);
-    }
-    if paths.cfg.after_install_doctor {
-        let name = st.find(id).map(|i| st.mods[i].name.clone()).unwrap_or_default();
-        let hits: Vec<loadorder::Finding> = loadorder::doctor(paths, st)
-            .into_iter()
-            .filter(|f| {
-                matches!(f.severity, "crash" | "warning") && (f.title.contains(id) || (!name.is_empty() && f.title.contains(&name)))
-            })
-            .collect();
-        for f in &hits {
-            println!("  health: [{}] {}", f.severity, f.title);
-        }
-        if hits.is_empty() {
-            println!("  health: no new risks");
-        }
-    }
-    let cmd = paths.cfg.after_install_command.trim();
-    if !cmd.is_empty() {
-        let m = st.find(id).map(|i| st.mods[i].clone());
-        let r = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
-            .env("CPMM_MOD_ID", id)
-            .env("CPMM_MOD_NAME", m.as_ref().map(|m| m.name.as_str()).unwrap_or(""))
-            .env("CPMM_MOD_VERSION", m.as_ref().map(|m| m.version.as_str()).unwrap_or(""))
-            .status();
-        match r {
-            Ok(s) if s.success() => {}
-            Ok(s) => println!("  after-install command exited with {s}"),
-            Err(e) => println!("  after-install command failed: {e}"),
-        }
-    }
-}
-
 /// Apply the automatic load order if it would move anything.
 fn auto_sort(paths: &Paths, st: &mut State) {
     let p = loadorder::plan(paths, st);
@@ -3195,24 +2681,13 @@ fn deps_fix(paths: &Paths, st: &mut State) -> Result<()> {
     if !missing.is_empty() {
         manage::ensure_idle(paths)?;
         let nx = nexus(paths);
-        let o = InstallOpts {
-            file: None,
-            id: None,
-            name: None,
-            root: None,
-            dest: None,
-            with_deps: true,
-            ignore_deps: false,
-            disabled: false,
-            keep_archive: false,
-            nxm: None,
-            hooks: true,
-            fomod: None,
-            fomod_defaults: true,
-        };
-        let mut visiting = BTreeSet::new();
+        let policy = install::Policy { missing: OnMissing::Install, ..Default::default() };
         for gid in missing {
-            if let Err(e) = install_nexus(paths, st, &nx, gid, &o, 0, &mut visiting) {
+            // pulled in as a requirement of one installed earlier in this loop
+            if st.by_nexus(gid).is_some() {
+                continue;
+            }
+            if let Err(e) = install::run(paths, st, &nx, install::Source::Nexus { mod_id: gid, file: None }, &policy, install::print) {
                 println!("  {gid}: {e:#}");
             }
         }
