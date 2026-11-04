@@ -216,3 +216,21 @@ export const api3 = {
   history: (id: string) => invoke<HistEntry[]>("api", { args: ["history", id] }),
 };
 export const when = (unix: number) => (unix ? new Date(unix * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "—");
+
+export interface SettingField {
+  key: string;
+  group: string;
+  label: string;
+  help: string;
+  kind: "bool" | "number" | "text" | "path";
+}
+export interface SettingsData {
+  values: Record<string, boolean | number | string>;
+  schema: SettingField[];
+  resolved: { staging_dir: string; download_dir: string; watch_dir: string; data_dir: string; game_dir: string };
+  api_key: boolean;
+}
+export const api4 = {
+  settings: () => invoke<SettingsData>("api", { args: ["settings"] }),
+  downloads: () => invoke<{ path: string; nexus_id: number | null }[]>("api", { args: ["downloads"] }),
+};

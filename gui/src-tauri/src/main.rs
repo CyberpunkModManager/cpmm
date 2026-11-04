@@ -33,11 +33,12 @@ fn quit(app: AppHandle) {
 /// Launch Cyberpunk through Steam (so its launch options, incl. `cpmm run`, apply), then
 /// close cpmm: in Game Mode a second "game" launching while cpmm runs would prompt.
 #[tauri::command]
-fn launch_game(app: AppHandle) -> Result<(), String> {
+fn launch_game(app: AppHandle, close: Option<bool>) -> Result<(), String> {
+    let close = close.unwrap_or(true);
     let steam = nexus::steam_bin();
     // Steam's reaper kills everything a "game" leaves behind, so the delayed request must run
     // outside cpmm's process tree: hand it to the user's systemd. It fires after cpmm exits.
-    let script = format!("sleep 1.5; exec \"{steam}\" steam://rungameid/1091500");
+    let script = format!("sleep {}; exec \"{steam}\" steam://rungameid/1091500", if close { "1.5" } else { "0" });
     let via_systemd = Command::new("systemd-run")
         .args(["--user", "--quiet", "--collect", "--unit", &format!("cpmm-launch-{}", std::process::id()), "sh", "-c", &script])
         .stdin(Stdio::null())
@@ -56,12 +57,14 @@ fn launch_game(app: AppHandle) -> Result<(), String> {
             .spawn()
             .map_err(|e| format!("starting steam: {e}"))?;
     }
-    glog(&format!("launch_game requested (systemd: {via_systemd})"));
-    let a = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        a.exit(0);
-    });
+    glog(&format!("launch_game requested (systemd: {via_systemd}, close: {close})"));
+    if close {
+        let a = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            a.exit(0);
+        });
+    }
     Ok(())
 }
 

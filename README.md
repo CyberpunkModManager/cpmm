@@ -189,6 +189,29 @@ reflinked copy of the active profile's saves (no extra space on btrfs). Turning 
 the folder for later; deleting a profile moves its saves to `trash/`. Save snapshots (`cpmm saves`)
 record their profile, and restore only into it.
 
+## Settings
+
+Settings live in `~/.local/share/cpmm/settings.json` (every key has a default) and are shared by
+the CLI and the GUI's **Settings** page:
+
+```
+cpmm settings                         # show all
+cpmm settings set auto_sort off       # booleans take on/off
+cpmm settings set staging_dir ~/Games/cpmm-mods   # moves your installed mods there
+cpmm settings reset [key]
+```
+
+| Group | Keys |
+|---|---|
+| Updates | `check_updates_on_start`, `auto_install_updates` (never while the game runs; undoable), `refresh_minutes` |
+| Load order | `auto_sort`: re-sort after installs, updates, enabling and rollbacks |
+| After installing | `after_install_verify`, `after_install_doctor`, `after_install_command` (gets `CPMM_MOD_ID`, `CPMM_MOD_NAME`, `CPMM_MOD_VERSION`) |
+| Downloads | `auto_install_downloads` + `watch_dir` (default `~/Downloads`): new archives are installed, Nexus file names give the mod id (`cpmm downloads [--install]`); `keep_archives` |
+| Storage | `staging_dir`, `download_dir` |
+| Profiles | `profiles_enabled`, `new_profiles_own_saves` |
+| Safety | `snapshot_saves`, `keep_versions`, `keep_save_snapshots` |
+| Launching | `close_on_launch` |
+
 ## Load order and health
 
 * `cpmm sort [--apply]`: stable dependency-aware sort. Constraints are only enforced between mods that

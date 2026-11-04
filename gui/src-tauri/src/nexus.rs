@@ -283,7 +283,16 @@ fn on_navigation(app: &AppHandle, url: &Url) -> bool {
 
 fn downloads_dir() -> PathBuf {
     let data = std::env::var_os("CPMM_DATA").map(PathBuf::from).unwrap_or_else(|| home_dir().join(".local/share/cpmm"));
-    data.join("downloads/browser")
+    // honour the user's download directory setting (cpmm settings set download_dir …)
+    let custom = std::fs::read(data.join("settings.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["download_dir"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from))
+        .map(|s| match s.strip_prefix("~/") {
+            Some(r) => home_dir().join(r),
+            None => PathBuf::from(s),
+        });
+    custom.unwrap_or_else(|| data.join("downloads")).join("browser")
 }
 
 #[tauri::command]

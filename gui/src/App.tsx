@@ -20,11 +20,13 @@ import {
   Play,
   RefreshCw,
   Save,
+  Settings2,
   X,
 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { ErrorBox, IconButton, Spinner } from "./components/ui";
-import { api, api2 } from "./lib/cpmm";
+import { useAutomation } from "./lib/automation";
+import { api, api2, api4 } from "./lib/cpmm";
 import { useSpatialNav } from "./lib/gamepad";
 import { useJobs } from "./lib/jobs";
 import { openNexus, useNexusBridge } from "./lib/nexus";
@@ -32,6 +34,7 @@ import { HealthView } from "./views/LoadOrder";
 import { ModsView } from "./views/Mods";
 import { ConflictsView, DepsView, InstallView, OverwriteView, SystemView, UpdatesView } from "./views/Panels";
 import { ProfileButton } from "./views/Profiles";
+import { SettingsView } from "./views/Settings";
 
 const SECTIONS = [
   { key: "mods", label: "Mods", icon: Layers },
@@ -42,6 +45,7 @@ const SECTIONS = [
   { key: "overwrite", label: "Overwrite", icon: Save },
   { key: "install", label: "Install", icon: PackagePlus },
   { key: "system", label: "System", icon: Cpu },
+  { key: "settings", label: "Settings", icon: Settings2 },
 ] as const;
 type Section = (typeof SECTIONS)[number]["key"];
 
@@ -50,6 +54,8 @@ export default function App() {
   const [logOpen, setLogOpen] = useState(false);
   const state = useQuery({ queryKey: ["state"], queryFn: api.state, refetchInterval: 5000 });
   const { jobs, busy } = useJobs();
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api4.settings, staleTime: 60_000 });
+  useAutomation(state.data, settings.data);
   const doctor = useQuery({ queryKey: ["doctor"], queryFn: api2.doctor, staleTime: 60_000 });
 
   const onSection = useCallback((d: number) => {
@@ -96,7 +102,7 @@ export default function App() {
             <div className="text-xs text-ink-400">Cyberpunk mod manager</div>
           </div>
         </div>
-        <ProfileButton state={s} />
+        {settings.data?.values.profiles_enabled !== false && <ProfileButton state={s} />}
         <nav className="flex flex-1 flex-col gap-1">
           {SECTIONS.map(({ key, label, icon: Icon }) => (
             <button
@@ -168,7 +174,7 @@ export default function App() {
           <button
             type="button"
             disabled={!s || s.game_running || !!s.session || busy}
-            onClick={() => invoke("launch_game").catch((e) => alert(String(e)))}
+            onClick={() => invoke("launch_game", { close: settings.data?.values.close_on_launch !== false }).catch((e) => alert(String(e)))}
             title={
               s?.game_running || s?.session
                 ? "Cyberpunk is already running"
@@ -210,6 +216,7 @@ export default function App() {
                 {section === "overwrite" && <OverwriteView state={s} />}
                 {section === "install" && <InstallView state={s} />}
                 {section === "system" && <SystemView state={s} />}
+                {section === "settings" && <SettingsView />}
               </div>
             )}
           </main>

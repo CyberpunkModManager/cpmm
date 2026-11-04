@@ -11,6 +11,7 @@ mod manage;
 mod nexus;
 mod profiles;
 mod safety;
+mod settings;
 mod state;
 mod steam;
 mod vanilla;
@@ -209,6 +210,16 @@ enum Cmd {
         apply: bool,
     },
     /// Free disk space: empty trash/, tmp/ and cached downloads.
+    /// Show or change settings: `cpmm settings`, `set <key> <value>`, `reset [key]`.
+    Settings {
+        #[command(subcommand)]
+        action: Option<SettingsCmd>,
+    },
+    /// Mod archives in the watched download folder; --install installs the new ones.
+    Downloads {
+        #[arg(long)]
+        install: bool,
+    },
     Clean {
         #[arg(long)]
         dry_run: bool,
@@ -364,7 +375,28 @@ enum ProfileCmd {
 }
 
 #[derive(Subcommand)]
+enum SettingsCmd {
+    /// Print every setting (default)
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
+    Set {
+        key: String,
+        value: String,
+    },
+    /// Back to the default (all settings if no key)
+    Reset {
+        key: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum ApiCmd {
+    /// Settings values, their schema and the resolved folders
+    Settings,
+    /// New archives waiting in the watched download folder
+    Downloads,
     /// Everything the main view needs
     State,
     /// Files of one mod with conflict info
@@ -577,7 +609,7 @@ fn real_main() -> Result<()> {
         }
         Cmd::Conflicts { r#mod, no_hash, base } => show_conflicts(&paths, &st, r#mod.as_deref(), !no_hash, base)?,
         Cmd::Install { source, file, id, name, root, dest, with_deps, ignore_deps, disabled, nexus: nid, keep_archive } => {
-            let o = InstallOpts { file, id, name, root, dest, with_deps, ignore_deps, disabled, keep_archive, nxm: None };
+            let o = InstallOpts { file, id, name, root, dest, with_deps, ignore_deps, disabled, keep_archive, nxm: None, hooks: true };
             if let Some(gid) = parse_nexus(&source) {
                 let nx = nexus(&paths);
                 let mut visiting = BTreeSet::new();
@@ -637,7 +669,7 @@ fn real_main() -> Result<()> {
                     elsewhere.join(", ")
                 );
             }
-            let _ = safety::snapshot_saves(&paths, &format!("before uninstalling {id}"));
+            safety::auto_snapshot(&paths, &format!("before uninstalling {id}"));
             safety::journal(&paths, "uninstall", std::slice::from_ref(&id), &st.mods[i].version);
             let d = paths.mods().join(&id);
             if d.exists() {
@@ -720,6 +752,7 @@ fn real_main() -> Result<()> {
                             disabled: false,
                             keep_archive: false,
                             nxm: None,
+                            hooks: true,
                         };
                         let mut visiting = BTreeSet::new();
                         match install_nexus(&paths, &mut st, &nx, gid, &o, 0, &mut visiting) {
@@ -774,6 +807,7 @@ fn real_main() -> Result<()> {
                     disabled: false,
                     keep_archive: false,
                     nxm: l.key.clone().zip(l.expires.clone()),
+                    hooks: true,
                 };
                 let nx = nexus(&paths);
                 let mut visiting = BTreeSet::new();
@@ -839,6 +873,21 @@ fn real_main() -> Result<()> {
                     serde_json::json!({"plan": p, "rules": st.rules, "modlist": loadorder::modlist(&paths, &st)})
                 }
                 ApiCmd::Doctor => serde_json::to_value(loadorder::doctor(&paths, &st))?,
+                ApiCmd::Downloads => serde_json::json!(
+                    scan_downloads(&paths)?.into_iter().map(|(p, id)| serde_json::json!({"path": p, "nexus_id": id})).collect::<Vec<_>>()
+                ),
+                ApiCmd::Settings => serde_json::json!({
+                    "values": paths.cfg,
+                    "schema": settings::schema(),
+                    "resolved": {
+                        "staging_dir": paths.mods(),
+                        "download_dir": paths.downloads(),
+                        "watch_dir": paths.watch_dir(),
+                        "data_dir": paths.data,
+                        "game_dir": paths.game,
+                    },
+                    "api_key": paths.api_key().is_ok(),
+                }),
                 ApiCmd::Safety => {
                     let nx = nexus(&paths);
                     serde_json::json!({
@@ -1019,9 +1068,12 @@ fn real_main() -> Result<()> {
         }
         Cmd::Rollback { r#mod, to } => {
             manage::ensure_idle(&paths)?;
-            let _ = safety::snapshot_saves(&paths, &format!("before rollback of {}", r#mod));
+            safety::auto_snapshot(&paths, &format!("before rollback of {}", r#mod));
             let msg = safety::rollback(&paths, &mut st, &r#mod, to)?;
             st.save(&paths)?;
+            if paths.cfg.auto_sort {
+                auto_sort(&paths, &mut st);
+            }
             let _ = loadorder::write_modlist(&paths, &st);
             println!("rolled back {msg}");
         }
@@ -1031,11 +1083,14 @@ fn real_main() -> Result<()> {
                 Some(b) => b,
                 None => safety::batches(&paths, &st).into_iter().next().map(|b| b.batch).context("no update run to undo")?,
             };
-            let _ = safety::snapshot_saves(&paths, &format!("before undoing {b}"));
+            safety::auto_snapshot(&paths, &format!("before undoing {b}"));
             for m in safety::undo_batch(&paths, &mut st, &b)? {
                 println!("  rolled back {m}");
             }
             st.save(&paths)?;
+            if paths.cfg.auto_sort {
+                auto_sort(&paths, &mut st);
+            }
             let _ = loadorder::write_modlist(&paths, &st);
             println!("undid {b}");
         }
@@ -1130,6 +1185,44 @@ fn real_main() -> Result<()> {
                 println!("  {}  {}  {} saves  {}{prof}", s.name, safety::iso(s.ts), s.saves, s.reason);
             }
         }
+        Cmd::Settings { action } => settings_cmd(&paths, &st, action.unwrap_or(SettingsCmd::Show { json: false }))?,
+        Cmd::Downloads { install } => {
+            let found = scan_downloads(&paths)?;
+            if found.is_empty() {
+                println!("no new mod archives in {}", paths.watch_dir().display());
+            }
+            for (p, nid) in &found {
+                println!(
+                    "  new: {}{}",
+                    p.file_name().unwrap_or_default().to_string_lossy(),
+                    nid.map(|n| format!("  (Nexus mod {n})")).unwrap_or_default()
+                );
+            }
+            if install {
+                for (p, nid) in found {
+                    let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                    let name = download_name(&stem);
+                    let o = InstallOpts {
+                        file: None,
+                        id: None,
+                        name: Some(name),
+                        root: None,
+                        dest: None,
+                        with_deps: false,
+                        ignore_deps: true,
+                        disabled: false,
+                        keep_archive: true,
+                        nxm: None,
+                        hooks: true,
+                    };
+                    let r = install_local(&paths, &mut st, &p, nid, &o);
+                    mark_download_seen(&paths, &p)?;
+                    if let Err(e) = r {
+                        println!("  {}: {e:#}", p.display());
+                    }
+                }
+            }
+        }
         Cmd::Clean { dry_run } => {
             let mut total = 0u64;
             for d in [paths.trash(), paths.tmp(), paths.downloads()] {
@@ -1200,7 +1293,7 @@ fn profile(paths: &Paths, st: &mut State, action: ProfileCmd) -> Result<()> {
                     format!("copy of {:?}", from.unwrap_or(st.active_profile.clone()))
                 }
             );
-            if own_saves {
+            if own_saves || paths.cfg.new_profiles_own_saves {
                 set_profile_saves(paths, st, &name, true, copy_saves)?;
             }
             if switch {
@@ -1395,7 +1488,7 @@ fn info(paths: &Paths, st: &State, key: &str) -> Result<()> {
 
 fn set_enabled(paths: &Paths, st: &mut State, keys: &[String], on: bool) -> Result<()> {
     if !on {
-        let _ = safety::snapshot_saves(paths, &format!("before disabling {}", keys.join(", ")));
+        safety::auto_snapshot(paths, &format!("before disabling {}", keys.join(", ")));
     }
     safety::journal(paths, if on { "enable" } else { "disable" }, keys, "");
     for k in keys {
@@ -1425,6 +1518,9 @@ fn set_enabled(paths: &Paths, st: &mut State, keys: &[String], on: bool) -> Resu
         }
     }
     st.save(paths)?;
+    if paths.cfg.auto_sort {
+        auto_sort(paths, st);
+    }
     warn_if_running(paths);
     Ok(())
 }
@@ -1503,6 +1599,8 @@ pub struct InstallOpts {
     keep_archive: bool,
     /// key/expires from an nxm:// link (lets non-premium accounts download)
     nxm: Option<(String, String)>,
+    /// Run the after-install tasks from settings (off for bulk updates, which sort once at the end)
+    hooks: bool,
 }
 
 fn pick_file(nx: &Nexus, info: &nexus::ModInfo, sel: Option<&str>) -> Result<nexus::Version> {
@@ -1719,7 +1817,7 @@ fn install_nexus(
     let plan = install::plan(&extracted, &id, root, dest)?;
     let staged = install::stage(paths, st, &id, &x, &plan)?;
     let _ = fs::remove_dir_all(&x);
-    if !o.keep_archive {
+    if !o.keep_archive && !paths.cfg.keep_archives {
         let _ = fs::remove_file(&arc);
     }
     let src = NexusSource {
@@ -1770,6 +1868,9 @@ fn install_nexus(
     }
     st.save(paths)?;
     report_new_conflicts(paths, st, &id, &ind);
+    if depth == 0 && o.hooks {
+        after_install(paths, st, &id);
+    }
     Ok(())
 }
 
@@ -1861,6 +1962,9 @@ fn install_local(paths: &Paths, st: &mut State, arc: &std::path::Path, nid: Opti
     manage::reapply_hidden(paths, st, &id)?;
     st.save(paths)?;
     report_new_conflicts(paths, st, &id, "");
+    if o.hooks {
+        after_install(paths, st, &id);
+    }
     Ok(())
 }
 
@@ -1963,7 +2067,7 @@ fn update(paths: &Paths, st: &mut State, keys: &[String], all: bool) -> Result<(
     if vfs::running(paths).is_some() {
         bail!("game session running; quit first");
     }
-    let _ = safety::snapshot_saves(paths, "before updating mods");
+    safety::auto_snapshot(paths, "before updating mods");
     let batch = format!("update-{}", safety::now_unix());
     if let Ok(mut b) = safety::BATCH.lock() {
         *b = Some(batch.clone());
@@ -2001,11 +2105,15 @@ fn update(paths: &Paths, st: &mut State, keys: &[String], all: bool) -> Result<(
             disabled: false,
             keep_archive: false,
             nxm: None,
+            hooks: false,
         };
         let mut visiting = BTreeSet::new();
         if let Err(e) = install_nexus(paths, st, &nx, n.mod_id, &o, 0, &mut visiting) {
             println!("{id}: {e:#}");
         }
+    }
+    if paths.cfg.auto_sort {
+        auto_sort(paths, st);
     }
     Ok(())
 }
@@ -2090,6 +2198,191 @@ fn deps(paths: &Paths, st: &mut State, refresh: bool) -> Result<()> {
     Ok(())
 }
 
+fn settings_cmd(paths: &Paths, st: &State, action: SettingsCmd) -> Result<()> {
+    let cur = paths.cfg.clone();
+    let new = match action {
+        SettingsCmd::Show { json } => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&cur)?);
+            } else {
+                let v = serde_json::to_value(&cur)?;
+                for f in settings::schema().as_array().unwrap() {
+                    let k = f["key"].as_str().unwrap();
+                    println!("  {:<24} {:<10} {}", k, v[k].to_string().trim_matches('"'), f["label"].as_str().unwrap_or(""));
+                }
+                println!(
+                    "staging: {}\ndownloads: {}\nwatching: {}",
+                    paths.mods().display(),
+                    paths.downloads().display(),
+                    paths.watch_dir().display()
+                );
+            }
+            return Ok(());
+        }
+        SettingsCmd::Set { key, value } => settings::set(&cur, &key, &value)?,
+        SettingsCmd::Reset { key: None } => settings::Settings { onboarded: cur.onboarded, ..Default::default() },
+        SettingsCmd::Reset { key: Some(k) } => {
+            let d = serde_json::to_value(settings::Settings::default())?;
+            let v = d.get(&k).with_context(|| format!("unknown setting {k:?}"))?;
+            settings::set(&cur, &k, v.as_str().map(String::from).unwrap_or(v.to_string()).as_str())?
+        }
+    };
+    // Changing the staging folder moves the installed mods with it.
+    let mut np = paths.clone();
+    np.cfg = new.clone();
+    let (old_dir, new_dir) = (paths.mods(), np.mods());
+    if old_dir != new_dir && old_dir.exists() {
+        manage::ensure_idle(paths)?;
+        if new_dir.starts_with(&old_dir) {
+            bail!("the new staging folder can't be inside the current one");
+        }
+        fs::create_dir_all(&new_dir)?;
+        let mut moved = 0;
+        for e in fs::read_dir(&old_dir)?.flatten() {
+            let to = new_dir.join(e.file_name());
+            if to.exists() {
+                bail!("{} already exists", to.display());
+            }
+            if fs::rename(e.path(), &to).is_err() {
+                for f in files::list_tree(&e.path()) {
+                    files::reflink_or_copy(&e.path().join(&f), &to.join(&f))?;
+                }
+                fs::remove_dir_all(e.path())?;
+            }
+            moved += 1;
+        }
+        let _ = fs::remove_dir(&old_dir);
+        println!("moved {moved} mods to {}", new_dir.display());
+        use std::os::unix::fs::MetadataExt;
+        if fs::metadata(&new_dir).map(|m| m.dev()).ok() != fs::metadata(&paths.game).map(|m| m.dev()).ok() {
+            println!("note: the new folder is on a different drive than the game; installs and imports will copy instead of move");
+        }
+    }
+    // Turning the download watcher on: what is already in the folder isn't "new".
+    if new.auto_install_downloads && !cur.auto_install_downloads {
+        let n = baseline_downloads(&np)?;
+        println!("watching {} (ignoring the {n} archives already there)", np.watch_dir().display());
+    }
+    settings::save(&paths.data, &new)?;
+    let _ = st;
+    println!("saved");
+    Ok(())
+}
+
+const ARCHIVE_EXTS: &[&str] = &["zip", "7z", "rar"];
+
+fn seen_file(paths: &Paths) -> PathBuf {
+    paths.data.join("downloads-seen.json")
+}
+fn seen_set(paths: &Paths) -> BTreeSet<String> {
+    fs::read(seen_file(paths)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+fn mark_download_seen(paths: &Paths, p: &std::path::Path) -> Result<()> {
+    let mut s = seen_set(paths);
+    s.insert(p.to_string_lossy().into());
+    fs::write(seen_file(paths), serde_json::to_vec(&s)?)?;
+    Ok(())
+}
+fn baseline_downloads(paths: &Paths) -> Result<usize> {
+    let all: Vec<PathBuf> = archives_in(&paths.watch_dir());
+    let mut s = seen_set(paths);
+    for p in &all {
+        s.insert(p.to_string_lossy().into());
+    }
+    fs::write(seen_file(paths), serde_json::to_vec(&s)?)?;
+    Ok(all.len())
+}
+fn archives_in(dir: &std::path::Path) -> Vec<PathBuf> {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|e| ARCHIVE_EXTS.contains(&e.to_string_lossy().to_lowercase().as_str())))
+        .collect()
+}
+/// Nexus names manual downloads `<Name>-<modid>-<version>-<unix time>.<ext>`.
+fn nexus_id_from_filename(stem: &str) -> Option<u64> {
+    let re = regex::Regex::new(r"^.+?-(\d+)-(?:[\w.]+-)*?(\d{9,11})$").ok()?;
+    re.captures(stem).and_then(|c| c[1].parse().ok())
+}
+fn download_name(stem: &str) -> String {
+    match regex::Regex::new(r"^(.+?)-\d+-(?:[\w.]+-)*?\d{9,11}$").ok().and_then(|re| re.captures(stem).map(|c| c[1].to_string())) {
+        Some(n) => n.replace('_', " "),
+        None => stem.to_string(),
+    }
+}
+/// New, completely downloaded archives in the watched folder.
+fn scan_downloads(paths: &Paths) -> Result<Vec<(PathBuf, Option<u64>)>> {
+    let seen = seen_set(paths);
+    let now = std::time::SystemTime::now();
+    Ok(archives_in(&paths.watch_dir())
+        .into_iter()
+        .filter(|p| !seen.contains(&p.to_string_lossy().to_string()))
+        // still being written? (browsers write .part/.crdownload first, but be safe)
+        .filter(|p| {
+            fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age.as_secs() >= 5)
+        })
+        .map(|p| {
+            let id = p.file_stem().and_then(|s| nexus_id_from_filename(&s.to_string_lossy()));
+            (p, id)
+        })
+        .collect())
+}
+
+/// Settings-driven tasks after a mod is installed.
+fn after_install(paths: &Paths, st: &mut State, id: &str) {
+    if paths.cfg.auto_sort {
+        auto_sort(paths, st);
+    }
+    if paths.cfg.after_install_verify {
+        let _ = verify(paths, st, &[id.to_string()]);
+    }
+    if paths.cfg.after_install_doctor {
+        let name = st.find(id).map(|i| st.mods[i].name.clone()).unwrap_or_default();
+        let hits: Vec<loadorder::Finding> = loadorder::doctor(paths, st)
+            .into_iter()
+            .filter(|f| {
+                matches!(f.severity, "crash" | "warning") && (f.title.contains(id) || (!name.is_empty() && f.title.contains(&name)))
+            })
+            .collect();
+        for f in &hits {
+            println!("  health: [{}] {}", f.severity, f.title);
+        }
+        if hits.is_empty() {
+            println!("  health: no new risks");
+        }
+    }
+    let cmd = paths.cfg.after_install_command.trim();
+    if !cmd.is_empty() {
+        let m = st.find(id).map(|i| st.mods[i].clone());
+        let r = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .env("CPMM_MOD_ID", id)
+            .env("CPMM_MOD_NAME", m.as_ref().map(|m| m.name.as_str()).unwrap_or(""))
+            .env("CPMM_MOD_VERSION", m.as_ref().map(|m| m.version.as_str()).unwrap_or(""))
+            .status();
+        match r {
+            Ok(s) if s.success() => {}
+            Ok(s) => println!("  after-install command exited with {s}"),
+            Err(e) => println!("  after-install command failed: {e}"),
+        }
+    }
+}
+
+/// Apply the automatic load order if it would move anything.
+fn auto_sort(paths: &Paths, st: &mut State) {
+    let p = loadorder::plan(paths, st);
+    if !p.moved.is_empty() {
+        loadorder::apply(st, &p.order);
+        if st.save(paths).is_ok() {
+            let _ = loadorder::write_modlist(paths, st);
+            println!("  auto-sorted the load order ({} moves)", p.moved.len());
+        }
+    }
+}
+
 fn deps_fix(paths: &Paths, st: &mut State) -> Result<()> {
     let mut missing = BTreeSet::new();
     let mut to_enable = BTreeSet::new();
@@ -2126,6 +2419,7 @@ fn deps_fix(paths: &Paths, st: &mut State) -> Result<()> {
             disabled: false,
             keep_archive: false,
             nxm: None,
+            hooks: true,
         };
         let mut visiting = BTreeSet::new();
         for gid in missing {
@@ -2293,4 +2587,18 @@ fn eject(paths: &Paths, st: &State, apply: bool) -> Result<()> {
         println!("game dir is now a classic manual install; remove `cpmm run --` from the launch options to keep it that way");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+
+    #[test]
+    fn nexus_manual_download_names() {
+        assert_eq!(nexus_id_from_filename("Curbside-35922-1-0-1-1761517298"), Some(35922));
+        assert_eq!(nexus_id_from_filename("Cyber Engine Tweaks-107-1-38-1-1761442138"), Some(107));
+        assert_eq!(nexus_id_from_filename("my_custom_mod"), None);
+        assert_eq!(download_name("Cyber_Engine_Tweaks-107-1-38-1-1761442138"), "Cyber Engine Tweaks");
+        assert_eq!(download_name("random"), "random");
+    }
 }

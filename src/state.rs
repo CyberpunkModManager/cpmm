@@ -17,6 +17,8 @@ fn home() -> PathBuf {
 pub struct Paths {
     pub data: PathBuf,
     pub game: PathBuf,
+    /// User settings (settings.json); decides the staging and download folders.
+    pub cfg: crate::settings::Settings,
 }
 
 impl Paths {
@@ -26,13 +28,18 @@ impl Paths {
             Ok(s) => PathBuf::from(s.trim()),
             Err(_) => home().join(".local/share/Steam/steamapps/common/Cyberpunk 2077"),
         };
-        Ok(Self { data, game })
+        let cfg = crate::settings::load(&data);
+        Ok(Self { data, game, cfg })
     }
     pub fn state_file(&self) -> PathBuf {
         self.data.join("state.json")
     }
     pub fn mods(&self) -> PathBuf {
-        self.data.join("mods")
+        crate::settings::expand(&self.cfg.staging_dir).unwrap_or_else(|| self.data.join("mods"))
+    }
+    /// The folder watched for manually downloaded mod archives.
+    pub fn watch_dir(&self) -> PathBuf {
+        crate::settings::expand(&self.cfg.watch_dir).unwrap_or_else(|| home().join("Downloads"))
     }
     pub fn mod_files(&self, id: &str) -> PathBuf {
         self.mods().join(id).join("files")
@@ -61,7 +68,7 @@ impl Paths {
         p
     }
     pub fn downloads(&self) -> PathBuf {
-        self.data.join("downloads")
+        crate::settings::expand(&self.cfg.download_dir).unwrap_or_else(|| self.data.join("downloads"))
     }
     pub fn run_file(&self) -> PathBuf {
         self.data.join("run.json")

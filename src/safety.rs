@@ -13,9 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 
-pub const KEEP_VERSIONS: usize = 3;
-pub const KEEP_SAVE_SNAPSHOTS: usize = 10;
-
 pub fn now_unix() -> i64 {
     std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -117,7 +114,7 @@ pub fn list_history(paths: &Paths, id: &str) -> Vec<HistEntry> {
 }
 
 fn prune_history(paths: &Paths, id: &str) {
-    for h in list_history(paths, id).into_iter().skip(KEEP_VERSIONS) {
+    for h in list_history(paths, id).into_iter().skip(paths.cfg.keep_versions.max(1)) {
         let _ = fs::remove_dir_all(&h.dir);
     }
 }
@@ -668,6 +665,13 @@ pub struct Snapshot {
 }
 
 /// Reflink-copy every save folder (no extra disk space on btrfs). Keeps the newest few.
+/// Automatic snapshot before a risky change, if the user hasn't turned that off.
+pub fn auto_snapshot(paths: &Paths, reason: &str) {
+    if paths.cfg.snapshot_saves {
+        let _ = snapshot_saves(paths, reason);
+    }
+}
+
 pub fn snapshot_saves(paths: &Paths, reason: &str) -> Result<Option<String>> {
     let st = State::load(paths)?;
     let profile = st.active_profile.clone();
@@ -684,7 +688,7 @@ pub fn snapshot_saves(paths: &Paths, reason: &str) -> Result<Option<String>> {
     fs::write(dst.join(".profile"), &profile)?;
     let mut all = list_snapshots(paths);
     all.sort_by_key(|s| std::cmp::Reverse(s.ts));
-    for s in all.into_iter().skip(KEEP_SAVE_SNAPSHOTS) {
+    for s in all.into_iter().skip(paths.cfg.keep_save_snapshots.max(1)) {
         let _ = fs::remove_dir_all(snapshots_dir(paths).join(&s.name));
     }
     Ok(Some(name))

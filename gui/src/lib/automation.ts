@@ -1,0 +1,64 @@
+import { useEffect, useRef } from "react";
+import { type AppState, api, api4, type SettingsData } from "./cpmm";
+import { useJobs } from "./jobs";
+
+/**
+ * Background chores driven by Settings: check for updates on start and every refresh interval,
+ * install them if allowed (never while the game runs), and install new downloads.
+ */
+export function useAutomation(state: AppState | undefined, settings: SettingsData | undefined) {
+  const { run, busy, toast } = useJobs();
+  const started = useRef(false);
+  const latest = useRef({ state, settings, busy });
+  latest.current = { state, settings, busy };
+
+  useEffect(() => {
+    if (!settings) return;
+    const v = settings.values;
+    const tick = async (first: boolean) => {
+      const { state: st, busy: b } = latest.current;
+      if (!st || b) return;
+      const gameUp = st.game_running || !!st.session;
+      if (v.check_updates_on_start || !first) {
+        try {
+          const ups = (await api.updates(!first)).filter((u) => u.update);
+          if (ups.length && v.auto_install_updates && !gameUp) await run(`Auto-update (${ups.length})`, ["update", "--all"]);
+          else if (ups.length && first) toast("info", `${ups.length} mod update${ups.length > 1 ? "s" : ""} available`);
+        } catch {
+          /* offline: try again next interval */
+        }
+      }
+      if (v.auto_install_downloads && !gameUp) {
+        try {
+          const dl = await api4.downloads();
+          if (dl.length) await run(`Install ${dl.length} download${dl.length > 1 ? "s" : ""}`, ["downloads", "--install"]);
+        } catch {
+          /* folder missing: ignore */
+        }
+      }
+    };
+    if (!started.current) {
+      started.current = true;
+      void tick(true);
+    }
+    const minutes = Math.max(1, Number(v.refresh_minutes) || 60);
+    // downloads are checked more often than Nexus (local and cheap)
+    const dl = v.auto_install_downloads
+      ? window.setInterval(() => {
+          const { state: st, busy: b } = latest.current;
+          if (!st || b || st.game_running || st.session) return;
+          api4
+            .downloads()
+            .then((d) => {
+              if (d.length) void run(`Install ${d.length} download${d.length > 1 ? "s" : ""}`, ["downloads", "--install"]);
+            })
+            .catch(() => {});
+        }, 30_000)
+      : 0;
+    const t = window.setInterval(() => void tick(false), minutes * 60_000);
+    return () => {
+      window.clearInterval(t);
+      if (dl) window.clearInterval(dl);
+    };
+  }, [settings, run, toast]);
+}

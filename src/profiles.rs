@@ -338,7 +338,7 @@ mod tests {
     fn test_paths(tag: &str) -> Paths {
         let d = std::env::temp_dir().join(format!("cpmm-profiles-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        Paths { data: d.clone(), game: d.join("game") }
+        Paths { data: d.clone(), game: d.join("game"), cfg: Default::default() }
     }
 
     #[test]
