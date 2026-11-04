@@ -295,3 +295,35 @@ fn remedies_read_as_their_cli_command() {
     let add = Action::DownloadsAdd { path: "/x.zip".into(), nexus: Some(5), move_it: true, source: "browser".into(), auto: true };
     assert_eq!(add.argv(), s(&["downloads", "add", "/x.zip", "--nexus", "5", "--move", "--source", "browser", "--auto"]));
 }
+
+/// Launched from Steam, the GUI inherits Steam's `LD_PRELOAD` (a 32-bit overlay library),
+/// so every 64-bit program it starts has ld.so print "cannot be preloaded … ignored" on
+/// stderr. That noise must not reach the job's text: a failed 7z extraction showed it in
+/// place of 7z's own error. The test runs itself again with an LD_PRELOAD ld.so can't load.
+#[test]
+fn helper_programs_ignore_an_inherited_ld_preload() {
+    const CHILD: &str = "CPMM_TEST_LD_PRELOAD_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let me = std::env::current_exe().unwrap();
+        let out = std::process::Command::new(me)
+            .args(["--exact", "ops::tests::helper_programs_ignore_an_inherited_ld_preload", "--nocapture"])
+            .env(CHILD, "1")
+            .env("LD_PRELOAD", "/nonexistent/cpmm-test-preload.so")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        return;
+    }
+    let p = paths("ld-preload");
+    fs::write(p.state_file(), r#"{"version":1,"mods":[]}"#).unwrap();
+    let bad = p.data.join("bad.zip");
+    fs::write(&bad, "not a zip").unwrap();
+    let a: Action = serde_json::from_value(serde_json::json!({"op": "install", "source": bad})).unwrap();
+    let mut log = render::Transcript::default();
+    let r = act(&p, a, &mut |e: &Event| log.add(e, &mut |_, _| {}));
+    let res = log.finish(r, &mut |_, _| {});
+    assert_eq!(res.code, 1);
+    assert!(res.output.contains("Cannot open the file as"), "7z's own error is kept: {}", res.output);
+    assert!(!res.output.contains("LD_PRELOAD"), "ld.so noise in the job text: {}", res.output);
+    let _ = fs::remove_dir_all(&p.data);
+}

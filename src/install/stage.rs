@@ -35,6 +35,9 @@ pub fn extract(archive: &Path, dest: &Path) -> Result<()> {
         .arg("-bd")
         .arg(format!("-o{}", dest.display()))
         .arg(archive)
+        // Run from Steam, we inherit Steam's LD_PRELOAD (its 32-bit overlay library), and
+        // ld.so's "cannot be preloaded" warning would bury 7z's own error.
+        .env_remove("LD_PRELOAD")
         .output()
         .context("running 7z (install p7zip/7zip)")?;
     if !out.status.success() {
