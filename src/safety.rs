@@ -1,6 +1,7 @@
 //! Safety net: version history + rollback, game sessions and crash triage, "new errors since
 //! last launch", the game-patch guard, and save snapshots.
 
+use crate::change::Edit;
 use crate::files;
 use crate::state::{Mod, Paths, State};
 use anyhow::{Context, Result, bail};
@@ -10,7 +11,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 
 pub fn now_unix() -> i64 {
@@ -40,20 +40,15 @@ pub struct JEntry {
     pub mods: Vec<String>,
     pub detail: String,
 }
-pub fn journal(paths: &Paths, action: &str, mods: &[String], detail: &str) {
-    let _ = append_jsonl(
-        &paths.data.join("journal.jsonl"),
-        &JEntry { ts: now_unix(), action: action.into(), mods: mods.to_vec(), detail: detail.into() },
-    );
+/// Append one entry. Only the change protocol writes the journal (change::Edit::journal).
+pub fn journal(paths: &Paths, e: &JEntry) {
+    let _ = append_jsonl(&paths.data.join("journal.jsonl"), e);
 }
 pub fn read_journal(paths: &Paths) -> Vec<JEntry> {
     read_jsonl(&paths.data.join("journal.jsonl"))
 }
 
 /* ------------------------------------------------------------------ history / rollback */
-
-/// Set while `update --all` (or a multi-mod update) runs, so its replacements can be undone together.
-pub static BATCH: Mutex<Option<String>> = Mutex::new(None);
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HistMeta {
@@ -78,8 +73,9 @@ fn history_root(paths: &Paths, id: &str) -> PathBuf {
     paths.data.join("history").join(id)
 }
 
-/// Move the mod's current staged files into its history (instead of trash).
-pub fn archive_current(paths: &Paths, m: &Mod, reason: &str) -> Result<Option<PathBuf>> {
+/// Move the mod's current staged files into its history (instead of trash). `batch` is the
+/// update batch of the change replacing it (change::Edit::batch), so a run undoes together.
+pub fn archive_current(paths: &Paths, m: &Mod, reason: &str, batch: Option<&str>) -> Result<Option<PathBuf>> {
     let cur = paths.mods().join(&m.id);
     if !cur.exists() {
         return Ok(None);
@@ -92,7 +88,7 @@ pub fn archive_current(paths: &Paths, m: &Mod, reason: &str) -> Result<Option<Pa
     let dir = root.join(ts.to_string());
     fs::create_dir_all(&root)?;
     fs::rename(&cur, &dir)?;
-    let batch = BATCH.lock().ok().and_then(|b| b.clone());
+    let batch = batch.map(String::from);
     let meta = HistMeta { ts, id: m.id.clone(), version: m.version.clone(), nexus: m.nexus.clone(), reason: reason.into(), batch };
     fs::write(dir.join("meta.json"), serde_json::to_vec_pretty(&meta)?)?;
     prune_history(paths, &m.id);
@@ -120,7 +116,8 @@ fn prune_history(paths: &Paths, id: &str) {
 }
 
 /// Swap the mod's current files with a history entry (newest if `ts` is None).
-pub fn rollback(paths: &Paths, st: &mut State, key: &str, ts: Option<i64>) -> Result<String> {
+pub fn rollback(cx: &mut Edit, st: &mut State, key: &str, ts: Option<i64>) -> Result<String> {
+    let paths = cx.paths();
     let i = st.get(key)?;
     let id = st.mods[i].id.clone();
     let hist = list_history(paths, &id);
@@ -129,7 +126,7 @@ pub fn rollback(paths: &Paths, st: &mut State, key: &str, ts: Option<i64>) -> Re
         None => hist.into_iter().next().with_context(|| format!("{id} has no earlier version to roll back to"))?,
     };
     let from = st.mods[i].version.clone();
-    archive_current(paths, &st.mods[i], &format!("rolled back to {}", target.meta.version))?;
+    archive_current(paths, &st.mods[i], &format!("rolled back to {}", target.meta.version), cx.batch())?;
     // the target may have been pruned by the archive call only if we kept >KEEP; guard anyway
     if !target.dir.exists() {
         bail!("history entry disappeared");
@@ -142,7 +139,7 @@ pub fn rollback(paths: &Paths, st: &mut State, key: &str, ts: Option<i64>) -> Re
     m.nexus = target.meta.nexus.clone();
     m.installed_at = crate::state::now();
     let msg = format!("{id}: {from} -> {}", target.meta.version);
-    journal(paths, "rollback", &[id], &msg);
+    cx.journal("rollback", &[id], &msg);
     Ok(msg)
 }
 
@@ -168,12 +165,13 @@ pub fn batches(paths: &Paths, st: &State) -> Vec<Batch> {
     v.sort_by_key(|b| std::cmp::Reverse(b.ts));
     v
 }
-pub fn undo_batch(paths: &Paths, st: &mut State, batch: &str) -> Result<Vec<String>> {
+pub fn undo_batch(cx: &mut Edit, st: &mut State, batch: &str) -> Result<Vec<String>> {
+    let paths = cx.paths();
     let mut out = vec![];
     let ids: Vec<String> = st.mods.iter().map(|m| m.id.clone()).collect();
     for id in ids {
         if let Some(h) = list_history(paths, &id).into_iter().find(|h| h.meta.batch.as_deref() == Some(batch)) {
-            out.push(rollback(paths, st, &id, Some(h.meta.ts))?);
+            out.push(rollback(cx, st, &id, Some(h.meta.ts))?);
         }
     }
     if out.is_empty() {
