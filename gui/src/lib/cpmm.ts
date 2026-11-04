@@ -234,3 +234,20 @@ export const api4 = {
   settings: () => invoke<SettingsData>("api", { args: ["settings"] }),
   downloads: () => invoke<{ path: string; nexus_id: number | null }[]>("api", { args: ["downloads"] }),
 };
+
+export interface OnboardingStatus {
+  game_dir: string;
+  game_found: boolean;
+  api_key: boolean;
+  launch_options: string | null;
+  launch_ok: boolean;
+  launch_suggested: string;
+  steam_running: boolean;
+  steam_cef: boolean;
+  nxm_handler: boolean;
+  onboarded: boolean;
+  mods_installed: number;
+}
+export const api5 = {
+  onboarding: () => invoke<OnboardingStatus>("api", { args: ["onboarding"] }),
+};

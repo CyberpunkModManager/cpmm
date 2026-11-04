@@ -527,3 +527,193 @@ mod tests {
         assert_eq!(b64(b"M"), "TQ==");
     }
 }
+
+/* ---------------------------------------------------------------- launch options */
+
+const GAME_APPID: &str = "1091500";
+
+fn localconfig_files() -> Vec<PathBuf> {
+    users(&steam_root()).into_iter().map(|u| u.join("config/localconfig.vdf")).filter(|p| p.is_file()).collect()
+}
+
+/// Byte range of the game's block (`"1091500" { … }`) inside a localconfig.vdf text.
+fn app_block(text: &str) -> Option<(usize, usize)> {
+    let apps = text.find("\"apps\"")?;
+    let key = format!("\"{GAME_APPID}\"");
+    let rel = text[apps..].find(&key)?;
+    let open = apps + rel + text[apps + rel..].find('{')?;
+    let mut depth = 0;
+    let mut in_str = false;
+    let mut esc = false;
+    for (i, c) in text[open..].char_indices() {
+        if in_str {
+            match (esc, c) {
+                (true, _) => esc = false,
+                (false, '\\') => esc = true,
+                (false, '"') => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((open, open + i));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn vdf_unescape(s: &str) -> String {
+    s.replace("\\\"", "\"").replace("\\\\", "\\")
+}
+fn vdf_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// The game's current launch options (first Steam account that has the game configured).
+pub fn read_launch_options() -> Option<String> {
+    let re = regex::Regex::new(r#""LaunchOptions"\s*"((?:[^"\\]|\\.)*)""#).ok()?;
+    for f in localconfig_files() {
+        let Ok(text) = fs::read_to_string(&f) else { continue };
+        if let Some((a, b)) = app_block(&text) {
+            if let Some(c) = re.captures(&text[a..b]) {
+                return Some(vdf_unescape(&c[1]));
+            }
+            return Some(String::new());
+        }
+    }
+    None
+}
+
+/// Insert `<cpmm> run --` right before `%command%`, keeping env vars, other wrappers and
+/// game arguments the user already has.
+pub fn with_cpmm(current: &str, cpmm: &Path) -> String {
+    if current.contains(" run -- %command%") && current.contains("cpmm") {
+        return current.to_string();
+    }
+    let wrap = format!("{} run -- %command%", cpmm.display());
+    let cur = current.trim();
+    if cur.is_empty() {
+        wrap
+    } else if cur.contains("%command%") {
+        cur.replacen("%command%", &wrap, 1)
+    } else {
+        // options without %command% are game arguments
+        format!("{wrap} {cur}")
+    }
+}
+
+pub fn launch_options_ok(current: &str) -> bool {
+    current.contains("cpmm") && current.contains(" run -- %command%")
+}
+
+/// Set the game's launch options so it starts through cpmm. Live through Steam's client API
+/// when Steam is running (its CEF debugger must be enabled), otherwise in localconfig.vdf.
+pub fn apply_launch_options(cpmm: &Path) -> Result<String> {
+    let cur = read_launch_options().unwrap_or_default();
+    let new = with_cpmm(&cur, cpmm);
+    if new == cur {
+        return Ok(new);
+    }
+    if steam_running() {
+        let ws = shared_js_ws().map_err(|_| {
+            anyhow::anyhow!("Steam is running but its debugger isn't enabled, so cpmm can't change the launch options live. Either quit Steam and run this again, or paste this into Cyberpunk's Properties → Launch Options:\n{new}")
+        })?;
+        eval(&ws, &format!("SteamClient.Apps.SetAppLaunchOptions({GAME_APPID}, {})", js(&new)))?;
+        return Ok(new);
+    }
+    let mut done = false;
+    for f in localconfig_files() {
+        let text = fs::read_to_string(&f)?;
+        let Some(out) = rewrite_launch_options(&text, &new) else { continue };
+        fs::copy(&f, f.with_extension("vdf.cpmm-bak"))?;
+        fs::write(&f, out)?;
+        done = true;
+    }
+    if !done {
+        bail!("Cyberpunk isn't in any Steam account's local config yet (start it once from Steam). Launch options to use:\n{new}");
+    }
+    Ok(new)
+}
+
+/// localconfig.vdf text with the game's LaunchOptions set to `new` (None: game not in it).
+fn rewrite_launch_options(text: &str, new: &str) -> Option<String> {
+    let (a, b) = app_block(text)?;
+    let block = &text[a..b];
+    let re = regex::Regex::new(r#""LaunchOptions"\s*"((?:[^"\\]|\\.)*)""#).ok()?;
+    let line = format!("\"LaunchOptions\"\t\t\"{}\"", vdf_escape(new));
+    let new_block = if re.is_match(block) {
+        re.replace(block, regex::NoExpand(&line)).into_owned()
+    } else {
+        let indent = block
+            .lines()
+            .nth(1)
+            .map(|l| l.chars().take_while(|c| c.is_whitespace()).collect::<String>())
+            .unwrap_or_else(|| "\t\t\t\t\t".into());
+        format!("{}\n{indent}{line}{}", &block[..1], &block[1..])
+    };
+    Some(format!("{}{}{}", &text[..a], new_block, &text[b..]))
+}
+
+/// Is Steam's CEF debugger reachable (needed to change things while Steam runs)?
+pub fn cef_available() -> bool {
+    shared_js_ws().is_ok()
+}
+pub fn is_running() -> bool {
+    steam_running()
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+
+    #[test]
+    fn inserts_before_command_and_keeps_the_rest() {
+        let c = Path::new("/u/bin/cpmm");
+        assert_eq!(with_cpmm("", c), "/u/bin/cpmm run -- %command%");
+        assert_eq!(
+            with_cpmm("A=1 gamemoderun %command% -skipStartScreen", c),
+            "A=1 gamemoderun /u/bin/cpmm run -- %command% -skipStartScreen"
+        );
+        assert_eq!(with_cpmm("--launcher-skip", c), "/u/bin/cpmm run -- %command% --launcher-skip");
+        let done = "X=1 /u/bin/cpmm run -- %command%";
+        assert_eq!(with_cpmm(done, c), done);
+        assert!(launch_options_ok(done) && !launch_options_ok("%command%"));
+    }
+
+    #[test]
+    fn finds_and_rewrites_the_app_block() {
+        let text = "\"UserLocalConfigStore\"\n{\n\t\"apps\"\n\t{\n\t\t\"1091500\"\n\t\t{\n\t\t\t\"LastPlayed\"\t\t\"1\"\n\t\t\t\"LaunchOptions\"\t\t\"A=\\\"b\\\" %command%\"\n\t\t}\n\t}\n}\n";
+        let (a, b) = app_block(text).unwrap();
+        assert!(text[a..b].contains("LastPlayed"));
+        let re = regex::Regex::new(r#""LaunchOptions"\s*"((?:[^"\\]|\\.)*)""#).unwrap();
+        assert_eq!(vdf_unescape(&re.captures(&text[a..b]).unwrap()[1]), "A=\"b\" %command%");
+    }
+
+    #[test]
+    fn rewrites_only_the_game_and_round_trips() {
+        let text = "\"UserLocalConfigStore\"\n{\n\t\"apps\"\n\t{\n\t\t\"1091500\"\n\t\t{\n\t\t\t\"LaunchOptions\"\t\t\"MANGOHUD=1 W=\\\"x\\\" %command% -skip\"\n\t\t}\n\t\t\"42\"\n\t\t{\n\t\t\t\"LaunchOptions\"\t\t\"other\"\n\t\t}\n\t}\n}\n";
+        let c = Path::new("/h/.local/bin/cpmm");
+        let (a, b) = app_block(text).unwrap();
+        let re = regex::Regex::new(r#""LaunchOptions"\s*"((?:[^"\\]|\\.)*)""#).unwrap();
+        let cur = vdf_unescape(&re.captures(&text[a..b]).unwrap()[1]);
+        let new = with_cpmm(&cur, c);
+        assert_eq!(new, "MANGOHUD=1 W=\"x\" /h/.local/bin/cpmm run -- %command% -skip");
+        let out = rewrite_launch_options(text, &new).unwrap();
+        assert!(out.contains("\"other\""), "other games untouched");
+        let (a2, b2) = app_block(&out).unwrap();
+        assert_eq!(vdf_unescape(&re.captures(&out[a2..b2]).unwrap()[1]), new);
+        // a game block without LaunchOptions gets the line added
+        let bare = "\"apps\"\n{\n\t\"1091500\"\n\t{\n\t\t\"LastPlayed\"\t\t\"1\"\n\t}\n}\n";
+        let out2 = rewrite_launch_options(bare, "X %command%").unwrap();
+        assert!(out2.contains("\"LaunchOptions\"\t\t\"X %command%\"") && out2.contains("LastPlayed"));
+        assert!(rewrite_launch_options("\"apps\"\n{\n}\n", "x").is_none());
+    }
+}

@@ -8,7 +8,7 @@ import { useJobs } from "../lib/jobs";
 const GROUPS = ["Updates", "Load order", "After installing", "Downloads", "Storage", "Profiles", "Safety", "Launching"];
 
 /** Settings page, rendered from the schema `cpmm api settings` returns. */
-export function SettingsView() {
+export function SettingsView({ onSetup }: { onSetup: () => void }) {
   const { run, busy } = useJobs();
   const q = useQuery({ queryKey: ["settings"], queryFn: api4.settings });
   if (q.isLoading) return <Spinner />;
@@ -21,9 +21,14 @@ export function SettingsView() {
         title="Settings"
         subtitle="Saved in ~/.local/share/cpmm/settings.json; the command line (`cpmm settings`) uses the same file."
         actions={
-          <Button variant="ghost" icon={<RotateCcw className="size-4" />} disabled={busy} onClick={() => run("Reset settings", ["settings", "reset"])}>
-            Reset to defaults
-          </Button>
+          <>
+            <Button variant="ghost" onClick={onSetup}>
+              Run setup again
+            </Button>
+            <Button variant="ghost" icon={<RotateCcw className="size-4" />} disabled={busy} onClick={() => run("Reset settings", ["settings", "reset"])}>
+              Reset to defaults
+            </Button>
+          </>
         }
       />
       <div className="grid gap-5 lg:grid-cols-2">

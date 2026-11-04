@@ -362,6 +362,16 @@ impl Nexus {
         let r = self.api_call(method, &format!("{base}/{path}"), true, body)?.map_err(|e| anyhow::anyhow!("{method} {path}: {e}"))?;
         Ok(r.into_json().unwrap_or(Value::Null))
     }
+    /// Check the API key; returns the account name.
+    pub fn validate(&self) -> Result<(String, bool)> {
+        let v = self.v1("GET", "users/validate.json", None)?;
+        let name = v["name"].as_str().unwrap_or("").to_string();
+        if name.is_empty() {
+            bail!("Nexus didn't accept the key");
+        }
+        Ok((name, v["is_premium"].as_bool().unwrap_or(false)))
+    }
+
     /// Cyberpunk mods on the account's "Tracked" list (the Track button on a mod page).
     pub fn tracked(&self) -> Result<Vec<u64>> {
         let v = self.v1("GET", "user/tracked_mods.json", None)?;

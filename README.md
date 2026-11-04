@@ -189,6 +189,20 @@ reflinked copy of the active profile's saves (no extra space on btrfs). Turning 
 the folder for later; deleting a profile moves its saves to `trash/`. Save snapshots (`cpmm saves`)
 record their profile, and restore only into it.
 
+## First run
+
+The GUI opens a setup flow on first launch (Settings → "Run setup again" brings it back); terminal
+users get the same with `cpmm setup`:
+
+1. **Game**: finds Cyberpunk 2077 in your Steam library, or asks where it is.
+2. **Nexus Mods**: paste your personal API key; it is validated and stored with owner-only
+   permissions (`cpmm nexus-key <KEY>`, `--check`, `--remove`).
+3. **Steam**: puts `cpmm run --` in front of `%command%` in Cyberpunk's launch options, keeping your
+   existing options (`cpmm launch-options [--apply]`). Applied live through Steam's client API when
+   its debugger is on (Decky enables it), otherwise in `localconfig.vdf` while Steam is closed
+   (backed up to `localconfig.vdf.cpmm-bak`).
+4. **Preferences**: the main settings, and registering for Nexus "Mod Manager Download" links.
+
 ## Settings
 
 Settings live in `~/.local/share/cpmm/settings.json` (every key has a default) and are shared by

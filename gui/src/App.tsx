@@ -32,6 +32,7 @@ import { useJobs } from "./lib/jobs";
 import { openNexus, useNexusBridge } from "./lib/nexus";
 import { HealthView } from "./views/LoadOrder";
 import { ModsView } from "./views/Mods";
+import { Onboarding } from "./views/Onboarding";
 import { ConflictsView, DepsView, InstallView, OverwriteView, SystemView, UpdatesView } from "./views/Panels";
 import { ProfileButton } from "./views/Profiles";
 import { SettingsView } from "./views/Settings";
@@ -56,6 +57,8 @@ export default function App() {
   const { jobs, busy } = useJobs();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api4.settings, staleTime: 60_000 });
   useAutomation(state.data, settings.data);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const showSetup = setupOpen || settings.data?.values.onboarded === false;
   const doctor = useQuery({ queryKey: ["doctor"], queryFn: api2.doctor, staleTime: 60_000 });
 
   const onSection = useCallback((d: number) => {
@@ -216,13 +219,14 @@ export default function App() {
                 {section === "overwrite" && <OverwriteView state={s} />}
                 {section === "install" && <InstallView state={s} />}
                 {section === "system" && <SystemView state={s} />}
-                {section === "settings" && <SettingsView />}
+                {section === "settings" && <SettingsView onSetup={() => setSetupOpen(true)} />}
               </div>
             )}
           </main>
           {logOpen && <ActivityPanel onClose={() => setLogOpen(false)} />}
         </div>
       </div>
+      {showSetup && <Onboarding onClose={() => setSetupOpen(false)} />}
       <Toasts />
     </div>
   );

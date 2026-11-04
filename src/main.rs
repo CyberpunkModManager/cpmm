@@ -236,8 +236,21 @@ enum Cmd {
     },
     /// Is a session running, with which layers.
     Status,
-    /// Print the Steam launch options line to use.
-    LaunchOptions,
+    /// Show the game's Steam launch options with cpmm in them; --apply sets them.
+    LaunchOptions {
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Nexus API key: save one (validated first), --check it, or --remove it.
+    NexusKey {
+        key: Option<String>,
+        #[arg(long)]
+        check: bool,
+        #[arg(long)]
+        remove: bool,
+    },
+    /// Interactive first-run setup in the terminal (the GUI has the same flow).
+    Setup,
     /// Add the cpmm GUI to the Steam library as a non-Steam game, with artwork. Works while
     /// Steam runs (through its CEF debugger, e.g. with Decky) or with Steam closed.
     #[command(visible_alias = "add-to-steam")]
@@ -395,6 +408,8 @@ enum SettingsCmd {
 enum ApiCmd {
     /// Settings values, their schema and the resolved folders
     Settings,
+    /// First-run status: game found, Nexus key, launch options, link handler
+    Onboarding,
     /// New archives waiting in the watched download folder
     Downloads,
     /// Everything the main view needs
@@ -541,7 +556,8 @@ fn real_main() -> Result<()> {
         | Cmd::Profile { action: None | Some(ProfileCmd::List) }
         | Cmd::Info { .. }
         | Cmd::Status
-        | Cmd::LaunchOptions
+        | Cmd::LaunchOptions { apply: false }
+        | Cmd::NexusKey { key: None, remove: false, .. }
         | Cmd::SteamShortcut { .. }
         | Cmd::RegisterHandler { .. }
         | Cmd::Api(_)
@@ -876,6 +892,23 @@ fn real_main() -> Result<()> {
                 ApiCmd::Downloads => serde_json::json!(
                     scan_downloads(&paths)?.into_iter().map(|(p, id)| serde_json::json!({"path": p, "nexus_id": id})).collect::<Vec<_>>()
                 ),
+                ApiCmd::Onboarding => {
+                    let exe = installed_exe().unwrap_or_default();
+                    let lo = steam::read_launch_options();
+                    serde_json::json!({
+                        "game_dir": paths.game,
+                        "game_found": paths.game.join("bin/x64/Cyberpunk2077.exe").is_file(),
+                        "api_key": paths.api_key().is_ok(),
+                        "launch_options": lo,
+                        "launch_ok": lo.as_deref().is_some_and(steam::launch_options_ok),
+                        "launch_suggested": steam::with_cpmm(lo.as_deref().unwrap_or(""), &exe),
+                        "steam_running": steam::is_running(),
+                        "steam_cef": steam::cef_available(),
+                        "nxm_handler": manage::current_nxm_handler() == "cpmm-nxm.desktop",
+                        "onboarded": paths.cfg.onboarded,
+                        "mods_installed": st.mods.len(),
+                    })
+                }
                 ApiCmd::Settings => serde_json::json!({
                     "values": paths.cfg,
                     "schema": settings::schema(),
@@ -1256,14 +1289,28 @@ fn real_main() -> Result<()> {
         Cmd::SteamShortcut { name, exe, remove, dry_run } => {
             steam::run(steam::Opts { name, exe, remove, dry_run })?;
         }
-        Cmd::LaunchOptions => {
-            let exe = std::env::current_exe()?;
-            println!("Put cpmm right before %command% (after env vars and other wrappers), e.g.:\n");
-            println!(
-                "VKD3D_LOW_LATENCY_OFFSET=250 PROTON_VKD3D_LOWLATENCY=1 LOW_LATENCY_LAYER=1 WINEDLLOVERRIDES=\"winmm,version=n,b\" game-performance {} run -- %command% --launcher-skip -skipStartScreen",
-                exe.display()
-            );
+        Cmd::LaunchOptions { apply } => {
+            let exe = installed_exe()?;
+            let cur = steam::read_launch_options();
+            if apply {
+                let new = steam::apply_launch_options(&exe)?;
+                println!("launch options set:\n  {new}");
+                if steam::is_running() {
+                    println!("(applied live in Steam)");
+                }
+            } else {
+                match &cur {
+                    Some(c) if steam::launch_options_ok(c) => println!("already launching through cpmm:\n  {c}"),
+                    Some(c) => println!("current:  {c}\nwith cpmm: {}\n(`cpmm launch-options --apply` sets it)", steam::with_cpmm(c, &exe)),
+                    None => println!(
+                        "Cyberpunk isn't in Steam's local config yet; start it once from Steam. Use:\n  {}",
+                        steam::with_cpmm("", &exe)
+                    ),
+                }
+            }
         }
+        Cmd::NexusKey { key, check, remove } => nexus_key_cmd(&paths, key, check, remove)?,
+        Cmd::Setup => setup_cmd(&paths, &mut st)?,
     }
     Ok(())
 }
@@ -2195,6 +2242,118 @@ fn deps(paths: &Paths, st: &mut State, refresh: bool) -> Result<()> {
         }
     }
     println!("{problems} unmet hard requirements{}", if ignored > 0 { format!(" ({ignored} ignored by choice)") } else { String::new() });
+    Ok(())
+}
+
+/// The cpmm binary Steam should run (the installed copy, not a cargo target dir).
+fn installed_exe() -> Result<PathBuf> {
+    let local = expand("~/.local/bin/cpmm");
+    if local.is_file() {
+        return Ok(local);
+    }
+    Ok(std::env::current_exe()?)
+}
+
+fn key_file() -> PathBuf {
+    expand("~/.config/nexusmods/apikey")
+}
+
+fn nexus_key_cmd(paths: &Paths, key: Option<String>, check: bool, remove: bool) -> Result<()> {
+    if remove {
+        let _ = fs::remove_file(key_file());
+        println!("Nexus API key removed");
+        return Ok(());
+    }
+    if let Some(k) = key {
+        let k = k.trim().to_string();
+        let (name, premium) = Nexus::new(Some(k.clone()), &paths.cache()).validate().context("validating the key")?;
+        let f = key_file();
+        fs::create_dir_all(f.parent().unwrap())?;
+        fs::write(&f, &k)?;
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&f, fs::Permissions::from_mode(0o600))?;
+        println!("saved the key for {name}{}", if premium { " (premium)" } else { "" });
+        return Ok(());
+    }
+    match paths.api_key() {
+        Ok(k) if check => {
+            let (name, premium) = Nexus::new(Some(k), &paths.cache()).validate()?;
+            println!(
+                "key OK: {name}{}",
+                if premium { " (premium: downloads work from cpmm)" } else { " (free: use Mod Manager Download links)" }
+            );
+        }
+        Ok(_) => println!("a Nexus API key is set ({}); --check validates it", key_file().display()),
+        Err(_) => {
+            println!("no Nexus API key; get yours at https://www.nexusmods.com/users/myaccount?tab=api and run `cpmm nexus-key <KEY>`")
+        }
+    }
+    Ok(())
+}
+
+fn ask(q: &str, default: &str) -> String {
+    use std::io::Write as _;
+    print!("{q}{} ", if default.is_empty() { String::new() } else { format!(" [{default}]") });
+    let _ = std::io::stdout().flush();
+    let mut l = String::new();
+    let _ = std::io::stdin().read_line(&mut l);
+    let l = l.trim();
+    if l.is_empty() { default.to_string() } else { l.to_string() }
+}
+fn yes(q: &str, default: bool) -> bool {
+    let a = ask(&format!("{q} (y/n)"), if default { "y" } else { "n" });
+    a.to_lowercase().starts_with('y')
+}
+
+/// Interactive first-run setup for terminal users.
+fn setup_cmd(paths: &Paths, st: &mut State) -> Result<()> {
+    println!("cpmm setup\n");
+    // 1. game
+    let mut game = paths.game.clone();
+    if !game.join("bin/x64/Cyberpunk2077.exe").is_file() {
+        let g = ask("Where is Cyberpunk 2077 installed?", &game.to_string_lossy());
+        game = expand(&g);
+        if !game.join("bin/x64/Cyberpunk2077.exe").is_file() {
+            bail!("no bin/x64/Cyberpunk2077.exe under {}", game.display());
+        }
+        fs::create_dir_all(&paths.data)?;
+        fs::write(paths.data.join("game_dir"), game.to_string_lossy().as_bytes())?;
+    }
+    println!("game: {}", game.display());
+    // 2. Nexus key
+    if paths.api_key().is_err() {
+        println!("\ncpmm needs your personal Nexus Mods API key (https://www.nexusmods.com/users/myaccount?tab=api).");
+        let k = ask("Paste it (or leave empty to skip):", "");
+        if !k.is_empty() {
+            nexus_key_cmd(paths, Some(k), false, false)?;
+        }
+    } else {
+        println!("Nexus API key: set");
+    }
+    // 3. launch options
+    let exe = installed_exe()?;
+    let lo = steam::read_launch_options();
+    if !lo.as_deref().is_some_and(steam::launch_options_ok)
+        && yes("\nMake Steam launch the game through cpmm (keeps your existing launch options)?", true)
+    {
+        match steam::apply_launch_options(&exe) {
+            Ok(n) => println!("launch options: {n}"),
+            Err(e) => println!("{e:#}"),
+        }
+    }
+    // 4. link handler + preferences
+    if manage::current_nxm_handler() != "cpmm-nxm.desktop" && yes("Open Nexus \"Mod Manager Download\" links with cpmm?", true) {
+        manage::register_nxm(&exe)?;
+    }
+    let mut cfg = paths.cfg.clone();
+    cfg.check_updates_on_start = yes("Check for mod updates when cpmm starts?", cfg.check_updates_on_start);
+    cfg.auto_install_updates = yes("Install updates automatically (undoable)?", cfg.auto_install_updates);
+    cfg.auto_sort = yes("Keep the load order sorted automatically?", cfg.auto_sort);
+    cfg.snapshot_saves = yes("Snapshot your saves before risky changes?", cfg.snapshot_saves);
+    cfg.onboarded = true;
+    settings::save(&paths.data, &cfg)?;
+    let _ = st;
+    println!("\nAll set. `cpmm install <nexus url>` installs a mod; `cpmm-gui` opens the app.");
     Ok(())
 }
 
