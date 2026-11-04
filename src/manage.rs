@@ -120,14 +120,18 @@ pub fn overwrite_entries(paths: &Paths) -> Vec<OwEntry> {
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
 pub enum OwKind {
     /// a deletion marker (whiteout)
+    #[serde(rename = "deleted")]
     Deleted,
     /// shadows a file an enabled mod ships
+    #[serde(rename = "edited mod file")]
     EditedMod,
     /// shadows a file of the real game dir
+    #[serde(rename = "edited base file")]
     EditedBase,
+    #[serde(rename = "new")]
     New,
 }
 impl OwKind {

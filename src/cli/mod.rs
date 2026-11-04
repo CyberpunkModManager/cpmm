@@ -463,18 +463,13 @@ pub fn modio(paths: &Paths, st: &State) {
     }
 }
 
-pub fn collection(v: &serde_json::Value, reference: &str) {
-    println!("{} (revision {}) by {}", v["name"].as_str().unwrap_or(""), v["revision"], v["author"].as_str().unwrap_or(""));
-    println!(
-        "{} mods ({} optional), {:.1} GB, {} load-order rules",
-        v["mods"].as_array().map_or(0, |a| a.len()),
-        v["optional"],
-        v["total_size"].as_f64().unwrap_or(0.0) / 1e9,
-        v["rules"]
-    );
-    let mut by: BTreeMap<String, usize> = BTreeMap::new();
-    for m in v["mods"].as_array().cloned().unwrap_or_default() {
-        *by.entry(m["status"].as_str().unwrap_or("").to_string()).or_default() += 1;
+pub fn collection(v: &query::CollectionView, reference: &str) {
+    let rev = v.revision.map_or("null".into(), |r| r.to_string());
+    println!("{} (revision {rev}) by {}", v.name, v.author);
+    println!("{} mods ({} optional), {:.1} GB, {} load-order rules", v.mods.len(), v.optional, v.total_size / 1e9, v.rules);
+    let mut by: BTreeMap<&str, usize> = BTreeMap::new();
+    for m in &v.mods {
+        *by.entry(m.status).or_default() += 1;
     }
     println!("status: {}", by.iter().map(|(k, n)| format!("{n} {k}")).collect::<Vec<_>>().join(", "));
     println!("install with: cpmm collection install {reference}");
@@ -495,9 +490,8 @@ pub fn settings(paths: &Paths, json: bool) -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(cur)?);
     } else {
         let v = serde_json::to_value(cur)?;
-        for f in settings::schema().as_array().unwrap() {
-            let k = f["key"].as_str().unwrap();
-            println!("  {:<24} {:<10} {}", k, v[k].to_string().trim_matches('"'), f["label"].as_str().unwrap_or(""));
+        for f in settings::schema() {
+            println!("  {:<24} {:<10} {}", f.key, v[f.key].to_string().trim_matches('"'), f.label);
         }
         println!("staging: {}\ndownloads: {}", paths.mods().display(), paths.downloads().display());
     }

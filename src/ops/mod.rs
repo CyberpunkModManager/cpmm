@@ -14,6 +14,8 @@
 //! know which `cpmm` binary the outside world should run) is a [`Ui`] capability.
 
 mod act;
+#[cfg(test)]
+mod bindings;
 pub mod query;
 pub mod render;
 #[cfg(test)]

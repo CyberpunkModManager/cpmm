@@ -2,13 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import { Radar } from "lucide-react";
 import { Badge, Button, Card } from "../components/ui";
-import { type AppState, api7 } from "../lib/cpmm";
+import { type AppState, api } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 
 /** mod.io watcher: subscriptions made in the in-game Mods menu, what changed, and collisions. */
 export function ModioCard({ state }: { state: AppState }) {
   const { run, busy } = useJobs();
-  const q = useQuery({ queryKey: ["modio"], queryFn: api7.modio, staleTime: 30_000 });
+  const q = useQuery({ queryKey: ["modio"], queryFn: api.modio, staleTime: 30_000 });
   const d = q.data;
   if (!d) return null;
   const name = (id: string) => state.mods.find((m) => m.id === id)?.name ?? id;

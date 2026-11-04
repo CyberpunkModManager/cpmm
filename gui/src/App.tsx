@@ -26,7 +26,7 @@ import {
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { ErrorBox, IconButton, Spinner } from "./components/ui";
 import { useAutomation } from "./lib/automation";
-import { api, api2, api4 } from "./lib/cpmm";
+import { api } from "./lib/cpmm";
 import { useSpatialNav } from "./lib/gamepad";
 import { useJobs } from "./lib/jobs";
 import { openNexus, useNexusBridge } from "./lib/nexus";
@@ -57,11 +57,11 @@ export default function App() {
   const [logOpen, setLogOpen] = useState(false);
   const state = useQuery({ queryKey: ["state"], queryFn: api.state, refetchInterval: 5000 });
   const { jobs, busy } = useJobs();
-  const settings = useQuery({ queryKey: ["settings"], queryFn: api4.settings, staleTime: 60_000 });
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
   useAutomation(state.data, settings.data);
   const [setupOpen, setSetupOpen] = useState(false);
   const showSetup = setupOpen || settings.data?.values.onboarded === false;
-  const doctor = useQuery({ queryKey: ["doctor"], queryFn: api2.doctor, staleTime: 60_000 });
+  const doctor = useQuery({ queryKey: ["doctor"], queryFn: api.doctor, staleTime: 60_000 });
 
   const onSection = useCallback((d: number) => {
     setSection((s) => {

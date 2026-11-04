@@ -769,32 +769,31 @@ fn real_main() -> Result<()> {
 
 /// `cpmm api …`: one JSON value on stdout.
 fn api(paths: &Paths, a: ApiCmd) -> Result<()> {
-    use ops::query as q;
-    let st = State::load(paths)?;
-    let v = match a {
-        ApiCmd::State => q::state(paths, &st)?,
-        ApiCmd::Info { r#mod } => q::info(paths, &st, &r#mod)?,
-        ApiCmd::Conflicts => q::conflicts(paths, &st)?,
-        ApiCmd::Updates { refresh } => q::updates(paths, &st, refresh)?,
-        ApiCmd::Overwrite => q::overwrite(paths, &st)?,
-        ApiCmd::Tracked => q::tracked(paths, &st)?,
-        ApiCmd::Loadorder => q::loadorder(paths, &st)?,
-        ApiCmd::Doctor => q::doctor(paths, &st)?,
-        ApiCmd::Downloads => q::downloads(paths, &st)?,
-        ApiCmd::Onboarding => q::onboarding(paths, &st, &cli::Term)?,
-        ApiCmd::Changelog { r#mod } => q::changelog_json(paths, &st, &r#mod)?,
-        ApiCmd::Modio => q::modio(paths, &st)?,
+    use ops::query::Query;
+    let q = match a {
+        ApiCmd::State => Query::State,
+        ApiCmd::Info { r#mod } => Query::Info { r#mod },
+        ApiCmd::Conflicts => Query::Conflicts,
+        ApiCmd::Updates { refresh } => Query::Updates { refresh },
+        ApiCmd::Overwrite => Query::Overwrite,
+        ApiCmd::Tracked => Query::Tracked,
+        ApiCmd::Loadorder => Query::Loadorder,
+        ApiCmd::Doctor => Query::Doctor,
+        ApiCmd::Downloads => Query::Downloads,
+        ApiCmd::Onboarding => Query::Onboarding,
+        ApiCmd::Changelog { r#mod } => Query::Changelog { r#mod },
+        ApiCmd::Modio => Query::Modio,
         ApiCmd::Fomod { source, file, choices } => {
-            let c: Option<fomod::Choices> = choices.map(|j| serde_json::from_str(&j)).transpose()?;
-            q::fomod(paths, &st, &mut cli::Term, &source, file.as_deref(), c.as_ref())?
+            Query::Fomod { source, file, choices: choices.map(|j| serde_json::from_str(&j)).transpose()? }
         }
-        ApiCmd::Collection { reference } => q::collection(paths, &st, &reference)?,
-        ApiCmd::Settings => q::settings(paths)?,
-        ApiCmd::Safety => q::safety(paths, &st)?,
-        ApiCmd::History { r#mod } => q::history(paths, &st, &r#mod)?,
-        ApiCmd::Archives => q::archives(paths, &st)?,
-        ApiCmd::Lookup { source } => q::lookup(paths, &source)?,
+        ApiCmd::Collection { reference } => Query::Collection { reference },
+        ApiCmd::Settings => Query::Settings,
+        ApiCmd::Safety => Query::Safety,
+        ApiCmd::History { r#mod } => Query::History { r#mod },
+        ApiCmd::Archives => Query::Archives,
+        ApiCmd::Lookup { source } => Query::Lookup { source },
     };
+    let v = ops::query::view(paths, &q, &mut cli::Term)?;
     cli::warnings();
     println!("{}", serde_json::to_string(&v)?);
     Ok(())

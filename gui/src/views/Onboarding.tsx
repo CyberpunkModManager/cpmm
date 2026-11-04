@@ -4,7 +4,7 @@ import clsx from "clsx";
 import { ArrowLeft, ArrowRight, Check, CircleAlert, ExternalLink, FolderOpen, Gamepad2, KeyRound, Layers, Rocket, Settings2, Sparkles } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Button, Card, Input, Spinner, Switch } from "../components/ui";
-import { api4, api5 } from "../lib/cpmm";
+import { api } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 
 const STEPS = ["Welcome", "Game", "Nexus Mods", "Steam", "Preferences", "Done"] as const;
@@ -22,8 +22,8 @@ const PREFS = [
 export function Onboarding({ onClose }: { onClose: () => void }) {
   const { run, busy } = useJobs();
   const qc = useQueryClient();
-  const st = useQuery({ queryKey: ["onboarding"], queryFn: api5.onboarding });
-  const cfg = useQuery({ queryKey: ["settings"], queryFn: api4.settings });
+  const st = useQuery({ queryKey: ["onboarding"], queryFn: api.onboarding });
+  const cfg = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const [step, setStep] = useState(0);
   const [gamePath, setGamePath] = useState("");
   const [key, setKey] = useState("");

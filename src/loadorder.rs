@@ -18,14 +18,14 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, ts_rs::TS)]
 pub struct Rule {
     /// This mod must load after (win over) `after`.
     pub r#mod: String,
     pub after: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, ts_rs::TS)]
 #[serde(tag = "kind", content = "id", rename_all = "lowercase")]
 pub enum Owner {
     Mod(String),
@@ -87,7 +87,8 @@ pub fn collect(paths: &Paths, st: &State) -> Vec<Arc> {
     out
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, ts_rs::TS)]
+#[ts(rename = "ArchivePair")]
 pub struct Pair {
     pub a: Owner,
     pub b: Owner,
@@ -195,15 +196,16 @@ fn related_pairs(st: &State) -> BTreeSet<(String, String)> {
     s
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, ts_rs::TS)]
 pub struct Edge {
     pub before: String,
     pub after: String,
     pub why: String,
+    #[ts(type = "\"requirement\" | \"rule\" | \"heuristic\"")]
     pub strength: &'static str,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, ts_rs::TS)]
 pub struct SortPlan {
     pub order: Vec<String>,
     pub moved: Vec<Moved>,
@@ -211,7 +213,7 @@ pub struct SortPlan {
     pub cycles: Vec<Vec<String>>,
     pub unresolved: Vec<Pair>,
 }
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, ts_rs::TS)]
 pub struct Moved {
     pub id: String,
     pub from: usize,

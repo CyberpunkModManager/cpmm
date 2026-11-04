@@ -17,19 +17,22 @@ use crate::state::{Paths, State};
 use serde::Serialize;
 
 /// A one-click fix: the GUI shows `label` and runs `cpmm <args>`.
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, ts_rs::TS)]
+#[ts(rename = "Remedy")]
 pub struct Action {
     pub label: String,
     pub args: Vec<String>,
     /// "primary" for the recommended choice
+    #[ts(type = "\"primary\" | \"secondary\"")]
     pub style: &'static str,
 }
 fn act(label: impl Into<String>, args: &[&str], style: &'static str) -> Action {
     Action { label: label.into(), args: args.iter().map(|s| s.to_string()).collect(), style }
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, ts_rs::TS)]
 pub struct Finding {
+    #[ts(type = "\"crash\" | \"warning\" | \"perf\" | \"info\" | \"acked\"")]
     pub severity: &'static str, // "crash" | "warning" | "perf" | "info" | "acked"
     pub title: String,
     pub detail: String,

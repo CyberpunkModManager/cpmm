@@ -50,7 +50,7 @@ pub fn read_journal(paths: &Paths) -> Vec<JEntry> {
 
 /* ------------------------------------------------------------------ history / rollback */
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, ts_rs::TS)]
 pub struct HistMeta {
     pub ts: i64,
     pub id: String,
@@ -60,7 +60,7 @@ pub struct HistMeta {
     #[serde(default)]
     pub batch: Option<String>,
 }
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, ts_rs::TS)]
 pub struct HistEntry {
     #[serde(flatten)]
     pub meta: HistMeta,
@@ -143,7 +143,7 @@ pub fn rollback(cx: &mut Edit, st: &mut State, key: &str, ts: Option<i64>) -> Re
     Ok(msg)
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, ts_rs::TS)]
 pub struct Batch {
     pub batch: String,
     pub ts: i64,
@@ -242,7 +242,7 @@ pub fn diff_snapshots(a: &[SessMod], b: &[SessMod]) -> Vec<String> {
 
 /* ------------------------------------------------------------------ crashes */
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, ts_rs::TS)]
 pub struct Crash {
     pub report: String,
     pub ts: i64,
@@ -443,7 +443,7 @@ pub fn ingest_errors(paths: &Paths) -> (Option<ErrSnap>, ErrSnap) {
     (prev, latest)
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, ts_rs::TS)]
 pub struct ErrDiff {
     pub baseline: bool,
     pub latest_log: i64,
@@ -494,7 +494,7 @@ pub struct BuildRecord {
     pub changed_at: i64,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, ts_rs::TS)]
 pub struct Framework {
     pub id: String,
     pub name: String,
@@ -503,7 +503,7 @@ pub struct Framework {
     pub update_available: bool,
     pub released_since_patch: bool,
 }
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, ts_rs::TS)]
 pub struct PatchStatus {
     pub build_id: String,
     pub previous_build: Option<String>,
@@ -652,7 +652,7 @@ fn snapshots_dir(paths: &Paths) -> PathBuf {
     paths.data.join("save-snapshots")
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, ts_rs::TS)]
 pub struct Snapshot {
     pub name: String,
     pub ts: i64,
@@ -757,7 +757,7 @@ pub fn quest_mods(paths: &Paths, st: &State) -> BTreeSet<String> {
     out
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, ts_rs::TS)]
 pub struct SaveRisk {
     pub save: String,
     pub saved_at: i64,

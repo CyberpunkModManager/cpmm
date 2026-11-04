@@ -2,11 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import { useState } from "react";
 import { Badge, Button, Drawer, ErrorBox, Spinner } from "../components/ui";
-import { api6 } from "../lib/cpmm";
+import { api } from "../lib/cpmm";
 
 /** Drawer with a mod's Nexus changelog: what an update brings, then older history on request. */
 export function ChangelogDrawer({ id, onClose }: { id: string; onClose: () => void }) {
-  const q = useQuery({ queryKey: ["changelog", id], queryFn: () => api6.changelog(id) });
+  const q = useQuery({ queryKey: ["changelog", id], queryFn: () => api.changelog(id) });
   const [all, setAll] = useState(false);
   const d = q.data;
   const newer = d?.entries.filter((e) => e.newer) ?? [];

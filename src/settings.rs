@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, ts_rs::TS)]
 #[serde(default)]
 pub struct Settings {
     // Updates
@@ -120,37 +120,50 @@ pub fn set(s: &Settings, key: &str, raw: &str) -> Result<Settings> {
     Ok(out)
 }
 
+/// One setting as the GUI's Settings page shows it.
+#[derive(Serialize, Clone, Debug, ts_rs::TS)]
+#[ts(rename = "SettingField")]
+pub struct Field {
+    #[ts(type = "keyof Settings")]
+    pub key: &'static str,
+    pub group: &'static str,
+    pub label: &'static str,
+    pub help: &'static str,
+    #[ts(type = "\"bool\" | \"number\" | \"text\" | \"path\"")]
+    pub kind: &'static str,
+}
+
 /// Field metadata for the GUI's Settings page and the onboarding flow.
-pub fn schema() -> Value {
-    let f = |key: &str, group: &str, label: &str, help: &str, kind: &str| json!({"key": key, "group": group, "label": label, "help": help, "kind": kind});
-    json!([
+pub fn schema() -> Vec<Field> {
+    let f = |key, group, label, help, kind| Field { key, group, label, help, kind };
+    vec![
         f(
             "check_updates_on_start",
             "Updates",
             "Check for updates on start",
             "Ask Nexus for newer uploads of your installed files when cpmm opens.",
-            "bool"
+            "bool",
         ),
         f(
             "auto_install_updates",
             "Updates",
             "Install updates automatically",
             "Install them right away (never while the game runs). Every run can be undone from Updates.",
-            "bool"
+            "bool",
         ),
         f(
             "refresh_minutes",
             "Updates",
             "Refresh every (minutes)",
             "How often cpmm re-checks Nexus and the download folder while open.",
-            "number"
+            "number",
         ),
         f(
             "auto_sort",
             "Load order",
             "Sort automatically",
             "Re-sort the load order after installs, updates, enabling and rollbacks.",
-            "bool"
+            "bool",
         ),
         f("after_install_verify", "After installing", "Verify files", "Check the staged files against the Nexus manifest hashes.", "bool"),
         f(
@@ -158,42 +171,42 @@ pub fn schema() -> Value {
             "After installing",
             "Run the health check",
             "Report new crash risks or conflicts the mod introduced.",
-            "bool"
+            "bool",
         ),
         f(
             "after_install_command",
             "After installing",
             "Run a command",
             "Shell command run after each install; gets CPMM_MOD_ID, CPMM_MOD_NAME, CPMM_MOD_VERSION.",
-            "text"
+            "text",
         ),
         f(
             "auto_install_downloads",
             "Downloads",
             "Install downloads automatically",
             "Install a mod as soon as its download finishes (Mod Manager Download links, the built-in browser). Off: it waits in Downloads until you install it.",
-            "bool"
+            "bool",
         ),
         f(
             "keep_archives",
             "Downloads",
             "Keep archives after installing",
             "Installed mods stay in the Downloads list, so you can reinstall or switch FOMOD options without downloading again. Off saves disk space.",
-            "bool"
+            "bool",
         ),
         f(
             "staging_dir",
             "Storage",
             "Mod staging directory",
             "Where installed mods live. Default: ~/.local/share/cpmm/mods. Best on the same drive as the game. Changing it moves your mods.",
-            "path"
+            "path",
         ),
         f(
             "download_dir",
             "Storage",
             "Download directory",
             "Where cpmm keeps archives while installing. Default: ~/.local/share/cpmm/downloads",
-            "path"
+            "path",
         ),
         f("profiles_enabled", "Profiles", "Enable profiles", "Separate mod lists you can switch between (shown in the sidebar).", "bool"),
         f(
@@ -201,14 +214,14 @@ pub fn schema() -> Value {
             "Profiles",
             "New profiles get their own saves",
             "Each new profile starts with a separate save folder (not synced by Steam Cloud).",
-            "bool"
+            "bool",
         ),
         f(
             "snapshot_saves",
             "Safety",
             "Snapshot saves before changes",
             "Before disabling, uninstalling, updating or rolling back mods. Copy-on-write, so free on btrfs.",
-            "bool"
+            "bool",
         ),
         f("keep_versions", "Safety", "Earlier versions to keep per mod", "For rollback.", "number"),
         f("keep_save_snapshots", "Safety", "Save snapshots to keep", "Oldest are removed first.", "number"),
@@ -217,9 +230,9 @@ pub fn schema() -> Value {
             "Launching",
             "Close cpmm when launching the game",
             "Recommended in Steam Game Mode, which allows one running game at a time.",
-            "bool"
+            "bool",
         ),
-    ])
+    ]
 }
 
 #[cfg(test)]
@@ -241,7 +254,7 @@ mod tests {
 
     #[test]
     fn schema_covers_every_field() {
-        let keys: Vec<String> = schema().as_array().unwrap().iter().map(|f| f["key"].as_str().unwrap().to_string()).collect();
+        let keys: Vec<String> = schema().iter().map(|f| f.key.to_string()).collect();
         let fields = serde_json::to_value(Settings::default()).unwrap();
         for k in fields.as_object().unwrap().keys().filter(|k| *k != "onboarded") {
             assert!(keys.contains(k), "{k} missing from schema");

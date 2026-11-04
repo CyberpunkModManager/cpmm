@@ -3,7 +3,7 @@ import clsx from "clsx";
 import { ArrowLeft, ArrowRight, Check, Package } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Card, ErrorBox, Spinner } from "../components/ui";
-import { api8, type FomodPlugin } from "../lib/cpmm";
+import { api, type FomodPlugin } from "../lib/cpmm";
 
 type Choices = Record<string, string[]>;
 
@@ -32,7 +32,7 @@ export function FomodDialog({
   const [page, setPage] = useState(0);
   const [focus, setFocus] = useState<FomodPlugin | null>(null);
   const root = useRef<HTMLDivElement>(null);
-  const q = useQuery({ queryKey: ["fomod", source, file, choices], queryFn: () => api8.fomod(source, file, choices), placeholderData: (p) => p });
+  const q = useQuery({ queryKey: ["fomod", source, file, choices], queryFn: () => api.fomod(source, file, choices), placeholderData: (p) => p });
   const steps = useMemo(() => (q.data?.steps ?? []).filter((s) => s.visible), [q.data]);
   const step = steps[Math.min(page, Math.max(0, steps.length - 1))];
   // biome-ignore lint/correctness/useExhaustiveDependencies: move controller focus when the page changes

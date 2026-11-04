@@ -1,6 +1,7 @@
 //! The Operations module through its interface: actions and queries on temp-dir `Paths`,
 //! with the text an adapter would show (the CLI's output, the GUI's job log).
 
+use super::query::Query;
 use super::render::lines;
 use super::*;
 use crate::change::Lock;
@@ -178,5 +179,32 @@ fn queries_read_the_setup() {
     assert_eq!((u.rows[0].id.as_str(), u.rows[0].disabled.as_deref()), ("a", Some("b")));
     let d = query::detail(&p, &st, "a").unwrap();
     assert_eq!(d.files, ["r6/x.txt"]);
+    let _ = fs::remove_dir_all(&p.data);
+}
+
+#[test]
+fn views_answer_queries_by_name() {
+    let p = paths("views");
+    setup(&p);
+    let ask = |q: serde_json::Value| query::view(&p, &serde_json::from_value(q).unwrap(), &mut |_: &Event| {}).unwrap();
+    let st = ask(serde_json::json!({"view": "state"}));
+    let a = &st["mods"][0];
+    assert_eq!((a["id"].as_str(), a["priority"].as_u64(), a["dep_problems"].as_u64()), (Some("a"), Some(1), Some(1)));
+    assert_eq!(a["requires"][0]["status"], "disabled");
+    assert_eq!(a["requires"][0]["installed_as"], "b");
+    assert_eq!(a["nexus"], serde_json::Value::Null);
+    let info = ask(serde_json::json!({"view": "info", "mod": "a"}));
+    assert_eq!(info, serde_json::json!({"id": "a", "name": "A", "files": [], "hidden": [], "ignored_reqs": []}));
+    // an archive without an installer is only `fomod: false`
+    let src = p.data.join("plain");
+    fs::create_dir_all(src.join("r6")).unwrap();
+    fs::write(src.join("r6/x.txt"), "x").unwrap();
+    let arc = p.data.join("plain.zip");
+    let ok = std::process::Command::new("7z").arg("a").arg(&arc).arg(src.join("r6")).output();
+    if ok.is_ok_and(|o| o.status.success()) {
+        assert_eq!(ask(serde_json::json!({"view": "fomod", "source": arc})), serde_json::json!({"fomod": false}));
+    }
+    let r = query::view(&p, &Query::Info { r#mod: "nosuch".into() }, &mut |_: &Event| {});
+    assert!(r.unwrap_err().to_string().contains("nosuch"));
     let _ = fs::remove_dir_all(&p.data);
 }

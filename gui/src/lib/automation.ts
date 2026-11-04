@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { type AppState, api, api7, type SettingsData } from "./cpmm";
+import { type AppState, api, type SettingsData } from "./cpmm";
 import { useJobs } from "./jobs";
 
 /**
@@ -31,7 +31,7 @@ export function useAutomation(state: AppState | undefined, settings: SettingsDat
       }
       // mod.io watcher: say once when new subscriptions appear (the in-game menu makes that easy)
       try {
-        const m = await api7.modio();
+        const m = await api.modio();
         const added = m.changes.first_look ? [] : m.changes.added;
         const key = added.join("|");
         if (added.length && key !== toldModio.current) {

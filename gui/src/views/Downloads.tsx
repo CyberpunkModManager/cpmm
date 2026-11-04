@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Download, PackageCheck, RotateCcw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Badge, Button, Confirm, Empty, ErrorBox, PageHeader, Spinner } from "../components/ui";
-import { type AppState, api4, api8, type DownloadEntry, timeAgo } from "../lib/cpmm";
+import { type AppState, api, type DownloadEntry, timeAgo } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 import { FomodDialog } from "./Fomod";
 
@@ -12,8 +12,8 @@ const mb = (b: number) => (b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : `
 /** Everything downloaded, separate from what's installed (like Vortex's / MO2's downloads list). */
 export function DownloadsView({ state }: { state: AppState }) {
   const { run, busy } = useJobs();
-  const q = useQuery({ queryKey: ["downloads"], queryFn: api4.downloads, refetchInterval: 10_000 });
-  const settings = useQuery({ queryKey: ["settings"], queryFn: api4.settings, staleTime: 60_000 });
+  const q = useQuery({ queryKey: ["downloads"], queryFn: api.downloads, refetchInterval: 10_000 });
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
   const [del, setDel] = useState<DownloadEntry | null>(null);
   const [fomod, setFomod] = useState<DownloadEntry | null>(null);
   const [checking, setChecking] = useState<string | null>(null);
@@ -22,7 +22,7 @@ export function DownloadsView({ state }: { state: AppState }) {
   const install = async (d: DownloadEntry) => {
     setChecking(d.file);
     try {
-      const f = await api8.fomod(d.path);
+      const f = await api.fomod(d.path);
       if (f.fomod) {
         setFomod(d);
         return;

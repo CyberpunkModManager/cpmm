@@ -5,13 +5,16 @@
 //! Fetching and merging requirements from Nexus is not here (see `nexus::Catalogue::requirements`).
 
 use crate::state::{Mod, ReqCheck, Requirement, State};
+use serde::Serialize;
 
 /// Where one requirement of a mod stands.
 ///
 /// The rule: a dependency that is installed and enabled is `Ok`; otherwise a requirement
 /// the user chose to do without is `Ignored`; otherwise it is disabled or missing, and
 /// optional requirements get their own variants because they are never a problem.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(rename = "ReqStatus")]
 pub enum Status {
     Ok,
     Ignored,

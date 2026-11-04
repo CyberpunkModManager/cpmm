@@ -3,13 +3,13 @@ import clsx from "clsx";
 import { Bug, Camera, FileWarning, History, RotateCcw, ShieldCheck, Undo2, Wrench } from "lucide-react";
 import { useState } from "react";
 import { Badge, Button, Card, Confirm, ErrorBox, Spinner } from "../components/ui";
-import { type AppState, api3, when } from "../lib/cpmm";
+import { type AppState, api, when } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 
 /** Crash triage, new log errors, the game-patch guard, save snapshots and undoable update runs. */
 export function SafetyPanel({ state }: { state: AppState }) {
   const { run, busy } = useJobs();
-  const q = useQuery({ queryKey: ["safety"], queryFn: api3.safety, staleTime: 30_000 });
+  const q = useQuery({ queryKey: ["safety"], queryFn: api.safety, staleTime: 30_000 });
   const [restore, setRestore] = useState<string | null>(null);
   const [showErr, setShowErr] = useState(false);
   const name = (id: string) => state.mods.find((m) => m.id === id)?.name ?? id;
@@ -238,7 +238,7 @@ export function SafetyPanel({ state }: { state: AppState }) {
 /** Earlier versions of one mod, for its detail drawer. */
 export function ModHistory({ id, locked }: { id: string; locked: boolean }) {
   const { run, busy } = useJobs();
-  const q = useQuery({ queryKey: ["history", id], queryFn: () => api3.history(id) });
+  const q = useQuery({ queryKey: ["history", id], queryFn: () => api.history(id) });
   if (!q.data?.length) return <p className="text-sm text-ink-400">No earlier versions kept yet. The last 3 are kept when a mod is updated or replaced.</p>;
   return (
     <div className="space-y-2">

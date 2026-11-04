@@ -3,7 +3,7 @@ import clsx from "clsx";
 import { ArrowRight, CheckCircle2, CircleAlert, EyeOff, Gauge, HeartPulse, Info, ListOrdered, ShieldAlert, Trash2, Wand2 } from "lucide-react";
 import { useState } from "react";
 import { Badge, Button, Card, Empty, ErrorBox, PageHeader, Spinner, Stat } from "../components/ui";
-import { type AppState, api2, type Finding, ownerLabel } from "../lib/cpmm";
+import { type AppState, api, type Finding, ownerLabel } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 import { ModioCard } from "./Modio";
 import { SafetyPanel } from "./Safety";
@@ -18,8 +18,8 @@ const sev: Record<Finding["severity"], { tone: "red" | "amber" | "violet" | "mut
 
 export function HealthView({ state }: { state: AppState }) {
   const { run, busy } = useJobs();
-  const doc = useQuery({ queryKey: ["doctor"], queryFn: api2.doctor });
-  const lo = useQuery({ queryKey: ["loadorder"], queryFn: api2.loadorder });
+  const doc = useQuery({ queryKey: ["doctor"], queryFn: api.doctor });
+  const lo = useQuery({ queryKey: ["loadorder"], queryFn: api.loadorder });
   const [showAcked, setShowAcked] = useState(false);
   const [ruleA, setRuleA] = useState("");
   const [ruleB, setRuleB] = useState("");

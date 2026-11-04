@@ -86,7 +86,8 @@ pub struct Seen {
     pub reviewed_at: i64,
 }
 
-#[derive(Serialize, Debug, Default)]
+#[derive(Serialize, Debug, Default, ts_rs::TS)]
+#[ts(rename = "ModioChanges")]
 pub struct Changes {
     pub first_look: bool,
     pub added: Vec<String>,
@@ -133,9 +134,11 @@ pub fn ack(paths: &Paths) -> Result<usize> {
 
 /* ------------------------------------------------------------------ conflicts */
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, ts_rs::TS)]
+#[ts(rename = "ModioConflict")]
 pub struct Conflict {
     pub modio: String,
+    #[ts(type = "\"same mod\" | \"files\" | \"archive\" | \"script\"")]
     pub kind: &'static str, // "same mod" | "files" | "archive" | "script"
     pub with: String,
     pub detail: String,

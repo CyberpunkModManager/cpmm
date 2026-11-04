@@ -206,7 +206,7 @@ pub fn clean_changelog(s: &str) -> Vec<String> {
 }
 
 /// One changelog entry, placed relative to the installed version.
-#[derive(Serialize, Debug, PartialEq)]
+#[derive(Serialize, Debug, PartialEq, ts_rs::TS)]
 pub struct ChangelogEntry {
     pub version: String,
     pub changes: Vec<String>,

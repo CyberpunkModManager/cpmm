@@ -94,7 +94,7 @@ impl Paths {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, ts_rs::TS)]
 pub struct NexusSource {
     /// Game-scoped mod id, the number in the mod page URL.
     pub mod_id: u64,

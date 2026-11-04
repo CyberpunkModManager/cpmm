@@ -9,7 +9,6 @@
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
-use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -393,8 +392,45 @@ pub fn moves(f: &Fomod, ops: &[FileOp], extracted: &[String]) -> Result<Vec<(Str
     Ok(out.into_values().collect())
 }
 
+/// An installer's steps as the GUI shows them.
+#[derive(Serialize, Debug, ts_rs::TS)]
+pub struct Description {
+    pub name: String,
+    pub steps: Vec<StepView>,
+}
+
+#[derive(Serialize, Debug, ts_rs::TS)]
+#[ts(rename = "FomodStep")]
+pub struct StepView {
+    pub name: String,
+    /// Shown for the choices so far
+    pub visible: bool,
+    pub groups: Vec<GroupView>,
+}
+
+#[derive(Serialize, Debug, ts_rs::TS)]
+#[ts(rename = "FomodGroup")]
+pub struct GroupView {
+    /// `"<step>/<group>"`, the key of its entry in the choices
+    pub key: String,
+    pub name: String,
+    pub kind: String,
+    pub plugins: Vec<PluginView>,
+}
+
+#[derive(Serialize, Debug, ts_rs::TS)]
+#[ts(rename = "FomodPlugin")]
+pub struct PluginView {
+    pub name: String,
+    pub description: String,
+    pub kind: String,
+    pub selected: bool,
+    /// A small preview as a data: URI
+    pub image: Option<String>,
+}
+
 /// Options for the GUI: visible steps for the given choices, defaults filled in, images inline.
-pub fn describe(f: &Fomod, choices: &Choices, root: &Path, fa: &dyn Fn(&str) -> bool) -> Value {
+pub fn describe(f: &Fomod, choices: &Choices, root: &Path, fa: &dyn Fn(&str) -> bool) -> Description {
     let mut flags = BTreeMap::new();
     let mut steps = vec![];
     for s in &f.steps {
@@ -403,18 +439,18 @@ pub fn describe(f: &Fomod, choices: &Choices, root: &Path, fa: &dyn Fn(&str) -> 
         for g in &s.groups {
             let k = key(s, g);
             let sel = choices.get(&k).cloned().unwrap_or_else(|| default_for(g, &flags, fa));
-            let plugins: Vec<Value> = g
+            let plugins: Vec<PluginView> = g
                 .plugins
                 .iter()
                 .map(|p| {
                     let kind = plugin_kind(p, &flags, fa);
-                    json!({
-                        "name": p.name,
-                        "description": p.description,
-                        "kind": kind,
-                        "selected": sel.contains(&p.name) || kind.eq_ignore_ascii_case("required"),
-                        "image": p.image.as_ref().and_then(|i| image_data(root, &f.base, i)),
-                    })
+                    PluginView {
+                        name: p.name.clone(),
+                        description: p.description.clone(),
+                        selected: sel.contains(&p.name) || kind.eq_ignore_ascii_case("required"),
+                        kind,
+                        image: p.image.as_ref().and_then(|i| image_data(root, &f.base, i)),
+                    }
                 })
                 .collect();
             if visible {
@@ -424,11 +460,11 @@ pub fn describe(f: &Fomod, choices: &Choices, root: &Path, fa: &dyn Fn(&str) -> 
                     }
                 }
             }
-            groups.push(json!({"key": k, "name": g.name, "kind": g.kind, "plugins": plugins}));
+            groups.push(GroupView { key: k, name: g.name.clone(), kind: g.kind.clone(), plugins });
         }
-        steps.push(json!({"name": s.name, "visible": visible, "groups": groups}));
+        steps.push(StepView { name: s.name.clone(), visible, groups });
     }
-    json!({"name": f.name, "steps": steps})
+    Description { name: f.name.clone(), steps }
 }
 
 /// Small preview images as data: URIs (the webview can't read arbitrary local files).

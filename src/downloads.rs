@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 const META_EXT: &str = "cpmm.json";
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, ts_rs::TS)]
 #[serde(default)]
 pub struct DlMeta {
     /// display name (mod name)
@@ -28,7 +28,8 @@ pub struct DlMeta {
     pub downloaded_at: String,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, ts_rs::TS)]
+#[ts(rename = "DownloadEntry")]
 pub struct Download {
     /// archive file name inside the download folder (the key for install/remove)
     pub file: String,
@@ -37,6 +38,7 @@ pub struct Download {
     #[serde(flatten)]
     pub meta: DlMeta,
     /// "installed", "other version installed", "not installed"
+    #[ts(type = "\"installed\" | \"other version installed\" | \"not installed\"")]
     pub status: &'static str,
     pub installed_as: Option<String>,
 }

@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { FolderOpen, RotateCcw, Save } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button, Card, ErrorBox, Input, PageHeader, Spinner, Switch } from "../components/ui";
-import { api4, type SettingField } from "../lib/cpmm";
+import { api, type SettingField } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 
 const GROUPS = ["Updates", "Load order", "After installing", "Downloads", "Storage", "Profiles", "Safety", "Launching"];
@@ -10,7 +10,7 @@ const GROUPS = ["Updates", "Load order", "After installing", "Downloads", "Stora
 /** Settings page, rendered from the schema `cpmm api settings` returns. */
 export function SettingsView({ onSetup }: { onSetup: () => void }) {
   const { run, busy } = useJobs();
-  const q = useQuery({ queryKey: ["settings"], queryFn: api4.settings });
+  const q = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   if (q.isLoading) return <Spinner />;
   if (q.error) return <ErrorBox error={q.error} />;
   const d = q.data!;

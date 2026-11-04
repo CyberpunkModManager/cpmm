@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Library, Search } from "lucide-react";
 import { useState } from "react";
 import { Badge, Button, Card, ErrorBox, Input, Spinner, Switch } from "../components/ui";
-import { type AppState, api9 } from "../lib/cpmm";
+import { type AppState, api } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 
 const tone = { installed: "lime", "other version": "amber", missing: "muted", bundled: "violet", manual: "red" } as const;
@@ -14,7 +14,7 @@ export function CollectionsCard({ state }: { state: AppState }) {
   const [look, setLook] = useState<string | null>(null);
   const [optional, setOptional] = useState(false);
   const [newProfile, setNewProfile] = useState(true);
-  const q = useQuery({ queryKey: ["collection", look], queryFn: () => api9.collection(look!), enabled: !!look });
+  const q = useQuery({ queryKey: ["collection", look], queryFn: () => api.collection(look!), enabled: !!look });
   const c = q.data;
   const counts: Record<string, number> = {};
   for (const m of c?.mods ?? []) counts[m.status] = (counts[m.status] ?? 0) + 1;

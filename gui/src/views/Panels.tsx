@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Input, PageHeader, Spinner, Stat } from "../components/ui";
-import { type AppState, api, api2, api3, api8, ownerLabel, timeAgo } from "../lib/cpmm";
+import { type AppState, api, ownerLabel, timeAgo } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 import { openLink, openNexus } from "../lib/nexus";
 import { ChangelogDrawer } from "./Changelog";
@@ -40,7 +40,7 @@ export function ConflictsView({ state }: { state: AppState }) {
   const { run, busy } = useJobs();
   const [showSame, setShowSame] = useState(false);
   const q = useQuery({ queryKey: ["conflicts"], queryFn: api.conflicts });
-  const arch = useQuery({ queryKey: ["archives"], queryFn: api2.archives });
+  const arch = useQuery({ queryKey: ["archives"], queryFn: api.archives });
   const name = (id: string) => state.mods.find((m) => m.id === id)?.name ?? id;
 
   return (
@@ -303,7 +303,7 @@ export function DepsView({ state }: { state: AppState }) {
 export function UpdatesView({ state }: { state: AppState }) {
   const { run, busy } = useJobs();
   const [refresh, setRefresh] = useState(false);
-  const safety = useQuery({ queryKey: ["safety"], queryFn: api3.safety, staleTime: 30_000 });
+  const safety = useQuery({ queryKey: ["safety"], queryFn: api.safety, staleTime: 30_000 });
   const [log, setLog] = useState<string | null>(null);
   const lastBatch = safety.data?.batches[0];
   const q = useQuery({ queryKey: ["updates", refresh], queryFn: () => api.updates(refresh), staleTime: 5 * 60_000 });
@@ -474,7 +474,7 @@ export function InstallView({ state }: { state: AppState }) {
   const install = async (source: string, fileSel: string | null, title: string, extra: string[]) => {
     setChecking(true);
     try {
-      const d = await api8.fomod(source, fileSel);
+      const d = await api.fomod(source, fileSel);
       if (d.fomod) {
         setFomod({ source, file: fileSel, title, extra });
         return;
