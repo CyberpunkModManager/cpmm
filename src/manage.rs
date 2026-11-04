@@ -127,6 +127,55 @@ pub fn overwrite_entries(paths: &Paths) -> Vec<OwEntry> {
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwKind {
+    /// a deletion marker (whiteout)
+    Deleted,
+    /// shadows a file an enabled mod ships
+    EditedMod,
+    /// shadows a file of the real game dir
+    EditedBase,
+    New,
+}
+impl OwKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OwKind::Deleted => "deleted",
+            OwKind::EditedMod => "edited mod file",
+            OwKind::EditedBase => "edited base file",
+            OwKind::New => "new",
+        }
+    }
+}
+
+pub struct OwFile {
+    pub rel: String,
+    pub kind: OwKind,
+    /// the enabled mod whose file this shadows (the one that wins in the overlay)
+    pub shadows: Option<String>,
+}
+
+/// What each entry in overwrite/ is relative to the enabled mods and the game dir.
+pub fn overwrite_files(paths: &Paths, st: &State) -> Vec<OwFile> {
+    let own = conflicts::ownership(paths, &st.mods, true);
+    overwrite_entries(paths)
+        .into_iter()
+        .map(|e| {
+            let shadows = own.get(&e.rel.to_lowercase()).and_then(|(_, o)| o.last().cloned());
+            let kind = if e.whiteout {
+                OwKind::Deleted
+            } else if shadows.is_some() {
+                OwKind::EditedMod
+            } else if paths.game.join(&e.rel).exists() {
+                OwKind::EditedBase
+            } else {
+                OwKind::New
+            };
+            OwFile { rel: e.rel, kind, shadows }
+        })
+        .collect()
+}
+
 /// Move runtime-written files from overwrite/ into a mod (created as a manual mod if new).
 pub fn overwrite_move(paths: &Paths, st: &mut State, to: &str, sel: &[String]) -> Result<(String, usize, usize)> {
     ensure_idle(paths)?;
@@ -300,5 +349,39 @@ mod tests {
         assert!(matches("r6/scripts/A/a.reds", &["r6/scripts/a".into()]));
         assert!(matches("r6/scripts/A/a.reds", &[]));
         assert!(!matches("r6/scripts/AB/a.reds", &["r6/scripts/a".into()]));
+    }
+
+    /// Each overwrite/ entry against the winning enabled mod and the game dir.
+    #[test]
+    fn overwrite_classification() {
+        let d = std::env::temp_dir().join(format!("cpmm-manage-test-ow-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let paths = Paths { data: d.clone(), game: d.join("game"), cfg: Default::default() };
+        let st: State = serde_json::from_value(serde_json::json!({"version": 1, "mods": [
+            {"id": "low", "name": "Low", "enabled": true}, {"id": "high", "name": "High", "enabled": true},
+            {"id": "off", "name": "Off", "enabled": false}]}))
+        .unwrap();
+        let put = |p: std::path::PathBuf| {
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, "x").unwrap();
+        };
+        for rel in ["r6/Shared.json", "r6/off.json", "r6/base.txt", "r6/new.txt"] {
+            put(paths.upper().join(rel));
+        }
+        put(paths.mod_files("low").join("r6/shared.json")); // matched case-insensitively
+        put(paths.mod_files("high").join("r6/shared.json"));
+        put(paths.mod_files("off").join("r6/off.json")); // a disabled mod's file is not shadowed
+        put(paths.game.join("r6/base.txt"));
+        let mut got: Vec<(String, &str, Option<String>)> =
+            overwrite_files(&paths, &st).into_iter().map(|e| (e.rel, e.kind.as_str(), e.shadows)).collect();
+        got.sort();
+        let want: Vec<(String, &str, Option<String>)> = vec![
+            ("r6/Shared.json".into(), "edited mod file", Some("high".into())),
+            ("r6/base.txt".into(), "edited base file", None),
+            ("r6/new.txt".into(), "new", None),
+            ("r6/off.json".into(), "new", None),
+        ];
+        assert_eq!(got, want);
+        let _ = fs::remove_dir_all(&d);
     }
 }

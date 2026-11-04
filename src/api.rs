@@ -57,9 +57,9 @@ pub fn state(paths: &Paths, st: &State) -> Result<Value> {
         })
         .collect();
     let session = crate::vfs::running(paths).map(|(info, pid)| json!({"pid": pid, "started": info.started, "layers": info.layers.len()}));
-    let modio: Vec<Value> = crate::modio_mods(paths)
+    let modio: Vec<Value> = crate::modio::list(paths)
         .into_iter()
-        .map(|(id, name, by, ver)| json!({"id": id, "name": name, "author": by, "version": ver}))
+        .map(|m| json!({"id": m.id, "name": m.name, "author": m.author, "version": m.version}))
         .collect();
     let overwrite = crate::manage::overwrite_entries(paths).len();
     Ok(json!({
@@ -99,7 +99,7 @@ pub fn conflicts(paths: &Paths, st: &State) -> Result<Value> {
         .map(|c| json!({"path": c.path, "mods": c.mods, "winner": c.mods.last(), "identical": c.identical, "overrides_base": c.overrides_base}))
         .collect();
     let base = fc.iter().filter(|c| c.overrides_base).count();
-    let scripts: Vec<Value> = conflicts::redscript_conflicts(paths, &st.mods, &crate::unmanaged_reds(paths, st))
+    let scripts: Vec<Value> = conflicts::redscript_conflicts(paths, &st.mods)
         .into_iter()
         .map(|c| json!({"kind": c.kind, "target": c.target, "mods": c.mods, "severe": c.kind.starts_with("REPLACE") || c.kind.starts_with("duplicate")}))
         .collect();
@@ -118,23 +118,10 @@ pub fn updates(paths: &Paths, st: &State, refresh: bool) -> Result<Value> {
 }
 
 pub fn overwrite(paths: &Paths, st: &State) -> Result<Value> {
-    let own = conflicts::ownership(paths, &st.mods, true);
     Ok(Value::Array(
-        crate::manage::overwrite_entries(paths)
+        crate::manage::overwrite_files(paths, st)
             .into_iter()
-            .map(|e| {
-                let shadows = own.get(&e.rel.to_lowercase()).and_then(|(_, o)| o.last().cloned());
-                let kind = if e.whiteout {
-                    "deleted"
-                } else if shadows.is_some() {
-                    "edited mod file"
-                } else if paths.game.join(&e.rel).exists() {
-                    "edited base file"
-                } else {
-                    "new"
-                };
-                json!({"path": e.rel, "kind": kind, "shadows": shadows})
-            })
+            .map(|e| json!({"path": e.rel, "kind": e.kind.as_str(), "shadows": e.shadows}))
             .collect(),
     ))
 }
