@@ -276,7 +276,7 @@ function ModDrawer({
                   Install
                 </Button>
               )}
-              {r.status === "disabled" && r.installed_as && (
+              {(r.status === "disabled" || r.status === "optional-disabled") && r.installed_as && (
                 <Button size="sm" disabled={busy} onClick={() => run(`Enable ${r.name}`, ["enable", r.installed_as!])}>
                   Enable
                 </Button>
@@ -382,6 +382,7 @@ export function ReqBadge({ status }: { status: ModRow["requires"][number]["statu
   const map = {
     ok: ["lime", "installed"],
     disabled: ["amber", "disabled"],
+    "optional-disabled": ["violet", "disabled"],
     ignored: ["muted", "ignored"],
     "optional-missing": ["violet", "optional"],
     missing: ["red", "missing"],

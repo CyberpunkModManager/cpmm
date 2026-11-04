@@ -14,6 +14,7 @@ mod manage;
 mod modio;
 mod nexus;
 mod profiles;
+mod requirements;
 mod safety;
 mod settings;
 mod state;
@@ -24,6 +25,7 @@ mod vfs;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use nexus::Nexus;
+use requirements::Status;
 use state::{InstalledCollection, Mod, NexusSource, Paths, ReqCheck, Requirement, State, now, short_name, slugify};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -808,16 +810,9 @@ fn real_main() -> Result<()> {
         Cmd::Remove { r#mod, force } => {
             let i = st.get(&r#mod)?;
             let id = st.mods[i].id.clone();
-            if let Some(nid) = st.mods[i].nexus.as_ref().map(|n| n.mod_id) {
-                let users: Vec<String> = st
-                    .mods
-                    .iter()
-                    .filter(|m| m.enabled && m.requires.iter().any(|r| r.mod_id == nid && !r.optional))
-                    .map(|m| m.id.clone())
-                    .collect();
-                if !users.is_empty() && !force {
-                    bail!("{id} is required by {}; --force to remove anyway", users.join(", "));
-                }
+            let users: Vec<&str> = requirements::dependents(&st, &st.mods[i]).iter().map(|m| m.id.as_str()).collect();
+            if !users.is_empty() && !force {
+                bail!("{id} is required by {}; --force to remove anyway", users.join(", "));
             }
             if vfs::running(&paths).is_some() {
                 bail!("game session running; quit first (its overlay uses these files)");
@@ -1818,8 +1813,15 @@ fn info(paths: &Paths, st: &State, key: &str) -> Result<()> {
             n.mod_id, n.file_name, n.file_id, n.version_id, n.uploaded_at
         );
     }
-    for r in &m.requires {
-        let have = st.by_nexus(r.mod_id).map(|x| if x.enabled { "ok" } else { "DISABLED" }).unwrap_or("MISSING");
+    for c in requirements::of(st, m) {
+        let r = c.req;
+        let have = match c.status {
+            Status::Ok => "ok",
+            Status::Disabled | Status::OptionalDisabled => "DISABLED",
+            Status::Missing | Status::OptionalMissing => "MISSING",
+            Status::Ignored if c.dep.is_some() => "DISABLED",
+            Status::Ignored => "MISSING",
+        };
         println!(
             "  requires {} {} [{}]{}{}",
             r.mod_id,
@@ -1851,22 +1853,15 @@ fn set_enabled(paths: &Paths, st: &mut State, keys: &[String], on: bool) -> Resu
         st.mods[i].enabled = on;
         println!("{} {}", if on { "enabled" } else { "disabled" }, st.mods[i].id);
         if !on {
-            if let Some(nid) = st.mods[i].nexus.as_ref().map(|n| n.mod_id) {
-                let users: Vec<&str> = st
-                    .mods
-                    .iter()
-                    .filter(|m| m.enabled && m.requires.iter().any(|r| r.mod_id == nid && !r.optional))
-                    .map(|m| m.id.as_str())
-                    .collect();
-                if !users.is_empty() {
-                    eprintln!("  warning: still required by {}", users.join(", "));
-                }
+            let users: Vec<&str> = requirements::dependents(st, &st.mods[i]).iter().map(|m| m.id.as_str()).collect();
+            if !users.is_empty() {
+                eprintln!("  warning: still required by {}", users.join(", "));
             }
         } else {
-            for r in st.mods[i].requires.iter().filter(|r| !r.optional && !st.mods[i].ignored_reqs.contains(&r.mod_id)) {
-                match st.by_nexus(r.mod_id) {
-                    None => eprintln!("  warning: requires {} {} (not installed)", r.mod_id, r.name),
-                    Some(d) if !d.enabled => eprintln!("  warning: requires {} which is disabled", d.id),
+            for c in requirements::of(st, &st.mods[i]) {
+                match (c.status, c.dep) {
+                    (Status::Missing, _) => eprintln!("  warning: requires {} {} (not installed)", c.req.mod_id, c.req.name),
+                    (Status::Disabled, Some(d)) => eprintln!("  warning: requires {} which is disabled", d.id),
                     _ => {}
                 }
             }
@@ -2078,17 +2073,18 @@ fn resolve_requirements(
 ) -> Result<()> {
     let ind = "  ".repeat(depth);
     let mut missing = vec![];
-    for r in stored {
-        if ignored.contains(&r.mod_id) && st.by_nexus(r.mod_id).is_none_or(|d| !d.enabled) {
-            println!("{ind}  requires {} {}: not installed, ignored by your choice", r.mod_id, r.name);
-            continue;
-        }
-        match st.by_nexus(r.mod_id) {
-            Some(m) if m.enabled => println!("{ind}  requires {} {}: installed", r.mod_id, r.name),
-            Some(m) => println!("{ind}  requires {} {}: installed but DISABLED ({}; cpmm enable {})", r.mod_id, r.name, m.id, m.id),
-            None if r.optional => println!("{ind}  optional {} {}: not installed{}", r.mod_id, r.name, req_notes(r)),
-            None if visiting.contains(&r.mod_id) => {}
-            None => missing.push(r.clone()),
+    for c in requirements::check(st, stored, ignored) {
+        let r = c.req;
+        match (c.status, c.dep) {
+            (Status::Ignored, _) => println!("{ind}  requires {} {}: not installed, ignored by your choice", r.mod_id, r.name),
+            (Status::Ok, _) => println!("{ind}  requires {} {}: installed", r.mod_id, r.name),
+            (Status::Disabled | Status::OptionalDisabled, Some(m)) => {
+                println!("{ind}  requires {} {}: installed but DISABLED ({}; cpmm enable {})", r.mod_id, r.name, m.id, m.id)
+            }
+            (Status::OptionalMissing, _) => println!("{ind}  optional {} {}: not installed{}", r.mod_id, r.name, req_notes(r)),
+            (Status::Missing, _) if visiting.contains(&r.mod_id) => {}
+            (Status::Missing, _) => missing.push(r.clone()),
+            (Status::Disabled | Status::OptionalDisabled, None) => unreachable!("a disabled requirement has an installed mod"),
         }
     }
     if missing.is_empty() {
@@ -2533,31 +2529,8 @@ fn update(paths: &Paths, st: &mut State, keys: &[String], all: bool) -> Result<(
     Ok(())
 }
 
-/// Installed mods whose stored requirements need fetching: never checked, checked for a
-/// different installed version, or everything with --refresh.
-fn stale_requirements(st: &State, refresh: bool) -> Vec<usize> {
-    st.mods
-        .iter()
-        .enumerate()
-        .filter_map(|(i, m)| {
-            let n = m.nexus.as_ref()?;
-            (refresh || m.reqs_checked.as_ref().is_none_or(|c| c.version_id != n.version_id)).then_some(i)
-        })
-        .collect()
-}
-
 fn deps(paths: &Paths, st: &mut State, refresh: bool) -> Result<()> {
-    // Requirements stored before check stamps existed were fetched at install: keep them.
-    let mut migrated = false;
-    for m in st.mods.iter_mut() {
-        if let (None, Some(n)) = (&m.reqs_checked, &m.nexus)
-            && !m.requires.is_empty()
-        {
-            m.reqs_checked = Some(ReqCheck { at: m.installed_at.clone(), version_id: n.version_id.clone() });
-            migrated = true;
-        }
-    }
-    let stale = stale_requirements(st, refresh);
+    let requirements::Stale { mods: stale, migrated } = requirements::stale(st, refresh);
     let total = st.mods.iter().filter(|m| m.nexus.is_some()).count();
     if !stale.is_empty() {
         let nx = nexus(paths);
@@ -2585,17 +2558,18 @@ fn deps(paths: &Paths, st: &mut State, refresh: bool) -> Result<()> {
     let mut problems = 0;
     let mut ignored = 0;
     for m in st.mods.iter().filter(|m| m.enabled) {
-        for r in &m.requires {
-            if m.ignored_reqs.contains(&r.mod_id) && st.by_nexus(r.mod_id).is_none_or(|d| !d.enabled) {
-                ignored += 1;
-                continue;
-            }
-            let s = match st.by_nexus(r.mod_id) {
-                Some(d) if d.enabled => continue,
-                Some(d) => format!("DISABLED ({})", d.id),
-                None => "MISSING".into(),
+        for c in requirements::of(st, m) {
+            let r = c.req;
+            let s = match (c.status, c.dep) {
+                (Status::Ok, _) => continue,
+                (Status::Ignored, _) => {
+                    ignored += 1;
+                    continue;
+                }
+                (Status::Disabled | Status::OptionalDisabled, Some(d)) => format!("DISABLED ({})", d.id),
+                _ => "MISSING".into(),
             };
-            if r.optional {
+            if !c.status.is_problem() {
                 println!("  {:<34} optional {} {} {s}", m.id, r.mod_id, r.name);
             } else {
                 problems += 1;
@@ -3200,12 +3174,12 @@ fn deps_fix(paths: &Paths, st: &mut State) -> Result<()> {
     let mut missing = BTreeSet::new();
     let mut to_enable = BTreeSet::new();
     for m in st.mods.iter().filter(|m| m.enabled) {
-        for r in m.requires.iter().filter(|r| !r.optional && !m.ignored_reqs.contains(&r.mod_id)) {
-            match st.by_nexus(r.mod_id) {
-                None => {
-                    missing.insert(r.mod_id);
+        for c in requirements::of(st, m) {
+            match (c.status, c.dep) {
+                (Status::Missing, _) => {
+                    missing.insert(c.req.mod_id);
                 }
-                Some(d) if !d.enabled => {
+                (Status::Disabled, Some(d)) => {
                     to_enable.insert(d.id.clone());
                 }
                 _ => {}

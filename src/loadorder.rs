@@ -9,6 +9,7 @@
 use crate::archive;
 use crate::conflicts;
 use crate::files;
+use crate::requirements::{self, Status};
 use crate::state::{Paths, State};
 use anyhow::Result;
 use regex::Regex;
@@ -434,13 +435,10 @@ pub fn doctor(paths: &Paths, st: &State) -> Vec<Finding> {
         });
     }
     for m in st.mods.iter().filter(|m| m.enabled) {
-        for r in &m.requires {
-            if r.optional || m.ignored_reqs.contains(&r.mod_id) {
-                continue;
-            }
-            let rid = r.mod_id.to_string();
-            match st.by_nexus(r.mod_id) {
-                None => f.push(Finding {
+        for c in requirements::of(st, m) {
+            let (r, rid) = (c.req, c.req.mod_id.to_string());
+            match (c.status, c.dep) {
+                (Status::Missing, _) => f.push(Finding {
                     severity: "warning",
                     title: format!("{} is missing a requirement: {}", m.name, r.name),
                     detail: if r.notes.is_empty() {
@@ -454,7 +452,7 @@ pub fn doctor(paths: &Paths, st: &State) -> Vec<Finding> {
                         act("Skip it (ignore)", &["deps", "--ignore", &m.id, &rid], "secondary"),
                     ],
                 }),
-                Some(d) if !d.enabled => f.push(Finding {
+                (Status::Disabled, Some(d)) => f.push(Finding {
                     severity: "crash",
                     title: format!("{} requires {}, which is disabled", m.name, d.name),
                     detail: String::new(),

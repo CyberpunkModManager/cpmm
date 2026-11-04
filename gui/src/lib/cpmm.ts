@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-export type ReqStatus = "ok" | "disabled" | "ignored" | "optional-missing" | "missing";
+export type ReqStatus = "ok" | "disabled" | "optional-disabled" | "ignored" | "optional-missing" | "missing";
 
 export interface Requirement {
   mod_id: number;

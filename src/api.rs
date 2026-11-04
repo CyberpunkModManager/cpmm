@@ -2,6 +2,7 @@
 
 use crate::conflicts;
 use crate::files;
+use crate::requirements;
 use crate::state::{Paths, State};
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -29,23 +30,16 @@ pub fn state(paths: &Paths, st: &State) -> Result<Value> {
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            let reqs: Vec<Value> = m
-                .requires
+            let checks = requirements::of(st, m);
+            let problems = if m.enabled { checks.iter().filter(|c| c.status.is_problem()).count() } else { 0 };
+            let reqs: Vec<Value> = checks
                 .iter()
-                .map(|r| {
-                    let dep = st.by_nexus(r.mod_id);
-                    let status = match dep {
-                        Some(d) if d.enabled => "ok",
-                        Some(_) => "disabled",
-                        None if m.ignored_reqs.contains(&r.mod_id) => "ignored",
-                        None if r.optional => "optional-missing",
-                        None => "missing",
-                    };
+                .map(|c| {
+                    let r = c.req;
                     json!({"mod_id": r.mod_id, "name": r.name, "notes": r.notes, "optional": r.optional,
-                           "status": status, "installed_as": dep.map(|d| d.id.clone()), "url": nexus_url(r.mod_id)})
+                           "status": c.status.as_str(), "installed_as": c.dep.map(|d| d.id.clone()), "url": nexus_url(r.mod_id)})
                 })
                 .collect();
-            let problems = reqs.iter().filter(|r| r["status"] == "missing" || r["status"] == "disabled").count();
             json!({
                 "priority": i + 1,
                 "id": m.id, "name": m.name, "enabled": m.enabled, "version": m.version,
@@ -58,7 +52,7 @@ pub fn state(paths: &Paths, st: &State) -> Result<Value> {
                 "wins": wins.get(m.id.as_str()).copied().unwrap_or(0),
                 "loses": loses.get(m.id.as_str()).copied().unwrap_or(0),
                 "requires": reqs,
-                "dep_problems": if m.enabled { problems } else { 0 },
+                "dep_problems": problems,
             })
         })
         .collect();
