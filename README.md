@@ -19,6 +19,28 @@ execs Steam's command. Only processes inside that namespace see mods; Steam upda
 Requirements: Linux ≥ 6.8 (`lowerdir+`; unprivileged overlayfs since 5.11), unprivileged
 user namespaces, data dir on the same filesystem as the game, `7z` for extraction.
 
+## Nexus Mods API
+
+cpmm uses the Nexus Mods API (v3 REST, v2 GraphQL, v1 for tracked mods) under the
+[API Acceptable Use Policy](https://help.nexusmods.com/article/114-api-acceptable-use-policy):
+
+* **Your key stays on your machine.** It's read from `~/.config/nexusmods/apikey` (keep it
+  `chmod 600`) and sent only to `api.nexusmods.com`. cpmm has no server of its own.
+* **Only what you ask for.** Requests happen when you run a command or press a button that
+  needs Nexus data (install, update, deps, tracked, the Health view after a game patch). Nothing
+  polls in the background, and `cpmm run` makes no API requests.
+* **It identifies itself.** Every API request carries `Application-Name: cpmm` and
+  `Application-Version: <release>`.
+* **It respects rate limits.** Metadata is cached for an hour (requirements for 15 minutes,
+  manifests for good). The quota headers are recorded in `~/.cache/cpmm/ratelimit.json`.
+  After a 429, cpmm sends nothing until the reset time Nexus gives, rather than retrying.
+* **No scraping or rehosting.** Downloads come from links Nexus issues to your own account,
+  either via the API (Premium) or an `nxm://` link you click on the site.
+
+cpmm is not yet registered with Nexus Mods, so for now it needs a **personal API key**.
+Nexus tolerates personal keys only for personal use and testing. Registration, and with it
+Single Sign-On, is planned before any wider release.
+
 ## Launch options
 
 ```

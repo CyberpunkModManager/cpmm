@@ -11,7 +11,60 @@ use std::time::{Duration, SystemTime};
 const V3: &str = "https://api.nexusmods.com/v3";
 const GQL: &str = "https://api.nexusmods.com/v2/graphql";
 const GAME: &str = "cyberpunk2077";
+/// Sent on every API request, as the Nexus API Acceptable Use Policy requires: a name that
+/// never changes between releases, and the version of the build making the request.
+const APP_NAME: &str = "cpmm";
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const UA: &str = concat!("cpmm/", env!("CARGO_PKG_VERSION"));
+
+/// Body of an API request.
+enum Body<'a> {
+    None,
+    Form(&'a [(&'a str, &'a str)]),
+    Json(Value),
+}
+
+/// The API's quota as of the last response (its `X-RL-*` headers), kept in the cache dir so
+/// separate `cpmm` processes share it. Once Nexus answers 429 every request is refused
+/// locally until the window resets: retrying a rate-limited key only burns more requests.
+#[derive(Debug, Default, serde::Serialize, Deserialize, PartialEq)]
+struct RateLimit {
+    hourly_remaining: Option<i64>,
+    hourly_reset: Option<String>,
+    daily_remaining: Option<i64>,
+    daily_reset: Option<String>,
+    /// unix time before which no request is sent
+    blocked_until: i64,
+}
+
+static LOW_QUOTA_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Start of the next UTC hour: when Nexus resets the hourly quota. A 429 means the hourly
+/// allowance is gone (the daily one may be too, after which hourly is all there is), so this
+/// is the earliest a request can succeed; used when the response carries no reset header.
+fn next_hour(now: i64) -> i64 {
+    now - now.rem_euclid(3600) + 3600
+}
+
+/// Parse an `X-RL-*-Reset` value ("2026-11-04 18:00:00 +0000") to unix time.
+fn parse_reset(s: &str) -> Option<i64> {
+    let (date, rest) = s.trim().split_once(' ')?;
+    let (time, off) = rest.split_once(' ').unwrap_or((rest, "+0000"));
+    let d: Vec<i64> = date.split('-').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+    let t: Vec<i64> = time.split(':').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+    let (&[y, m, dd], &[hh, mm, ss]) = (d.as_slice(), t.as_slice()) else { return None };
+    let sign = if off.starts_with('-') { -1 } else { 1 };
+    let off = off.trim_start_matches(['+', '-']);
+    let off_s = sign * (off.get(..2)?.parse::<i64>().ok()? * 3600 + off.get(2..4)?.parse::<i64>().ok()? * 60);
+    // days from civil (Howard Hinnant)
+    let y2 = if m <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + dd - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(days * 86400 + hh * 3600 + mm * 60 + ss - off_s)
+}
 
 pub struct Nexus {
     key: Option<String>,
@@ -139,6 +192,83 @@ impl Nexus {
         self.cache.join("http").join(&h[..32])
     }
 
+    fn rate_path(&self) -> PathBuf {
+        self.cache.join("ratelimit.json")
+    }
+    fn rate(&self) -> RateLimit {
+        fs::read(self.rate_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    }
+
+    /// Refuse locally while a 429 is in force.
+    fn rate_gate(&self) -> Result<()> {
+        let rl = self.rate();
+        let now = crate::safety::now_unix();
+        if rl.blocked_until > now {
+            bail!("Nexus API rate limit reached; cpmm will not send API requests until {} UTC", crate::safety::iso(rl.blocked_until));
+        }
+        Ok(())
+    }
+
+    /// Record the quota headers of any API response, and a block after a 429.
+    fn note_rate(&self, r: &ureq::Response) {
+        let num = |h: &str| r.header(h).and_then(|v| v.trim().parse::<i64>().ok());
+        let txt = |h: &str| r.header(h).map(str::to_string);
+        let mut rl = self.rate();
+        let now = crate::safety::now_unix();
+        if rl.blocked_until <= now {
+            rl.blocked_until = 0;
+        }
+        if let Some(v) = num("x-rl-hourly-remaining") {
+            rl.hourly_remaining = Some(v);
+            rl.hourly_reset = txt("x-rl-hourly-reset");
+        }
+        if let Some(v) = num("x-rl-daily-remaining") {
+            rl.daily_remaining = Some(v);
+            rl.daily_reset = txt("x-rl-daily-reset");
+        }
+        if r.status() == 429 {
+            rl.blocked_until = rl.hourly_reset.as_deref().and_then(parse_reset).filter(|&t| t > now).unwrap_or_else(|| next_hour(now));
+        }
+        // Daily quota spent: the 500/hour allowance is all that's left, so say so (once).
+        if rl.daily_remaining == Some(0) && r.status() != 429 && !LOW_QUOTA_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!(
+                "warning: Nexus daily API quota used up (resets {}); {} requests left this hour (resets {}).",
+                rl.daily_reset.as_deref().unwrap_or("later"),
+                rl.hourly_remaining.map_or("?".into(), |n| n.to_string()),
+                rl.hourly_reset.as_deref().unwrap_or("on the hour")
+            );
+        }
+        let _ = fs::write(self.rate_path(), serde_json::to_vec(&rl).unwrap_or_default());
+    }
+
+    /// Every api.nexusmods.com request goes through here, so the identifying headers are
+    /// always sent, the local rate-limit gate always applies, and quota headers are recorded.
+    /// The outer `Result` is the local gate (nothing was sent); the inner one is the HTTP outcome.
+    fn api_call(&self, method: &str, url: &str, auth: bool, body: Body) -> Result<std::result::Result<ureq::Response, ureq::Error>> {
+        self.rate_gate()?;
+        let mut req = self
+            .agent
+            .request(method, url)
+            .set("User-Agent", UA)
+            .set("Application-Name", APP_NAME)
+            .set("Application-Version", APP_VERSION);
+        if auth {
+            if let Some(k) = &self.key {
+                req = req.set("apikey", k);
+            }
+        }
+        let res = match body {
+            Body::None => req.call(),
+            Body::Form(f) => req.send_form(f),
+            Body::Json(v) => req.send_json(v),
+        };
+        match &res {
+            Ok(r) | Err(ureq::Error::Status(_, r)) => self.note_rate(r),
+            Err(_) => {}
+        }
+        Ok(res)
+    }
+
     fn get_json(&self, url: &str, auth: bool, ttl: Option<Duration>) -> Result<Value> {
         let cp = self.cache_path(url);
         if let Ok(md) = fs::metadata(&cp) {
@@ -154,19 +284,19 @@ impl Nexus {
         }
         let mut last = None;
         for attempt in 0..4 {
-            let mut req = self.agent.get(url).set("User-Agent", UA).set("Application-Name", "cpmm").set("Application-Version", env!("CARGO_PKG_VERSION"));
-            if auth {
-                if let Some(k) = &self.key {
-                    req = req.set("apikey", k);
-                }
-            }
-            match req.call() {
+            match self.api_call("GET", url, auth, Body::None)? {
                 Ok(r) => {
                     let v: Value = r.into_json()?;
                     let _ = fs::write(&cp, serde_json::to_vec(&v)?);
                     return Ok(v);
                 }
-                Err(ureq::Error::Status(code, r)) if code == 429 || code >= 500 => {
+                // Rate limited: retrying can't succeed before the window resets and only burns
+                // more of the quota, so stop here (api_call has recorded the block).
+                Err(ureq::Error::Status(429, _)) => {
+                    self.rate_gate()?;
+                    bail!("GET {url}: HTTP 429 (Nexus API rate limit)")
+                }
+                Err(ureq::Error::Status(code, r)) if code >= 500 => {
                     last = Some(format!("HTTP {code} {}", r.into_string().unwrap_or_default().chars().take(200).collect::<String>()));
                 }
                 Err(ureq::Error::Status(code, r)) => {
@@ -223,14 +353,10 @@ impl Nexus {
     }
 
     fn v1(&self, method: &str, path: &str, form: Option<&[(&str, &str)]>) -> Result<Value> {
-        let key = self.key.as_deref().context("Nexus API key required")?;
+        self.key.as_deref().context("Nexus API key required")?;
         let base = std::env::var("CPMM_NEXUS_V1").unwrap_or_else(|_| "https://api.nexusmods.com/v1".into()); // override for tests
-        let req = self.agent.request(method, &format!("{base}/{path}")).set("User-Agent", UA).set("Application-Name", "cpmm").set("apikey", key);
-        let r = match form {
-            Some(f) => req.send_form(f),
-            None => req.call(),
-        }
-        .map_err(|e| anyhow::anyhow!("{method} {path}: {e}"))?;
+        let body = form.map_or(Body::None, Body::Form);
+        let r = self.api_call(method, &format!("{base}/{path}"), true, body)?.map_err(|e| anyhow::anyhow!("{method} {path}: {e}"))?;
         Ok(r.into_json().unwrap_or(Value::Null))
     }
     /// Cyberpunk mods on the account's "Tracked" list (the Track button on a mod page).
@@ -273,14 +399,7 @@ impl Nexus {
             let q = "query($ids:[CompositeDomainWithIdInput!]!){ legacyModsByDomain(ids:$ids){ nodes { modId name modRequirements { nexusRequirements { nodes { modId modName url notes externalRequirement } } } } } }";
             let vars = json!({"ids": chunk.iter().map(|i| json!({"gameDomain": GAME, "modId": i})).collect::<Vec<_>>()});
             let body = json!({"query": q, "variables": vars});
-            let r: Value = self
-                .agent
-                .post(GQL)
-                .set("User-Agent", UA)
-                .set("Content-Type", "application/json")
-                .send_json(body)
-                .map_err(|e| anyhow::anyhow!("GraphQL: {e}"))?
-                .into_json()?;
+            let r: Value = self.api_call("POST", GQL, false, Body::Json(body))?.map_err(|e| anyhow::anyhow!("GraphQL: {e}"))?.into_json()?;
             if let Some(e) = r.get("errors") {
                 bail!("GraphQL errors: {}", e.to_string().chars().take(500).collect::<String>());
             }
@@ -356,6 +475,64 @@ impl Nexus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AUP: every request names the app and its version; a 429 is not retried, and later
+    /// calls are refused locally until the window resets (no request reaches the server).
+    #[test]
+    fn identifies_itself_and_stops_on_429() {
+        use std::io::{BufRead, BufReader};
+        use std::net::TcpListener;
+        let srv = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = srv.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for c in srv.incoming() {
+                let mut c = c.unwrap();
+                let mut head = String::new();
+                let mut rd = BufReader::new(c.try_clone().unwrap());
+                loop {
+                    let mut l = String::new();
+                    if rd.read_line(&mut l).unwrap() == 0 || l == "\r\n" {
+                        break;
+                    }
+                    head.push_str(&l);
+                }
+                log.lock().unwrap().push(head);
+                let _ = c.write_all(b"HTTP/1.1 429 Too Many Requests\r\nX-RL-Hourly-Remaining: 0\r\nX-RL-Daily-Remaining: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("cpmm-rl-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let nx = Nexus::new(Some("k".into()), &dir);
+        // SAFETY: the only test that reads or writes this variable
+        unsafe { std::env::set_var("CPMM_NEXUS_V1", format!("http://127.0.0.1:{port}")) };
+        let e1 = nx.v1("GET", "users/validate.json", None).unwrap_err().to_string();
+        assert!(e1.contains("429"), "{e1}");
+        let e2 = nx.v1("GET", "users/validate.json", None).unwrap_err().to_string();
+        assert!(e2.contains("rate limit"), "{e2}");
+        let reqs = seen.lock().unwrap().clone();
+        assert_eq!(reqs.len(), 1, "429 must not be retried, and the gate must stop the second call");
+        let h = reqs[0].to_lowercase();
+        assert!(h.contains("application-name: cpmm"), "{h}");
+        assert!(h.contains(&format!("application-version: {APP_VERSION}")), "{h}");
+        assert!(nx.rate().blocked_until > crate::safety::now_unix());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn next_hour_is_top_of_following_hour() {
+        assert_eq!(next_hour(7200), 10800);
+        assert_eq!(next_hour(7201), 10800);
+        assert_eq!(next_hour(10799), 10800);
+    }
+
+    #[test]
+    fn parses_reset_header() {
+        assert_eq!(parse_reset("2026-11-04 18:00:00 +0000"), Some(1793815200));
+        assert_eq!(parse_reset("1970-01-01 01:00:00 +0100"), Some(0));
+        assert_eq!(parse_reset("garbage"), None);
+    }
     fn v(ver: &str, cat: &str, up: &str, pos: &str) -> Version {
         Version {
             id: ver.into(),
