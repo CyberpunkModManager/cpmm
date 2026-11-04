@@ -10,7 +10,7 @@ use crate::conflicts;
 use crate::loadorder::{self, Owner, Pair};
 use crate::manage::{self, OwKind};
 use crate::modio;
-use crate::nexus::Nexus;
+use crate::nexus::{Catalogue, Nexus};
 use crate::requirements::{self, Status};
 use crate::safety;
 use crate::state::{Paths, State};
@@ -40,8 +40,8 @@ pub struct Finding {
 
 /// Every finding for the current setup, most severe first.
 pub fn check(paths: &Paths, st: &State) -> Vec<Finding> {
-    let nx = Nexus::new(paths.api_key().ok(), &paths.cache());
-    findings(paths, st, Some(&nx))
+    let nx = Catalogue::open(paths);
+    findings(paths, st, Some(nx.gate()))
 }
 
 /// `check` with the Nexus client injected (None: the patch guard asks Nexus nothing).

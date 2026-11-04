@@ -77,7 +77,7 @@ impl Paths {
         std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".cache")).join("cpmm")
     }
     pub fn api_key(&self) -> Result<String> {
-        let p = home().join(".config/nexusmods/apikey");
+        let p = crate::nexus::key_file();
         let k = fs::read_to_string(&p).with_context(|| format!("reading Nexus API key {}", p.display()))?;
         Ok(k.trim().to_string())
     }

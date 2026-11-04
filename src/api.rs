@@ -127,7 +127,8 @@ pub fn overwrite(paths: &Paths, st: &State) -> Result<Value> {
 }
 
 pub fn tracked(paths: &Paths, st: &State) -> Result<Value> {
-    let nx = crate::nexus(paths);
+    let nx = crate::nexus::Catalogue::open(paths);
+    let nx = nx.gate();
     let ids = nx.tracked()?;
     Ok(Value::Array(
         ids.into_iter()
@@ -140,7 +141,8 @@ pub fn tracked(paths: &Paths, st: &State) -> Result<Value> {
 }
 
 pub fn search_info(paths: &Paths, gid: u64) -> Result<Value> {
-    let nx = crate::nexus(paths);
+    let nx = crate::nexus::Catalogue::open(paths);
+    let nx = nx.gate();
     let info = nx.mod_info(gid)?;
     let reqs = nx.requirements(&[gid], false)?.into_iter().next().map(|x| x.2).unwrap_or_default();
     let mut files = vec![];

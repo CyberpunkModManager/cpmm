@@ -2,7 +2,7 @@
 //! which mods' stored requirements need fetching again. The one place these rules live;
 //! callers (CLI, `cpmm api`, doctor) only render what this returns.
 //!
-//! Fetching and merging requirements from Nexus is not here (see `fetch_requirements`).
+//! Fetching and merging requirements from Nexus is not here (see `nexus::Catalogue::requirements`).
 
 use crate::state::{Mod, ReqCheck, Requirement, State};
 
