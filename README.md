@@ -205,6 +205,23 @@ users get the same with `cpmm setup`:
    (backed up to `localconfig.vdf.cpmm-bak`).
 4. **Preferences**: the main settings, and registering for Nexus "Mod Manager Download" links.
 
+## FOMOD installers
+
+Archives with a `fomod/ModuleConfig.xml` are installed through their installer: required files,
+install steps (including steps that only appear for some choices), option groups of every type,
+plugin types, condition flags, file conditions and conditional installs are all supported, and
+paths are matched case-insensitively.
+
+* **GUI**: installing opens a step-by-step chooser with the installer's previews and descriptions;
+  mods installed this way get **Change installer options** in their drawer.
+* **Terminal**: `cpmm install` asks group by group (Enter keeps the installer's suggestion).
+  `--fomod-defaults` takes the suggestions; `--fomod-choices '{"Step/Group": ["Option"]}'` sets them
+  (`cpmm api fomod <source>` lists the options as JSON).
+* Your choices are saved with the mod and reused when it updates. Requirement installs, nxm links
+  and the download watcher use the installer's suggestions.
+
+Several files from one Nexus page (a car and its tuning-parts installer) install as separate mods.
+
 ## Settings
 
 Settings live in `~/.local/share/cpmm/settings.json` (every key has a default) and are shared by

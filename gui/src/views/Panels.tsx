@@ -24,10 +24,11 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Input, PageHeader, Spinner, Stat } from "../components/ui";
-import { type AppState, api, api2, api3, ownerLabel, timeAgo } from "../lib/cpmm";
+import { type AppState, api, api2, api3, api8, ownerLabel, timeAgo } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 import { openLink, openNexus } from "../lib/nexus";
 import { ChangelogDrawer } from "./Changelog";
+import { FomodDialog } from "./Fomod";
 import { ReqBadge } from "./Mods";
 
 const locked = (s: AppState) => s.game_running || !!s.session;
@@ -466,6 +467,24 @@ export function InstallView({ state }: { state: AppState }) {
   const tracked = useQuery({ queryKey: ["tracked"], queryFn: api.tracked });
   const installedIds = new Set(state.mods.map((m) => m.nexus?.mod_id));
   const isLocal = src.startsWith("/") || src.startsWith("~");
+  const [fomod, setFomod] = useState<{ source: string; file: string | null; title: string; extra: string[] } | null>(null);
+  const [checking, setChecking] = useState(false);
+  /** Look for a FOMOD installer first (downloads the archive, which the install then reuses). */
+  const install = async (source: string, fileSel: string | null, title: string, extra: string[]) => {
+    setChecking(true);
+    try {
+      const d = await api8.fomod(source, fileSel);
+      if (d.fomod) {
+        setFomod({ source, file: fileSel, title, extra });
+        return;
+      }
+    } catch {
+      /* fall through: install reports any problem itself */
+    } finally {
+      setChecking(false);
+    }
+    run(`Install ${title}`, ["install", source, ...extra, ...(fileSel ? ["--file", fileSel] : [])]);
+  };
 
   return (
     <>
@@ -489,7 +508,7 @@ export function InstallView({ state }: { state: AppState }) {
           onSubmit={(e) => {
             e.preventDefault();
             if (!src.trim()) return;
-            if (isLocal) run(`Install ${src}`, ["install", src.trim()]);
+            if (isLocal) install(src.trim(), null, src.trim(), []);
             else {
               setFile(null);
               setLookupId(src.trim());
@@ -535,8 +554,9 @@ export function InstallView({ state }: { state: AppState }) {
                 <Button
                   variant="primary"
                   icon={<Download className="size-4" />}
-                  disabled={busy}
-                  onClick={() => run(`Install ${look.data!.name}`, ["install", String(look.data!.mod_id), "--with-deps", ...(file ? ["--file", file] : [])])}
+                  disabled={busy || checking}
+                  loading={checking}
+                  onClick={() => install(String(look.data!.mod_id), file, look.data!.name, ["--with-deps"])}
                 >
                   {installedIds.has(look.data.mod_id) ? "Reinstall / switch file" : "Install"}
                 </Button>
@@ -647,6 +667,19 @@ export function InstallView({ state }: { state: AppState }) {
           </div>
         </Card>
       </div>
+      {fomod && (
+        <FomodDialog
+          source={fomod.source}
+          file={fomod.file}
+          title={fomod.title}
+          onCancel={() => setFomod(null)}
+          onInstall={(choices) => {
+            const f = fomod;
+            setFomod(null);
+            run(`Install ${f.title}`, ["install", f.source, ...f.extra, ...(f.file ? ["--file", f.file] : []), "--fomod-choices", JSON.stringify(choices)]);
+          }}
+        />
+      )}
     </>
   );
 }

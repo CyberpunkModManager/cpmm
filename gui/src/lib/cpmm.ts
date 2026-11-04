@@ -21,7 +21,8 @@ export interface ModRow {
   version: string;
   installed_at: string;
   notes: string;
-  nexus: { mod_id: number; file_name: string; file_id: string; uploaded_at: string; url: string } | null;
+  nexus: { mod_id: number; file_name: string; file_id: string; version_gsid: string; uploaded_at: string; url: string } | null;
+  fomod: Record<string, string[]> | null;
   files: number;
   hidden: number;
   wins: number;
@@ -269,4 +270,24 @@ export interface ModioData {
 }
 export const api7 = {
   modio: () => invoke<ModioData>("api", { args: ["modio"] }),
+};
+
+export interface FomodPlugin {
+  name: string;
+  description: string;
+  kind: string;
+  selected: boolean;
+  image: string | null;
+}
+export interface FomodDesc {
+  fomod: boolean;
+  name?: string;
+  archive?: string;
+  steps?: { name: string; visible: boolean; groups: { key: string; name: string; kind: string; plugins: FomodPlugin[] }[] }[];
+}
+export const api8 = {
+  fomod: (source: string, file?: string | null, choices?: Record<string, string[]>) =>
+    invoke<FomodDesc>("api", {
+      args: ["fomod", source, ...(file ? ["--file", file] : []), ...(choices && Object.keys(choices).length ? ["--choices", JSON.stringify(choices)] : [])],
+    }),
 };

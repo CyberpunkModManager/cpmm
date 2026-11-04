@@ -161,6 +161,9 @@ pub struct Mod {
     /// Requirements the user decided to do without (Nexus mod ids)
     #[serde(default)]
     pub ignored_reqs: Vec<u64>,
+    /// FOMOD installer choices ("step/group" -> option names), reused when the mod updates
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fomod: Option<serde_json::Value>,
     #[serde(default)]
     pub installed_at: String,
     #[serde(default)]

@@ -242,6 +242,7 @@ pub fn import(paths: &Paths, state: &mut State, modlist: &Path, apply: bool) -> 
             reqs_checked: None,
             hidden: vec![],
             ignored_reqs: vec![],
+            fomod: None,
             installed_at: now(),
             notes: "imported".into(),
         });
@@ -295,6 +296,7 @@ pub fn adopt(paths: &Paths, state: &mut State, id: &str, name: &str, rels: &[Str
         reqs_checked: None,
         hidden: vec![],
         ignored_reqs: vec![],
+        fomod: None,
         installed_at: now(),
         notes: "adopted".into(),
     });

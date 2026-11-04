@@ -17,6 +17,7 @@ hex = "0.4"
 walkdir = "2"
 libc = "0.2"
 regex = "1"
+roxmltree = "0.20"
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
 
 [profile.release]

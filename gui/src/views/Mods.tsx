@@ -21,6 +21,7 @@ import { Badge, Button, Confirm, Drawer, Empty, ErrorBox, IconButton, Input, Pag
 import { type AppState, api, type ModRow, timeAgo } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 import { openLink } from "../lib/nexus";
+import { FomodDialog } from "./Fomod";
 import { ModHistory } from "./Safety";
 
 type Filter = "all" | "enabled" | "disabled" | "problems" | "conflicts" | "manual";
@@ -198,6 +199,7 @@ function ModDrawer({
 }) {
   const { run, busy } = useJobs();
   const [confirm, setConfirm] = useState(false);
+  const [reconf, setReconf] = useState(false);
   const info = useQuery({ queryKey: ["info", mod?.id], queryFn: () => api.info(mod!.id), enabled: !!mod });
   const locked = state.game_running || !!state.session;
 
@@ -239,6 +241,11 @@ function ModDrawer({
         <Button icon={<ChevronsDown className="size-4" />} variant="ghost" disabled={busy} onClick={() => onOrder(mod, "top")}>
           Last (wins)
         </Button>
+        {mod.fomod && mod.nexus && (
+          <Button disabled={busy || locked} onClick={() => setReconf(true)}>
+            Change installer options
+          </Button>
+        )}
         <Button variant="danger" icon={<Trash2 className="size-4" />} disabled={busy || locked} onClick={() => setConfirm(true)}>
           Uninstall
         </Button>
@@ -332,6 +339,29 @@ function ModDrawer({
         </div>
       )}
 
+      {reconf && mod.nexus && (
+        <FomodDialog
+          source={String(mod.nexus.mod_id)}
+          file={mod.nexus.version_gsid || null}
+          title={mod.name}
+          initial={mod.fomod}
+          onCancel={() => setReconf(false)}
+          onInstall={(choices) => {
+            setReconf(false);
+            const n = mod.nexus!;
+            run(`Reinstall ${mod.name}`, [
+              "install",
+              String(n.mod_id),
+              "--id",
+              mod.id,
+              ...(n.version_gsid ? ["--file", n.version_gsid] : []),
+              "--ignore-deps",
+              "--fomod-choices",
+              JSON.stringify(choices),
+            ]);
+          }}
+        />
+      )}
       <Confirm
         open={confirm}
         title={`Uninstall ${mod.name}?`}
