@@ -112,6 +112,7 @@ fn on_navigation(app: &AppHandle, url: &Url) -> bool {
             match url.host_str() {
                 Some("close") => close(app),
                 Some("keyboard") => open_keyboard(),
+                Some("log") => crate::glog(&format!("nexus page: {}", url.query().unwrap_or(""))),
                 _ => {}
             }
             false
@@ -149,13 +150,16 @@ pub fn open_nexus(app: AppHandle, url: Option<String>) -> Result<(), String> {
     };
     let (nav_app, win_app, dl_app) = (app.clone(), app.clone(), app.clone());
     let (w, h) = size.unwrap_or((1280.0, 800.0));
-    let win = WebviewWindowBuilder::new(&app, LABEL, WebviewUrl::External(target))
+    // Start blank: the WebKit settings below must be in place before Nexus's code runs.
+    let blank = Url::parse("about:blank").unwrap();
+    let win = WebviewWindowBuilder::new(&app, LABEL, WebviewUrl::External(blank))
         .title("Nexus Mods · cpmm")
         .inner_size(w, h)
         .min_inner_size(800.0, 500.0)
         .maximized(maximized)
         .initialization_script(SCRIPT)
         .on_navigation(move |u| on_navigation(&nav_app, u))
+        .on_page_load(|_, p| crate::glog(&format!("nexus: page {:?} {}", p.event(), p.url())))
         // Links that want a new tab/popup open in this window instead.
         .on_new_window(move |u, _| {
             let app = win_app.clone();
@@ -206,8 +210,65 @@ pub fn open_nexus(app: AppHandle, url: Option<String>) -> Result<(), String> {
             }
         }
     });
+    #[cfg(target_os = "linux")]
+    {
+        let t = target.clone();
+        let _ = win.with_webview(move |wv| {
+            linux::harden(&wv.inner());
+            use webkit2gtk::WebViewExt;
+            wv.inner().load_uri(t.as_str());
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = win.navigate(target);
     crate::glog("nexus: browser opened");
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::cell::Cell;
+    use std::path::PathBuf;
+    use webkit2gtk::{SettingsExt, WebView, WebViewExt};
+
+    /// WebKitGTK aborts the page's web process when a page creates a media element and
+    /// GStreamer has no audio sink (`autoaudiosink`, from gst-plugins-good). Nexus does that
+    /// within seconds (video ads and previews), so on systems without the plugin (this Ally;
+    /// read-only SteamOS images) media stays off. `CPMM_NEXUS_MEDIA=0/1` overrides.
+    pub fn media_ok() -> bool {
+        match std::env::var("CPMM_NEXUS_MEDIA").as_deref() {
+            Ok("1") => return true,
+            Ok("0") => return false,
+            _ => {}
+        }
+        let mut dirs: Vec<PathBuf> = ["GST_PLUGIN_PATH", "GST_PLUGIN_PATH_1_0", "GST_PLUGIN_SYSTEM_PATH", "GST_PLUGIN_SYSTEM_PATH_1_0"]
+            .iter()
+            .filter_map(|v| std::env::var_os(v))
+            .flat_map(|v| std::env::split_paths(&v).collect::<Vec<_>>())
+            .collect();
+        dirs.extend(["/usr/lib/gstreamer-1.0", "/usr/lib64/gstreamer-1.0", "/usr/lib/x86_64-linux-gnu/gstreamer-1.0"].map(PathBuf::from));
+        dirs.iter().any(|d| d.join("libgstautodetect.so").is_file())
+    }
+
+    pub fn harden(v: &WebView) {
+        if !media_ok() {
+            if let Some(s) = WebViewExt::settings(v) {
+                s.set_enable_media(false);
+                s.set_enable_mediasource(false);
+                s.set_enable_webaudio(false);
+            }
+            crate::glog("nexus: GStreamer has no autoaudiosink (gst-plugins-good); media disabled to keep WebKit from crashing");
+        }
+        // If the page's process dies anyway, reload instead of leaving a frozen page behind.
+        let crashes = Cell::new(0u32);
+        v.connect_web_process_terminated(move |v, reason| {
+            crashes.set(crashes.get() + 1);
+            crate::glog(&format!("nexus: web process terminated ({reason:?}), crash {}", crashes.get()));
+            if crashes.get() <= 3 {
+                v.reload();
+            }
+        });
+    }
 }
 
 #[tauri::command]

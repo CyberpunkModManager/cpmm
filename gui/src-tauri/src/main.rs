@@ -288,6 +288,17 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             spawn_gamepad(app.handle().clone());
+            // `cpmm-gui --nexus [url]`: open the Nexus browser right away.
+            let args: Vec<String> = std::env::args().collect();
+            if let Some(i) = args.iter().position(|a| a == "--nexus") {
+                let url = args.get(i + 1).cloned();
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = nexus::open_nexus(h, url) {
+                        glog(&format!("nexus: {e}"));
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![api, run, gui_log, quit, launch_game, nexus::open_nexus, nexus::close_nexus, nexus::nexus_toast])

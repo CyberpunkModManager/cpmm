@@ -63,6 +63,7 @@
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ui, { once: true });
   else ui();
+  window.addEventListener("load", () => signal("log?loaded " + encodeURIComponent(location.pathname)), { once: true });
 
   function toast(kind, text) {
     if (!ui()) {

@@ -87,6 +87,10 @@ which is the easiest route in Game Mode:
   `CPMM_OSK=0/1` overrides the detection), Select reloads, Start returns to cpmm.
 * Nexus "Mod" links elsewhere in the GUI open here too; other sites still open in the system browser.
 * Sign in with email and password: Google/Apple sign-in usually refuse embedded browsers.
+* WebKitGTK crashes the page as soon as a site creates a media element if GStreamer has no
+  `autoaudiosink` (package `gst-plugins-good`; missing on this Ally and on read-only SteamOS images).
+  cpmm detects that and turns media off in the Nexus window (`CPMM_NEXUS_MEDIA=0/1` overrides), and
+  reloads the page if its process dies anyway. `cpmm-gui --nexus [url]` opens the browser directly.
 
 The page gets no access to the Tauri IPC (the window isn't in any capability). It reaches cpmm only
 through navigations the backend intercepts and cancels: `nxm://…`, `cpmm://close` and `cpmm://keyboard`.
