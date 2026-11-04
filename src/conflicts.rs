@@ -91,9 +91,23 @@ pub struct ScriptConflict {
     pub mods: Vec<String>,
 }
 
+/// Scripts in the real game dir that no mod owns, as (top folder, game-relative path).
+fn unmanaged_reds(paths: &Paths, mods: &[Mod]) -> Vec<(String, String)> {
+    let owned: BTreeSet<String> = ownership(paths, mods, false).into_keys().collect();
+    let root = paths.game.join("r6/scripts");
+    files::list_tree(&root)
+        .into_iter()
+        .filter(|f| f.to_lowercase().ends_with(".reds"))
+        .map(|f| format!("r6/scripts/{f}"))
+        .filter(|f| !owned.contains(&f.to_lowercase()))
+        .map(|f| (f.split('/').nth(2).unwrap_or("?").to_string(), f))
+        .collect()
+}
+
 /// Port of redscript_conflicts.py: two mods @replaceMethod-ing the same method means only
-/// one wins (the compiler errors out or silently picks one depending on version).
-pub fn redscript_conflicts(paths: &Paths, mods: &[Mod], unmanaged: &[(String, String)]) -> Vec<ScriptConflict> {
+/// one wins (the compiler errors out or silently picks one depending on version). Scans enabled
+/// mods, unmanaged scripts in the game dir and mod.io scripts.
+pub fn redscript_conflicts(paths: &Paths, mods: &[Mod]) -> Vec<ScriptConflict> {
     // Optional `@if(!?ModuleExists("X"))` guard in front of the annotation: authors use it to
     // step aside when a known-conflicting mod is installed, so it must be evaluated.
     let ann = Regex::new(
@@ -115,8 +129,8 @@ pub fn redscript_conflicts(paths: &Paths, mods: &[Mod], unmanaged: &[(String, St
             scan(w, &s);
         }
     }
-    for (owner, rel) in unmanaged {
-        if let Ok(s) = fs::read_to_string(paths.game.join(rel)) {
+    for (owner, rel) in unmanaged_reds(paths, mods) {
+        if let Ok(s) = fs::read_to_string(paths.game.join(&rel)) {
             scan(&format!("(unmanaged) {owner}"), &s);
         }
     }

@@ -7,6 +7,7 @@ mod conflicts;
 mod downloads;
 mod files;
 mod fomod;
+mod health;
 mod import;
 mod install;
 mod loadorder;
@@ -1035,7 +1036,7 @@ fn real_main() -> Result<()> {
                     let p = loadorder::plan(&paths, &st);
                     serde_json::json!({"plan": p, "rules": st.rules, "modlist": loadorder::modlist(&paths, &st)})
                 }
-                ApiCmd::Doctor => serde_json::to_value(loadorder::doctor(&paths, &st))?,
+                ApiCmd::Doctor => serde_json::to_value(health::check(&paths, &st))?,
                 ApiCmd::Downloads => serde_json::to_value(downloads::list(&paths, &st))?,
                 ApiCmd::Onboarding => {
                     let exe = installed_exe().unwrap_or_default();
@@ -1058,15 +1059,8 @@ fn real_main() -> Result<()> {
                     let i = st.get(&r#mod)?;
                     let m = &st.mods[i];
                     let gid = m.nexus.as_ref().map(|n| n.mod_id).context("not a Nexus mod")?;
-                    let entries = nexus(&paths).changelog(gid)?;
-                    serde_json::json!({
-                        "id": m.id, "name": m.name, "installed": m.version,
-                        "entries": entries.iter().map(|(v, l)| serde_json::json!({
-                            "version": v, "changes": l,
-                            "newer": !m.version.is_empty() && nexus::version_cmp(v, &m.version) == std::cmp::Ordering::Greater,
-                            "installed": nexus::version_cmp(v, &m.version) == std::cmp::Ordering::Equal,
-                        })).collect::<Vec<_>>(),
-                    })
+                    let entries = nexus::changelog_entries(nexus(&paths).changelog(gid)?, &m.version);
+                    serde_json::json!({"id": m.id, "name": m.name, "installed": m.version, "entries": entries})
                 }
                 ApiCmd::Modio => serde_json::json!({
                     "mods": modio::list(&paths).into_iter().map(|m| serde_json::json!({"id": m.id, "name": m.name, "author": m.author, "version": m.version, "files": m.files.len()})).collect::<Vec<_>>(),
@@ -1221,7 +1215,7 @@ fn real_main() -> Result<()> {
         }
         Cmd::Doctor { ack, unack, all } => {
             if let Some(k) = ack.or(unack.clone()) {
-                let titles: Vec<String> = loadorder::doctor(&paths, &st)
+                let titles: Vec<String> = health::check(&paths, &st)
                     .into_iter()
                     .map(|f| f.title)
                     .filter(|t| t.to_lowercase().contains(&k.to_lowercase()))
@@ -1241,8 +1235,7 @@ fn real_main() -> Result<()> {
                 st.save(&paths)?;
                 println!("{} {:?}", if unack.is_none() { "acknowledged" } else { "un-acknowledged" }, titles[0]);
             }
-            let fs_: Vec<loadorder::Finding> =
-                loadorder::doctor(&paths, &st).into_iter().filter(|f| all || f.severity != "acked").collect();
+            let fs_: Vec<health::Finding> = health::check(&paths, &st).into_iter().filter(|f| all || f.severity != "acked").collect();
             for f in &fs_ {
                 let tag = match f.severity {
                     "crash" => "CRASH RISK",
@@ -1409,27 +1402,26 @@ fn real_main() -> Result<()> {
             let i = st.get(&r#mod)?;
             let m = &st.mods[i];
             let gid = m.nexus.as_ref().map(|n| n.mod_id).context("not a Nexus mod")?;
-            let entries = nexus(&paths).changelog(gid)?;
+            let entries = nexus::changelog_entries(nexus(&paths).changelog(gid)?, &m.version);
             if entries.is_empty() {
                 println!("{} has no changelog on Nexus", m.name);
             }
-            for (shown, (v, lines)) in entries.iter().enumerate() {
-                let newer = !m.version.is_empty() && nexus::version_cmp(v, &m.version) == std::cmp::Ordering::Greater;
-                if !all && !newer && shown > 0 {
+            for (shown, e) in entries.iter().enumerate() {
+                if !all && !e.newer && shown > 0 {
                     break;
                 }
-                let tag = if nexus::version_cmp(v, &m.version) == std::cmp::Ordering::Equal {
+                let tag = if e.installed {
                     "  (installed)"
-                } else if newer {
+                } else if e.newer {
                     "  (new)"
                 } else {
                     ""
                 };
-                println!("{v}{tag}");
-                for l in lines {
+                println!("{}{tag}", e.version);
+                for l in &e.changes {
                     println!("  - {l}");
                 }
-                if !all && !newer {
+                if !all && !e.newer {
                     break; // the installed/older entry gives context; stop there
                 }
             }
@@ -1740,27 +1732,6 @@ fn parse_nexus(s: &str) -> Option<u64> {
     s[i + 19..].split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
 }
 
-fn modio_mods(paths: &Paths) -> Vec<(String, String, String, String)> {
-    let p = paths.modio_dir().join("metadata/state.json");
-    let Ok(b) = fs::read(&p) else { return vec![] };
-    let Ok(v): Result<serde_json::Value, _> = serde_json::from_slice(&b) else { return vec![] };
-    v["Mods"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .iter()
-        .map(|m| {
-            let p = &m["Profile"];
-            (
-                m["ID"].to_string(),
-                p["name"].as_str().unwrap_or("?").to_string(),
-                p.pointer("/submitted_by/username").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                p.pointer("/modfile/version").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            )
-        })
-        .collect()
-}
-
 fn list(paths: &Paths, st: &State, long: bool) -> Result<()> {
     let owners = if long { Some(conflicts::ownership(paths, &st.mods, true)) } else { None };
     if st.profiles.len() > 1 {
@@ -1794,11 +1765,11 @@ fn list(paths: &Paths, st: &State, long: bool) -> Result<()> {
             extra
         );
     }
-    let mio = modio_mods(paths);
+    let mio = modio::list(paths);
     if !mio.is_empty() {
         println!("\nmod.io (managed in-game via the Mods menu, outside the game dir):");
-        for (id, name, by, ver) in mio {
-            println!("    {id:<10} {name} {ver} by {by}");
+        for m in mio {
+            println!("    {:<10} {} {} by {}", m.id, m.name, m.version, m.author);
         }
     }
     Ok(())
@@ -1908,7 +1879,7 @@ fn show_conflicts(paths: &Paths, st: &State, only: Option<&str>, hash: bool, bas
         println!("  {} files override base-game files (--base to list)", based.len());
     }
     println!("== redscript");
-    let sc = conflicts::redscript_conflicts(paths, &st.mods, &unmanaged_reds(paths, st));
+    let sc = conflicts::redscript_conflicts(paths, &st.mods);
     let mut n = 0;
     for c in sc {
         if let Some(o) = &only
@@ -1923,18 +1894,6 @@ fn show_conflicts(paths: &Paths, st: &State, only: Option<&str>, hash: bool, bas
         println!("  none");
     }
     Ok(())
-}
-
-fn unmanaged_reds(paths: &Paths, st: &State) -> Vec<(String, String)> {
-    let owned: BTreeSet<String> = conflicts::ownership(paths, &st.mods, false).into_keys().collect();
-    let root = paths.game.join("r6/scripts");
-    files::list_tree(&root)
-        .into_iter()
-        .filter(|f| f.to_lowercase().ends_with(".reds"))
-        .map(|f| format!("r6/scripts/{f}"))
-        .filter(|f| !owned.contains(&f.to_lowercase()))
-        .map(|f| (f.split('/').nth(2).unwrap_or("?").to_string(), f))
-        .collect()
 }
 
 pub struct InstallOpts {
@@ -3127,7 +3086,7 @@ fn after_install(paths: &Paths, st: &mut State, id: &str) {
     }
     if paths.cfg.after_install_doctor {
         let name = st.find(id).map(|i| st.mods[i].name.clone()).unwrap_or_default();
-        let hits: Vec<loadorder::Finding> = loadorder::doctor(paths, st)
+        let hits: Vec<health::Finding> = health::check(paths, st)
             .into_iter()
             .filter(|f| {
                 matches!(f.severity, "crash" | "warning") && (f.title.contains(id) || (!name.is_empty() && f.title.contains(&name)))
@@ -3313,26 +3272,12 @@ fn unmanaged(paths: &Paths, st: &State, modified: bool, flat: bool) -> Result<()
 }
 
 fn overwrite(paths: &Paths, st: &State) -> Result<()> {
-    use std::os::unix::fs::FileTypeExt;
-    let up = paths.upper();
-    let own = conflicts::ownership(paths, &st.mods, true);
-    let mut n = 0;
-    for e in walkdir::WalkDir::new(&up).into_iter().flatten().filter(|e| !e.file_type().is_dir()) {
-        let rel = e.path().strip_prefix(&up)?.to_string_lossy().to_string();
-        let what = if e.file_type().is_char_device() {
-            "deleted"
-        } else if own.contains_key(&rel.to_lowercase()) {
-            "edited mod file"
-        } else if paths.game.join(&rel).exists() {
-            "edited base file"
-        } else {
-            "new"
-        };
-        let by = own.get(&rel.to_lowercase()).and_then(|(_, o)| o.last()).map(|s| format!(" ({s})")).unwrap_or_default();
-        println!("  {what:<16} {rel}{by}");
-        n += 1;
+    let ow = manage::overwrite_files(paths, st);
+    for e in &ow {
+        let by = e.shadows.as_ref().map(|s| format!(" ({s})")).unwrap_or_default();
+        println!("  {:<16} {}{by}", e.kind.as_str(), e.rel);
     }
-    println!("{n} files in {}", up.display());
+    println!("{} files in {}", ow.len(), paths.upper().display());
     Ok(())
 }
 

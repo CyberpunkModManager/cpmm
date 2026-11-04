@@ -1,7 +1,7 @@
 //! Nexus Mods API: v3 REST for mods/files/versions/downloads, v2 GraphQL for requirements.
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Write;
@@ -149,6 +149,31 @@ pub fn clean_changelog(s: &str) -> Vec<String> {
                 .to_string()
         })
         .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// One changelog entry, placed relative to the installed version.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct ChangelogEntry {
+    pub version: String,
+    pub changes: Vec<String>,
+    /// later than the installed version (never, when that version is unknown)
+    pub newer: bool,
+    /// the installed version
+    pub installed: bool,
+}
+
+/// Mark a mod page's changelog (newest first, as `Nexus::changelog` returns it) against the
+/// installed version.
+pub fn changelog_entries(log: Vec<(String, Vec<String>)>, installed: &str) -> Vec<ChangelogEntry> {
+    use std::cmp::Ordering;
+    log.into_iter()
+        .map(|(version, changes)| ChangelogEntry {
+            newer: !installed.is_empty() && version_cmp(&version, installed) == Ordering::Greater,
+            installed: version_cmp(&version, installed) == Ordering::Equal,
+            version,
+            changes,
+        })
         .collect()
 }
 
@@ -636,6 +661,22 @@ mod version_tests {
         assert_eq!(version_cmp("1.0.0", "1.0.0"), Equal);
         assert_eq!(version_cmp("0.5.32", "0.5.4"), Greater);
         assert_eq!(version_cmp("ncpdf-1.7", "ncpdf-1.6"), Greater);
+    }
+
+    #[test]
+    fn changelog_marks_newer_and_installed() {
+        let log = |vs: &[&str]| vs.iter().map(|v| (v.to_string(), vec![format!("in {v}")])).collect::<Vec<_>>();
+        let marks = |installed: &str| {
+            super::changelog_entries(log(&["2.0", "1.10", "v1.9", "1.8"]), installed)
+                .into_iter()
+                .map(|e| (e.newer, e.installed))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(marks("1.9"), [(true, false), (true, false), (false, true), (false, false)]);
+        // no installed version known: nothing counts as newer
+        assert_eq!(marks(""), [(false, false); 4]);
+        let e = &super::changelog_entries(log(&["1.0"]), "1.0")[0];
+        assert_eq!((e.version.as_str(), e.changes.as_slice()), ("1.0", ["in 1.0".to_string()].as_slice()));
     }
 
     #[test]

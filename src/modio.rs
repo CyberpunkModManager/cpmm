@@ -230,7 +230,7 @@ pub fn conflicts(paths: &Paths, st: &State) -> Vec<Conflict> {
         });
     }
     // 4. scripts replacing the same methods
-    for c in conflicts::redscript_conflicts(paths, &st.mods, &crate::unmanaged_reds(paths, st)) {
+    for c in conflicts::redscript_conflicts(paths, &st.mods) {
         if !(c.kind.starts_with("REPLACE") || c.kind.starts_with("duplicate")) {
             continue;
         }
