@@ -210,6 +210,13 @@ enum Cmd {
         apply: bool,
     },
     /// Free disk space: empty trash/, tmp/ and cached downloads.
+    /// The mod's Nexus changelog; entries newer than the installed version first.
+    Changelog {
+        r#mod: String,
+        /// Show every version, not only the ones newer than what's installed
+        #[arg(long)]
+        all: bool,
+    },
     /// Show or change settings: `cpmm settings`, `set <key> <value>`, `reset [key]`.
     Settings {
         #[command(subcommand)]
@@ -408,6 +415,10 @@ enum SettingsCmd {
 enum ApiCmd {
     /// Settings values, their schema and the resolved folders
     Settings,
+    /// Nexus changelog of one mod, with entries newer than the installed version marked
+    Changelog {
+        r#mod: String,
+    },
     /// First-run status: game found, Nexus key, launch options, link handler
     Onboarding,
     /// New archives waiting in the watched download folder
@@ -909,6 +920,20 @@ fn real_main() -> Result<()> {
                         "mods_installed": st.mods.len(),
                     })
                 }
+                ApiCmd::Changelog { r#mod } => {
+                    let i = st.get(&r#mod)?;
+                    let m = &st.mods[i];
+                    let gid = m.nexus.as_ref().map(|n| n.mod_id).context("not a Nexus mod")?;
+                    let entries = nexus(&paths).changelog(gid)?;
+                    serde_json::json!({
+                        "id": m.id, "name": m.name, "installed": m.version,
+                        "entries": entries.iter().map(|(v, l)| serde_json::json!({
+                            "version": v, "changes": l,
+                            "newer": !m.version.is_empty() && nexus::version_cmp(v, &m.version) == std::cmp::Ordering::Greater,
+                            "installed": nexus::version_cmp(v, &m.version) == std::cmp::Ordering::Equal,
+                        })).collect::<Vec<_>>(),
+                    })
+                }
                 ApiCmd::Settings => serde_json::json!({
                     "values": paths.cfg,
                     "schema": settings::schema(),
@@ -1216,6 +1241,35 @@ fn real_main() -> Result<()> {
             for s in safety::list_snapshots(&paths) {
                 let prof = if s.profile.is_empty() || st.profiles.len() < 2 { String::new() } else { format!("  [{}]", s.profile) };
                 println!("  {}  {}  {} saves  {}{prof}", s.name, safety::iso(s.ts), s.saves, s.reason);
+            }
+        }
+        Cmd::Changelog { r#mod, all } => {
+            let i = st.get(&r#mod)?;
+            let m = &st.mods[i];
+            let gid = m.nexus.as_ref().map(|n| n.mod_id).context("not a Nexus mod")?;
+            let entries = nexus(&paths).changelog(gid)?;
+            if entries.is_empty() {
+                println!("{} has no changelog on Nexus", m.name);
+            }
+            for (shown, (v, lines)) in entries.iter().enumerate() {
+                let newer = !m.version.is_empty() && nexus::version_cmp(v, &m.version) == std::cmp::Ordering::Greater;
+                if !all && !newer && shown > 0 {
+                    break;
+                }
+                let tag = if nexus::version_cmp(v, &m.version) == std::cmp::Ordering::Equal {
+                    "  (installed)"
+                } else if newer {
+                    "  (new)"
+                } else {
+                    ""
+                };
+                println!("{v}{tag}");
+                for l in lines {
+                    println!("  - {l}");
+                }
+                if !all && !newer {
+                    break; // the installed/older entry gives context; stop there
+                }
             }
         }
         Cmd::Settings { action } => settings_cmd(&paths, &st, action.unwrap_or(SettingsCmd::Show { json: false }))?,

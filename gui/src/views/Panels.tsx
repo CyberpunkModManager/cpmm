@@ -15,6 +15,7 @@ import {
   Link2,
   Package,
   RefreshCw,
+  ScrollText,
   Search,
   Sparkles,
   Trash2,
@@ -26,6 +27,7 @@ import { Badge, Button, Card, Confirm, Empty, ErrorBox, Input, PageHeader, Spinn
 import { type AppState, api, api2, api3, ownerLabel, timeAgo } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 import { openLink, openNexus } from "../lib/nexus";
+import { ChangelogDrawer } from "./Changelog";
 import { ReqBadge } from "./Mods";
 
 const locked = (s: AppState) => s.game_running || !!s.session;
@@ -300,6 +302,7 @@ export function UpdatesView({ state }: { state: AppState }) {
   const { run, busy } = useJobs();
   const [refresh, setRefresh] = useState(false);
   const safety = useQuery({ queryKey: ["safety"], queryFn: api3.safety, staleTime: 30_000 });
+  const [log, setLog] = useState<string | null>(null);
   const lastBatch = safety.data?.batches[0];
   const q = useQuery({ queryKey: ["updates", refresh], queryFn: () => api.updates(refresh), staleTime: 5 * 60_000 });
   const name = (id: string) => state.mods.find((m) => m.id === id)?.name ?? id;
@@ -363,9 +366,14 @@ export function UpdatesView({ state }: { state: AppState }) {
                     </div>
                   </div>
                   {u.update ? (
-                    <Button size="sm" variant="primary" disabled={busy || locked(state)} onClick={() => run(`Update ${name(u.id)}`, ["update", u.id])}>
-                      Update
-                    </Button>
+                    <>
+                      <Button size="sm" variant="ghost" icon={<ScrollText className="size-3.5" />} onClick={() => setLog(u.id)}>
+                        What's new
+                      </Button>
+                      <Button size="sm" variant="primary" disabled={busy || locked(state)} onClick={() => run(`Update ${name(u.id)}`, ["update", u.id])}>
+                        Update
+                      </Button>
+                    </>
                   ) : (
                     <Badge tone="amber">check</Badge>
                   )}
@@ -375,6 +383,7 @@ export function UpdatesView({ state }: { state: AppState }) {
           )}
         </>
       )}
+      {log && <ChangelogDrawer id={log} onClose={() => setLog(null)} />}
     </>
   );
 }

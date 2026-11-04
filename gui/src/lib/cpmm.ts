@@ -251,3 +251,13 @@ export interface OnboardingStatus {
 export const api5 = {
   onboarding: () => invoke<OnboardingStatus>("api", { args: ["onboarding"] }),
 };
+
+export interface Changelog {
+  id: string;
+  name: string;
+  installed: string;
+  entries: { version: string; changes: string[]; newer: boolean; installed: boolean }[];
+}
+export const api6 = {
+  changelog: (id: string) => invoke<Changelog>("api", { args: ["changelog", id] }),
+};

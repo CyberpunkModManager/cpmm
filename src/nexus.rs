@@ -132,6 +132,76 @@ pub struct Version {
     #[serde(default)]
     pub manifest_url: Option<String>,
 }
+/// Changelog text from Nexus is HTML-ish: split on <br>, drop tags, decode the common entities.
+pub fn clean_changelog(s: &str) -> Vec<String> {
+    let br = regex::Regex::new(r"(?i)<br\s*/?>|</p>|</li>").unwrap();
+    let tag = regex::Regex::new(r"<[^>]+>").unwrap();
+    br.split(s)
+        .map(|l| {
+            tag.replace_all(l, "")
+                .replace("&amp;", "&")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&nbsp;", " ")
+                .trim()
+                .to_string()
+        })
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Natural version order: numeric runs compare as numbers ("1.10" > "1.9"), a leading "v" is
+/// ignored, and a plain release sorts after its pre-releases ("2.0" > "2.0-beta").
+pub fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    fn parts(s: &str) -> Vec<(bool, String)> {
+        let s = s.trim().trim_start_matches(['v', 'V']);
+        let mut out: Vec<(bool, String)> = vec![];
+        for c in s.chars() {
+            let d = c.is_ascii_digit();
+            if !c.is_ascii_alphanumeric() {
+                out.push((false, String::new()));
+                continue;
+            }
+            match out.last_mut() {
+                Some((isd, cur)) if *isd == d && !cur.is_empty() => cur.push(c),
+                _ => out.push((d, c.to_string())),
+            }
+        }
+        out.into_iter().filter(|(_, x)| !x.is_empty()).collect()
+    }
+    let (pa, pb) = (parts(a), parts(b));
+    for i in 0..pa.len().max(pb.len()) {
+        match (pa.get(i), pb.get(i)) {
+            (Some((true, x)), Some((true, y))) => {
+                let o = x
+                    .trim_start_matches('0')
+                    .len()
+                    .cmp(&y.trim_start_matches('0').len())
+                    .then_with(|| x.trim_start_matches('0').cmp(y.trim_start_matches('0')));
+                if o != Ordering::Equal {
+                    return o;
+                }
+            }
+            (Some((_, x)), Some((_, y))) => {
+                let o = x.to_lowercase().cmp(&y.to_lowercase());
+                if o != Ordering::Equal {
+                    return o;
+                }
+            }
+            // "2.0" vs "2.0-beta": the extra text is a pre-release; "2.0" vs "2.0.1": newer
+            (None, Some((true, _))) => return Ordering::Less,
+            (Some((true, _)), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Greater,
+            (Some(_), None) => return Ordering::Less,
+            (None, None) => break,
+        }
+    }
+    Ordering::Equal
+}
+
 impl Version {
     /// Not archived/removed/superseded: a version the author still offers as current.
     pub fn is_current(&self) -> bool {
@@ -362,6 +432,29 @@ impl Nexus {
         let r = self.api_call(method, &format!("{base}/{path}"), true, body)?.map_err(|e| anyhow::anyhow!("{method} {path}: {e}"))?;
         Ok(r.into_json().unwrap_or(Value::Null))
     }
+    /// The mod page's changelog, newest version first. (v3 can only add changelogs; reading
+    /// them is a v1 endpoint.)
+    pub fn changelog(&self, gsid: u64) -> Result<Vec<(String, Vec<String>)>> {
+        let base = std::env::var("CPMM_NEXUS_V1").unwrap_or_else(|_| "https://api.nexusmods.com/v1".into());
+        let v = self.get_json(&format!("{base}/games/{GAME}/mods/{gsid}/changelogs.json"), true, Some(self.ttl))?;
+        let mut out: Vec<(String, Vec<String>)> = v
+            .as_object()
+            .map(|o| {
+                o.iter()
+                    .map(|(ver, lines)| {
+                        let l = lines
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|x| x.as_str()).flat_map(clean_changelog).collect())
+                            .unwrap_or_default();
+                        (ver.clone(), l)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.sort_by(|a, b| version_cmp(&b.0, &a.0));
+        Ok(out)
+    }
+
     /// Check the API key; returns the account name.
     pub fn validate(&self) -> Result<(String, bool)> {
         let v = self.v1("GET", "users/validate.json", None)?;
@@ -492,6 +585,28 @@ impl Nexus {
         }
         fs::rename(part, dest)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::version_cmp;
+    use std::cmp::Ordering::*;
+
+    #[test]
+    fn natural_version_order() {
+        assert_eq!(version_cmp("1.10", "1.9"), Greater);
+        assert_eq!(version_cmp("v2.0.1", "2.0"), Greater);
+        assert_eq!(version_cmp("2.0", "2.0-beta"), Greater);
+        assert_eq!(version_cmp("1.0.0", "1.0.0"), Equal);
+        assert_eq!(version_cmp("0.5.32", "0.5.4"), Greater);
+        assert_eq!(version_cmp("ncpdf-1.7", "ncpdf-1.6"), Greater);
+    }
+
+    #[test]
+    fn changelog_html_is_cleaned() {
+        let l = super::clean_changelog("Fixes<br />Fix crash &amp; <b>stutter</b><br /><br />Date: 1/2/2022");
+        assert_eq!(l, vec!["Fixes", "Fix crash & stutter", "Date: 1/2/2022"]);
     }
 }
 

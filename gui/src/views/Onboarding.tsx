@@ -28,6 +28,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
   const [gamePath, setGamePath] = useState("");
   const [key, setKey] = useState("");
   const root = useRef<HTMLDivElement>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs on every step change to move controller focus
   useEffect(() => {
     // step changes: put controller focus on the first control of the new step
     setTimeout(() => root.current?.querySelector<HTMLElement>("[data-step] button, [data-step] input")?.focus(), 30);

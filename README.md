@@ -55,6 +55,7 @@ cpmm launch-options     # prints your line, i.e. … game-performance /home/…/
 | `info <mod>` | details, requirements, files |
 | `install <nexus id/url/archive> [--file] [--with-deps] [--root DIR]` | download (premium API), verify SHA-256 against the Nexus manifest, detect layout, stage |
 | `updates [--refresh]` / `update <mod>… / --all` | newer uploads of the same Nexus file |
+| `changelog <mod> [--all]` | the mod's Nexus changelog, versions newer than yours first (GUI: **What's new** beside each update) |
 | `deps [--refresh]` | requirements of enabled mods (mod page via GraphQL + file-level deps): missing / disabled. Cached per installed version; `--refresh` re-checks all |
 | `conflicts [mod] [--base]` | file overwrites (identical copies hidden) and redscript `@replaceMethod` clashes |
 | `enable` / `disable` / `order <mod> --top/--bottom/--before X/--after X` | |
