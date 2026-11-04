@@ -11,6 +11,7 @@ mod manage;
 mod nexus;
 mod safety;
 mod state;
+mod steam;
 mod vanilla;
 mod vfs;
 
@@ -225,6 +226,23 @@ enum Cmd {
     Status,
     /// Print the Steam launch options line to use.
     LaunchOptions,
+    /// Add the cpmm GUI to the Steam library as a non-Steam game, with artwork. Works while
+    /// Steam runs (through its CEF debugger, e.g. with Decky) or with Steam closed.
+    #[command(visible_alias = "add-to-steam")]
+    SteamShortcut {
+        /// Name in the library
+        #[arg(long, default_value = "cpmm")]
+        name: String,
+        /// GUI binary (default: cpmm-gui next to this cpmm)
+        #[arg(long)]
+        exe: Option<PathBuf>,
+        /// Remove the shortcut instead
+        #[arg(long)]
+        remove: bool,
+        /// Only show what would change
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Automatic load order: enforce requirements, your rules and patch-over-target, keep the
     /// rest stable. Shows the plan; --apply saves it (modlist.txt follows on next launch).
     Sort {
@@ -419,7 +437,7 @@ fn real_main() -> Result<()> {
         _ => {}
     }
     let _lock = match cli.cmd {
-        Cmd::List { .. } | Cmd::Info { .. } | Cmd::Status | Cmd::LaunchOptions | Cmd::RegisterHandler { .. } | Cmd::Api(_) | Cmd::Archives { .. } | Cmd::Doctor { ack: None, unack: None, .. } | Cmd::History { .. } | Cmd::Crashes { .. } | Cmd::Patch | Cmd::Conflicts { .. } | Cmd::Updates { .. } | Cmd::Unmanaged { .. } => None,
+        Cmd::List { .. } | Cmd::Info { .. } | Cmd::Status | Cmd::LaunchOptions | Cmd::SteamShortcut { .. } | Cmd::RegisterHandler { .. } | Cmd::Api(_) | Cmd::Archives { .. } | Cmd::Doctor { ack: None, unack: None, .. } | Cmd::History { .. } | Cmd::Crashes { .. } | Cmd::Patch | Cmd::Conflicts { .. } | Cmd::Updates { .. } | Cmd::Unmanaged { .. } => None,
         _ => Some(lock(&paths)?),
     };
     if let Cmd::Nxm { url: Some(_), .. } = &cli.cmd {
@@ -967,6 +985,9 @@ fn real_main() -> Result<()> {
             }
             None => println!("no session running"),
         },
+        Cmd::SteamShortcut { name, exe, remove, dry_run } => {
+            steam::run(steam::Opts { name, exe, remove, dry_run })?;
+        }
         Cmd::LaunchOptions => {
             let exe = std::env::current_exe()?;
             println!("Put cpmm right before %command% (after env vars and other wrappers), e.g.:\n");

@@ -40,6 +40,7 @@ cpmm launch-options     # prints your line, i.e. … game-performance /home/…/
 | `uninstall`/`remove <mod>` | moves staged files to `trash/` |
 | `overwrite` | what the game wrote at runtime (and what it shadows) |
 | `unmanaged [--modified] [--flat]` | non-vanilla files in the base dir that no mod owns; edited vanilla files (from Steam's depot manifest) |
+| `steam-shortcut [--remove] [--dry-run]` | add the GUI to the Steam library with artwork (live via Steam's CEF debugger, or via shortcuts.vdf when Steam is closed) |
 | `register-handler [--check \| --unregister]` | make cpmm the default for Nexus "Mod Manager Download" (`nxm://`) links; installs with requirements, logs to `~/.local/share/cpmm/nxm.log` |
 | `nxm <url>` | what the handler runs |
 | `tracked [--install] [--untrack]` | install mods you pressed **Track** on at nexusmods.com: works from any browser, including Steam's |
@@ -86,8 +87,17 @@ cd gui && npm install && npx tauri build --no-bundle
 cp src-tauri/target/release/cpmm-gui ~/.local/bin/     # finds ~/.local/bin/cpmm next to itself
 ```
 
-It's in the Steam library as the non-Steam game **cpmm** (added live through Steam's client API
-over the CEF debugger that Decky enables, with capsule/hero/logo artwork from `gui/art/`).
+Add it to the Steam library as the non-Steam game **cpmm**, with the capsule/wide/hero/logo artwork
+from `gui/art/` (embedded in the binary):
+
+```
+cpmm steam-shortcut [--dry-run] [--remove] [--name cpmm] [--exe path/to/cpmm-gui]
+```
+
+With Steam running it goes through Steam's own client API over the CEF debugger (Decky enables it;
+otherwise `touch ~/.local/share/Steam/.cef-enable-remote-debugging` and restart Steam), so the entry
+appears at once. With Steam closed it edits `userdata/<user>/config/shortcuts.vdf` and `config/grid/`
+directly. Rerunning refreshes the artwork; the existing entry is matched by its exe path.
 
 ## Load order and health
 
