@@ -105,6 +105,15 @@ pub struct Requirement {
     pub optional: bool,
 }
 
+/// When a mod's requirements were last fetched from Nexus, and for which installed version.
+/// They stay valid until the mod is updated/reinstalled or `cpmm deps --refresh` re-checks.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ReqCheck {
+    pub at: String,
+    /// `NexusSource::version_id` at check time ("" for local archives tagged with --nexus)
+    pub version_id: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Mod {
     /// Short slug; also the staging directory name.
@@ -117,6 +126,8 @@ pub struct Mod {
     pub nexus: Option<NexusSource>,
     #[serde(default)]
     pub requires: Vec<Requirement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reqs_checked: Option<ReqCheck>,
     /// lower-cased paths the user hid (kept across updates)
     #[serde(default)]
     pub hidden: Vec<String>,

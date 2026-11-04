@@ -154,7 +154,7 @@ pub fn tracked(paths: &Paths, st: &State) -> Result<Value> {
 pub fn search_info(paths: &Paths, gid: u64) -> Result<Value> {
     let nx = crate::nexus(paths);
     let info = nx.mod_info(gid)?;
-    let reqs = nx.requirements(&[gid])?.into_iter().next().map(|x| x.2).unwrap_or_default();
+    let reqs = nx.requirements(&[gid], false)?.into_iter().next().map(|x| x.2).unwrap_or_default();
     let mut files = vec![];
     for f in nx.mod_files(&info.id)?.into_iter().filter(|f| f.is_active) {
         if let Some(v) = nx.versions(&f.id)?.into_iter().next() {

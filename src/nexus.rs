@@ -108,7 +108,7 @@ pub struct ManFile {
     pub file_size: u64,
     pub file_hashes: Hashes,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Req {
     pub mod_id: u64,
     pub name: String,
@@ -206,8 +206,9 @@ impl Nexus {
         serde_json::from_value(v).context("decoding manifest")
     }
     /// Raw v3 file-level dependency definitions (hard deps with version ranges); rarely authored.
-    pub fn file_deps(&self, version_id: &str) -> Result<Vec<(u64, String, String)>> {
-        let v = self.get_json(&format!("{V3}/mod-file-versions/{version_id}/dependencies"), true, Some(self.ttl))?;
+    pub fn file_deps(&self, version_id: &str, force: bool) -> Result<Vec<(u64, String, String)>> {
+        let ttl = if force { Duration::ZERO } else { self.ttl };
+        let v = self.get_json(&format!("{V3}/mod-file-versions/{version_id}/dependencies"), true, Some(ttl))?;
         let mut out = vec![];
         for def in v.pointer("/dependency_definitions").and_then(Value::as_array).cloned().unwrap_or_default() {
             for r in def["ranges"].as_array().cloned().unwrap_or_default() {
@@ -249,10 +250,26 @@ impl Nexus {
         Ok(())
     }
 
-    /// Mod-page requirements via GraphQL, for many mods at once.
-    pub fn requirements(&self, ids: &[u64]) -> Result<Vec<(u64, String, Vec<Req>)>> {
+    /// Mod-page requirements via GraphQL, for many mods at once. Each answer is cached per mod
+    /// for 15 minutes (a lookup followed by an install asks once); `force` skips the cache.
+    /// Installed mods keep theirs in state.json (`Mod::reqs_checked`), so this is mostly hit
+    /// for mods that aren't installed yet.
+    pub fn requirements(&self, ids: &[u64], force: bool) -> Result<Vec<(u64, String, Vec<Req>)>> {
+        const TTL: Duration = Duration::from_secs(15 * 60);
+        let dir = self.cache.join("reqs");
+        let _ = fs::create_dir_all(&dir);
         let mut out = vec![];
-        for chunk in ids.chunks(50) {
+        let mut need = vec![];
+        for &id in ids {
+            let f = dir.join(format!("{id}.json"));
+            let fresh = !force
+                && fs::metadata(&f).ok().and_then(|m| m.modified().ok()).and_then(|m| SystemTime::now().duration_since(m).ok()).is_some_and(|age| age < TTL);
+            match fresh.then(|| fs::read(&f).ok().and_then(|b| serde_json::from_slice::<(u64, String, Vec<Req>)>(&b).ok())).flatten() {
+                Some(hit) => out.push(hit),
+                None => need.push(id),
+            }
+        }
+        for chunk in need.chunks(50) {
             let q = "query($ids:[CompositeDomainWithIdInput!]!){ legacyModsByDomain(ids:$ids){ nodes { modId name modRequirements { nexusRequirements { nodes { modId modName url notes externalRequirement } } } } } }";
             let vars = json!({"ids": chunk.iter().map(|i| json!({"gameDomain": GAME, "modId": i})).collect::<Vec<_>>()});
             let body = json!({"query": q, "variables": vars});
@@ -284,7 +301,11 @@ impl Nexus {
                         url: x["url"].as_str().unwrap_or("").to_string(),
                     })
                     .collect();
-                out.push((id, name, reqs));
+                let entry = (id, name, reqs);
+                if let Ok(b) = serde_json::to_vec(&entry) {
+                    let _ = fs::write(dir.join(format!("{id}.json")), b);
+                }
+                out.push(entry);
             }
         }
         Ok(out)

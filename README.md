@@ -33,7 +33,7 @@ cpmm launch-options     # prints your line, i.e. … game-performance /home/…/
 | `info <mod>` | details, requirements, files |
 | `install <nexus id/url/archive> [--file] [--with-deps] [--root DIR]` | download (premium API), verify SHA-256 against the Nexus manifest, detect layout, stage |
 | `updates [--refresh]` / `update <mod>… / --all` | newer uploads of the same Nexus file |
-| `deps [--refresh]` | Nexus requirements (GraphQL) of enabled mods: missing / disabled |
+| `deps [--refresh]` | requirements of enabled mods (mod page via GraphQL + file-level deps): missing / disabled. Cached per installed version; `--refresh` re-checks all |
 | `conflicts [mod] [--base]` | file overwrites (identical copies hidden) and redscript `@replaceMethod` clashes |
 | `enable` / `disable` / `order <mod> --top/--bottom/--before X/--after X` | |
 | `verify [mod…]` | staged files vs Nexus manifest hashes |
@@ -55,6 +55,15 @@ cpmm launch-options     # prints your line, i.e. … game-performance /home/…/
 | `eject [--apply]` | escape hatch: reflink every enabled mod back into the game dir |
 
 Requirement notes containing "optional" or "recommended" count as optional; Nexus has no flag for it.
+
+Requirements are checked at every install: Nexus installs and local archives tagged with `--nexus <id>`
+(the built-in browser's manual downloads) refuse to install with missing hard requirements unless
+`--with-deps` (install them) or `--ignore-deps` is given, and nothing is staged before that check.
+Updates warn about requirements a new version added (`cpmm deps --fix` / `--ignore`), and requirements
+you ignored for a mod stay ignored. Results are stored per mod with the installed version they were
+checked for (`reqs_checked` in state.json) and reused until the mod is updated or reinstalled, or until
+`cpmm deps --refresh`; mods that aren't installed yet are cached for 15 minutes in `~/.cache/cpmm/reqs/`
+(so a lookup followed by an install asks Nexus once).
 Directory casing is normalised on install (`Archive/PC/Mod` → `archive/pc/mod`) because Wine
 only uses one of two differently-cased folders.
 

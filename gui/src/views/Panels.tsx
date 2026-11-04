@@ -195,11 +195,11 @@ export function DepsView({ state }: { state: AppState }) {
     <>
       <PageHeader
         title="Dependencies"
-        subtitle="Requirements listed on each mod's Nexus page (plus file-level dependencies)."
+        subtitle="Requirements from each mod's Nexus page plus file-level dependencies. Checked when a mod is installed or updated and cached after that; re-check to pick up changes authors made since."
         actions={
           <>
-            <Button icon={<RefreshCw className="size-4" />} disabled={busy} onClick={() => run("Refresh requirements", ["deps", "--refresh"])}>
-              Refresh from Nexus
+            <Button icon={<RefreshCw className="size-4" />} disabled={busy} onClick={() => run("Re-check requirements", ["deps", "--refresh"])}>
+              Re-check on Nexus
             </Button>
             <Button variant="primary" icon={<Wand2 className="size-4" />} disabled={busy || hard.length === 0} onClick={() => run("Fix requirements", ["deps", "--fix"])}>
               Fix all ({hard.length})

@@ -18,7 +18,7 @@ mod vfs;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use nexus::Nexus;
-use state::{Mod, NexusSource, Paths, Requirement, State, now, short_name, slugify};
+use state::{Mod, NexusSource, Paths, ReqCheck, Requirement, State, now, short_name, slugify};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
@@ -1242,6 +1242,70 @@ fn to_reqs(rs: &[nexus::Req]) -> Vec<Requirement> {
     rs.iter().filter(|r| !r.external && r.mod_id != 0).map(|r| Requirement { mod_id: r.mod_id, name: r.name.clone(), notes: r.notes.clone(), optional: r.optional() }).collect()
 }
 
+/// Everything a Nexus mod requires: its mod page's list (GraphQL) plus the file-level
+/// dependencies of the installed file version (v3), if known. Returns the external
+/// (non-Nexus) requirements for display, and the list to store on the mod.
+fn fetch_requirements(nx: &Nexus, gid: u64, version_id: &str, force_page: bool, force_files: bool) -> Result<(Vec<nexus::Req>, Vec<Requirement>)> {
+    let reqs = nx.requirements(&[gid], force_page)?.into_iter().next().map(|x| x.2).unwrap_or_default();
+    let mut stored = to_reqs(&reqs);
+    if !version_id.is_empty() {
+        for (dgid, dname, minv) in nx.file_deps(version_id, force_files).unwrap_or_default() {
+            if dgid != 0 && dgid != gid && !stored.iter().any(|r| r.mod_id == dgid) {
+                stored.push(Requirement { mod_id: dgid, name: dname, notes: format!("file dependency, min version {minv}"), optional: false });
+            }
+        }
+    }
+    Ok((reqs.into_iter().filter(|r| r.external).collect(), stored))
+}
+
+fn req_notes(r: &Requirement) -> String {
+    if r.notes.is_empty() { String::new() } else { format!(" — {}", r.notes) }
+}
+
+/// Check a mod's requirements at install time. Missing hard requirements are installed
+/// (--with-deps), refused (default), or, with --ignore-deps (updates), reported with the fix.
+/// Requirements the user chose to do without for this mod (`ignored`) are skipped.
+#[allow(clippy::too_many_arguments)]
+fn resolve_requirements(paths: &Paths, st: &mut State, nx: &Nexus, label: &str, stored: &[Requirement], ignored: &[u64], o: &InstallOpts, depth: usize, visiting: &mut BTreeSet<u64>) -> Result<()> {
+    let ind = "  ".repeat(depth);
+    let mut missing = vec![];
+    for r in stored {
+        if ignored.contains(&r.mod_id) && st.by_nexus(r.mod_id).is_none_or(|d| !d.enabled) {
+            println!("{ind}  requires {} {}: not installed, ignored by your choice", r.mod_id, r.name);
+            continue;
+        }
+        match st.by_nexus(r.mod_id) {
+            Some(m) if m.enabled => println!("{ind}  requires {} {}: installed", r.mod_id, r.name),
+            Some(m) => println!("{ind}  requires {} {}: installed but DISABLED ({}; cpmm enable {})", r.mod_id, r.name, m.id, m.id),
+            None if r.optional => println!("{ind}  optional {} {}: not installed{}", r.mod_id, r.name, req_notes(r)),
+            None if visiting.contains(&r.mod_id) => {}
+            None => missing.push(r.clone()),
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    if o.with_deps {
+        for r in &missing {
+            println!("{ind}  installing requirement {} {}{}", r.mod_id, r.name, req_notes(r));
+            install_nexus(paths, st, nx, r.mod_id, o, depth + 1, visiting)?;
+        }
+    } else if o.ignore_deps {
+        for r in &missing {
+            println!("{ind}  WARNING: requires {} {}, which is NOT installed{}", r.mod_id, r.name, req_notes(r));
+            println!("{ind}           `cpmm deps --fix` installs it; `cpmm deps --ignore {label} {}` accepts it", r.mod_id);
+        }
+    } else {
+        let mut msg = String::from("missing hard requirements:\n");
+        for r in &missing {
+            msg += &format!("  {} {}{}\n", r.mod_id, r.name, req_notes(r));
+        }
+        msg += "re-run with --with-deps to install them, or --ignore-deps";
+        bail!(msg);
+    }
+    Ok(())
+}
+
 fn install_nexus(paths: &Paths, st: &mut State, nx: &Nexus, gid: u64, o: &InstallOpts, depth: usize, visiting: &mut BTreeSet<u64>) -> Result<()> {
     if !visiting.insert(gid) {
         return Ok(());
@@ -1251,48 +1315,24 @@ fn install_nexus(paths: &Paths, st: &mut State, nx: &Nexus, gid: u64, o: &Instal
     let ver = pick_file(nx, &info, if depth == 0 { o.file.as_deref() } else { None })?;
     println!("{ind}{} ({gid}): file {:?} v{} [{}]", info.name, ver.file.name, ver.version, ver.category);
 
-    // Requirements: mod-page list (GraphQL) + file-level v3 ranges.
-    let reqs = nx.requirements(&[gid])?.into_iter().next().map(|x| x.2).unwrap_or_default();
-    for r in reqs.iter().filter(|r| r.external) {
+    // Requirements of this exact file version: checked now, then stored on the mod.
+    let (external, stored) = fetch_requirements(nx, gid, &ver.id, false, false)?;
+    for r in &external {
         println!("{ind}  external requirement: {} {}", r.name, r.url);
     }
-    let mut stored = to_reqs(&reqs);
-    for (dgid, dname, minv) in nx.file_deps(&ver.id).unwrap_or_default() {
-        if dgid != 0 && !stored.iter().any(|r| r.mod_id == dgid) {
-            stored.push(Requirement { mod_id: dgid, name: dname, notes: format!("file dependency, min version {minv}"), optional: false });
-        }
-    }
-    let mut missing = vec![];
-    for r in &stored {
-        match st.by_nexus(r.mod_id) {
-            Some(m) if m.enabled => println!("{ind}  requires {} {}: installed", r.mod_id, r.name),
-            Some(m) => println!("{ind}  requires {} {}: installed but DISABLED ({})", r.mod_id, r.name, m.id),
-            None if r.optional => println!("{ind}  optional {} {}: not installed{}", r.mod_id, r.name, if r.notes.is_empty() { String::new() } else { format!(" — {}", r.notes) }),
-            None if visiting.contains(&r.mod_id) => {}
-            None => missing.push(r.clone()),
-        }
-    }
-    if !missing.is_empty() {
-        if o.with_deps {
-            for r in &missing {
-                println!("{ind}  installing requirement {} {}{}", r.mod_id, r.name, if r.notes.is_empty() { String::new() } else { format!(" — {}", r.notes) });
-                install_nexus(paths, st, nx, r.mod_id, o, depth + 1, visiting)?;
-            }
-        } else if !o.ignore_deps {
-            let mut msg = String::from("missing hard requirements:\n");
-            for r in &missing {
-                msg += &format!("  {} {}{}\n", r.mod_id, r.name, if r.notes.is_empty() { String::new() } else { format!(" — {}", r.notes) });
-            }
-            msg += "re-run with --with-deps to install them, or --ignore-deps";
-            bail!(msg);
-        }
-    }
-
     let existing = st.by_nexus(gid).map(|m| m.id.clone());
+    let ignored = existing.as_ref().and_then(|e| st.find(e)).map(|i| st.mods[i].ignored_reqs.clone()).unwrap_or_default();
+    let label = existing.clone().unwrap_or_else(|| slugify(short_name(&info.name)));
+    resolve_requirements(paths, st, nx, &label, &stored, &ignored, o, depth, visiting)?;
+    let checked = ReqCheck { at: now(), version_id: ver.id.clone() };
+
     if let Some(e) = &existing {
-        let m = &st.mods[st.get(e)?];
-        if m.nexus.as_ref().is_some_and(|n| n.version_id == ver.id) {
+        let i = st.get(e)?;
+        if st.mods[i].nexus.as_ref().is_some_and(|n| n.version_id == ver.id) {
             println!("{ind}  already installed as {e}");
+            st.mods[i].requires = stored;
+            st.mods[i].reqs_checked = Some(checked);
+            st.save(paths)?;
             return Ok(());
         }
     }
@@ -1345,6 +1385,7 @@ fn install_nexus(paths: &Paths, st: &mut State, nx: &Nexus, gid: u64, o: &Instal
             m.version = ver.version.clone();
             m.nexus = Some(src);
             m.requires = stored;
+            m.reqs_checked = Some(checked);
             m.installed_at = now();
         }
         None => {
@@ -1355,6 +1396,7 @@ fn install_nexus(paths: &Paths, st: &mut State, nx: &Nexus, gid: u64, o: &Instal
                 version: ver.version.clone(),
                 nexus: Some(src),
                 requires: stored,
+                reqs_checked: Some(checked),
                 hidden: vec![],
                 ignored_reqs: vec![],
                 installed_at: now(),
@@ -1393,7 +1435,21 @@ fn report_new_conflicts(paths: &Paths, st: &State, id: &str, ind: &str) {
 fn install_local(paths: &Paths, st: &mut State, arc: &std::path::Path, nid: Option<u64>, o: &InstallOpts) -> Result<()> {
     let stem = arc.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("mod".into());
     let name = o.name.clone().unwrap_or(stem.clone());
-    let id = o.id.clone().map(|i| slugify(&i)).unwrap_or_else(|| st.unique_id(&slugify(&name)));
+    let existing = o.id.clone().map(|i| slugify(&i)).filter(|i| st.find(i).is_some()).or_else(|| nid.and_then(|g| st.by_nexus(g)).map(|m| m.id.clone()));
+    let id = existing.clone().unwrap_or_else(|| o.id.clone().map(|i| slugify(&i)).unwrap_or_else(|| st.unique_id(&slugify(&name))));
+    // Tagged with a Nexus mod: check its requirements before anything is staged.
+    let mut checked = None;
+    if let Some(gid) = nid {
+        let nx = nexus(paths);
+        let (external, stored) = fetch_requirements(&nx, gid, "", false, false)?;
+        for r in &external {
+            println!("  external requirement: {} {}", r.name, r.url);
+        }
+        let ignored = existing.as_ref().and_then(|e| st.find(e)).map(|i| st.mods[i].ignored_reqs.clone()).unwrap_or_default();
+        let mut visiting = BTreeSet::from([gid]);
+        resolve_requirements(paths, st, &nx, &id, &stored, &ignored, o, 0, &mut visiting)?;
+        checked = Some((stored, ReqCheck { at: now(), version_id: String::new() }));
+    }
     paths.ensure_dirs()?;
     let x = install::tmp_extract_dir(paths, &id);
     if x.exists() {
@@ -1409,15 +1465,17 @@ fn install_local(paths: &Paths, st: &mut State, arc: &std::path::Path, nid: Opti
     let plan = install::plan(&files::list_tree(&x), &id, o.root.as_deref(), o.dest.as_deref())?;
     let staged = install::stage(paths, st, &id, &x, &plan)?;
     let _ = fs::remove_dir_all(&x);
-    let mut requires = vec![];
-    if let Some(gid) = nid {
-        if let Ok(r) = nexus(paths).requirements(&[gid]) {
-            requires = r.into_iter().next().map(|x| to_reqs(&x.2)).unwrap_or_default();
-        }
-    }
+    let (requires, reqs_checked) = match checked {
+        Some((r, c)) => (r, Some(c)),
+        None => (vec![], None),
+    };
     match st.find(&id) {
         Some(i) => {
             st.mods[i].installed_at = now();
+            if reqs_checked.is_some() {
+                st.mods[i].requires = requires;
+                st.mods[i].reqs_checked = reqs_checked;
+            }
             println!("replaced files of {id}: {} files", staged.len());
         }
         None => {
@@ -1428,6 +1486,7 @@ fn install_local(paths: &Paths, st: &mut State, arc: &std::path::Path, nid: Opti
                 version: String::new(),
                 nexus: nid.map(|g| NexusSource { mod_id: g, ..Default::default() }),
                 requires,
+                reqs_checked,
                 hidden: vec![],
                 ignored_reqs: vec![],
                 installed_at: now(),
@@ -1563,17 +1622,54 @@ fn update(paths: &Paths, st: &mut State, keys: &[String], all: bool) -> Result<(
     Ok(())
 }
 
+/// Installed mods whose stored requirements need fetching: never checked, checked for a
+/// different installed version, or everything with --refresh.
+fn stale_requirements(st: &State, refresh: bool) -> Vec<usize> {
+    st.mods
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            let n = m.nexus.as_ref()?;
+            (refresh || m.reqs_checked.as_ref().is_none_or(|c| c.version_id != n.version_id)).then_some(i)
+        })
+        .collect()
+}
+
 fn deps(paths: &Paths, st: &mut State, refresh: bool) -> Result<()> {
-    let ids: Vec<u64> = st.mods.iter().filter(|m| refresh || m.requires.is_empty()).filter_map(|m| m.nexus.as_ref().map(|n| n.mod_id)).collect();
-    if !ids.is_empty() {
-        let got = nexus(paths).requirements(&ids)?;
-        let map: BTreeMap<u64, Vec<nexus::Req>> = got.into_iter().map(|(id, _, r)| (id, r)).collect();
-        for m in st.mods.iter_mut() {
-            if let Some(r) = m.nexus.as_ref().and_then(|n| map.get(&n.mod_id)) {
-                m.requires = to_reqs(r);
+    // Requirements stored before check stamps existed were fetched at install: keep them.
+    let mut migrated = false;
+    for m in st.mods.iter_mut() {
+        if let (None, Some(n)) = (&m.reqs_checked, &m.nexus) {
+            if !m.requires.is_empty() {
+                m.reqs_checked = Some(ReqCheck { at: m.installed_at.clone(), version_id: n.version_id.clone() });
+                migrated = true;
+            }
+        }
+    }
+    let stale = stale_requirements(st, refresh);
+    let total = st.mods.iter().filter(|m| m.nexus.is_some()).count();
+    if !stale.is_empty() {
+        let nx = nexus(paths);
+        // one batched GraphQL request for all mod pages; per-mod lookups below hit its cache
+        let ids: Vec<u64> = stale.iter().filter_map(|&i| st.mods[i].nexus.as_ref().map(|n| n.mod_id)).collect();
+        nx.requirements(&ids, refresh)?;
+        for &i in &stale {
+            let n = st.mods[i].nexus.clone().unwrap();
+            match fetch_requirements(&nx, n.mod_id, &n.version_id, false, refresh) {
+                Ok((_, stored)) => {
+                    st.mods[i].requires = stored;
+                    st.mods[i].reqs_checked = Some(ReqCheck { at: now(), version_id: n.version_id.clone() });
+                }
+                Err(e) => println!("  {}: couldn't check requirements: {e:#}", st.mods[i].id),
             }
         }
         st.save(paths)?;
+        println!("checked requirements of {} mod(s) on Nexus; {} cached", stale.len(), total - stale.len());
+    } else {
+        if migrated {
+            st.save(paths)?;
+        }
+        println!("requirements of all {total} Nexus mods are cached (re-check with --refresh)");
     }
     let mut problems = 0;
     let mut ignored = 0;
