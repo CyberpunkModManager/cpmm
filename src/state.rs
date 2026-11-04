@@ -151,20 +151,35 @@ pub struct State {
     /// Doctor findings the user marked as known/accepted (by title).
     #[serde(default)]
     pub acked: Vec<String>,
+    /// Mod list profiles (see profiles.rs); `mods`/`rules` above are the active one's.
+    #[serde(default)]
+    pub profiles: Vec<crate::profiles::Profile>,
+    #[serde(default)]
+    pub active_profile: String,
 }
 
 impl State {
     pub fn load(p: &Paths) -> Result<Self> {
         match fs::read(p.state_file()) {
-            Ok(b) => serde_json::from_slice(&b).context("parsing state.json"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(State { version: 1, mods: vec![], rules: vec![], acked: vec![] }),
+            Ok(b) => {
+                let mut st: State = serde_json::from_slice(&b).context("parsing state.json")?;
+                st.ensure_profiles();
+                Ok(st)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let mut st = State { version: 1, mods: vec![], rules: vec![], acked: vec![], profiles: vec![], active_profile: String::new() };
+                st.ensure_profiles();
+                Ok(st)
+            }
             Err(e) => Err(e.into()),
         }
     }
     pub fn save(&self, p: &Paths) -> Result<()> {
         fs::create_dir_all(&p.data)?;
         let tmp = p.data.join("state.json.tmp");
-        fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        let mut v = serde_json::to_value(self)?;
+        v["profiles"] = serde_json::to_value(self.synced_profiles())?;
+        fs::write(&tmp, serde_json::to_vec_pretty(&v)?)?;
         if p.state_file().exists() {
             let _ = fs::copy(p.state_file(), p.data.join("state.json.bak"));
         }

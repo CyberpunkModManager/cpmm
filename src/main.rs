@@ -9,6 +9,7 @@ mod import;
 mod install;
 mod manage;
 mod nexus;
+mod profiles;
 mod safety;
 mod state;
 mod steam;
@@ -305,9 +306,38 @@ enum Cmd {
         #[arg(long)]
         restore: Option<String>,
     },
+    /// Mod list profiles: which mods are enabled, their order and load-order rules.
+    /// Installed files are shared; switching never downloads or copies anything.
+    Profile {
+        #[command(subcommand)]
+        action: Option<ProfileCmd>,
+    },
     /// JSON views for the GUI and scripts.
     #[command(subcommand)]
     Api(ApiCmd),
+}
+
+#[derive(Subcommand)]
+enum ProfileCmd {
+    /// Profiles, with the active one marked
+    List,
+    /// New profile: a copy of the active one (or --from), or --empty (every mod disabled)
+    Create {
+        name: String,
+        #[arg(long, conflicts_with = "empty")]
+        from: Option<String>,
+        #[arg(long)]
+        empty: bool,
+        /// Switch to it right away
+        #[arg(long)]
+        switch: bool,
+    },
+    /// Make a profile the active one (takes effect at the next launch)
+    #[command(visible_alias = "use")]
+    Switch { name: String },
+    Rename { old: String, new: String },
+    /// Delete a profile (not the active one); mods stay installed
+    Delete { name: String },
 }
 
 #[derive(Subcommand)]
@@ -437,7 +467,7 @@ fn real_main() -> Result<()> {
         _ => {}
     }
     let _lock = match cli.cmd {
-        Cmd::List { .. } | Cmd::Info { .. } | Cmd::Status | Cmd::LaunchOptions | Cmd::SteamShortcut { .. } | Cmd::RegisterHandler { .. } | Cmd::Api(_) | Cmd::Archives { .. } | Cmd::Doctor { ack: None, unack: None, .. } | Cmd::History { .. } | Cmd::Crashes { .. } | Cmd::Patch | Cmd::Conflicts { .. } | Cmd::Updates { .. } | Cmd::Unmanaged { .. } => None,
+        Cmd::List { .. } | Cmd::Profile { action: None | Some(ProfileCmd::List) } | Cmd::Info { .. } | Cmd::Status | Cmd::LaunchOptions | Cmd::SteamShortcut { .. } | Cmd::RegisterHandler { .. } | Cmd::Api(_) | Cmd::Archives { .. } | Cmd::Doctor { ack: None, unack: None, .. } | Cmd::History { .. } | Cmd::Crashes { .. } | Cmd::Patch | Cmd::Conflicts { .. } | Cmd::Updates { .. } | Cmd::Unmanaged { .. } => None,
         _ => Some(lock(&paths)?),
     };
     if let Cmd::Nxm { url: Some(_), .. } = &cli.cmd {
@@ -467,6 +497,7 @@ fn real_main() -> Result<()> {
             same_fs_check(&p)?;
         }
         Cmd::List { long } => list(&paths, &st, long)?,
+        Cmd::Profile { action } => profile(&paths, &mut st, action.unwrap_or(ProfileCmd::List))?,
         Cmd::Info { r#mod } => info(&paths, &st, &r#mod)?,
         Cmd::Enable { mods } | Cmd::Disable { mods } if mods.is_empty() => bail!("name at least one mod"),
         Cmd::Enable { mods } => set_enabled(&paths, &mut st, &mods, true)?,
@@ -525,6 +556,7 @@ fn real_main() -> Result<()> {
                 }
             }
             st.mods[i].id = new_id.clone();
+            st.rename_mod_in_profiles(&old, &new_id);
             st.save(&paths)?;
             println!("renamed {old} -> {new_id}");
         }
@@ -539,6 +571,10 @@ fn real_main() -> Result<()> {
             }
             if vfs::running(&paths).is_some() {
                 bail!("game session running; quit first (its overlay uses these files)");
+            }
+            let elsewhere = st.profiles_enabling(&id);
+            if !elsewhere.is_empty() {
+                println!("note: also removes it from profile(s) {} where it is enabled (disable it instead to keep it there)", elsewhere.join(", "));
             }
             let _ = safety::snapshot_saves(&paths, &format!("before uninstalling {id}"));
             safety::journal(&paths, "uninstall", std::slice::from_ref(&id), &st.mods[i].version);
@@ -1000,6 +1036,54 @@ fn real_main() -> Result<()> {
     Ok(())
 }
 
+fn profile(paths: &Paths, st: &mut State, action: ProfileCmd) -> Result<()> {
+    let summary = |st: &State, p: &profiles::Profile| format!("{} of {} mods enabled", p.enabled.len(), st.mods.len());
+    match action {
+        ProfileCmd::List => {
+            st.sync_active_profile();
+            for p in &st.profiles {
+                let active = p.name == st.active_profile;
+                println!("{} {:<24} {}", if active { "*" } else { " " }, p.name, summary(st, p));
+            }
+            return Ok(());
+        }
+        ProfileCmd::Create { name, from, empty, switch } => {
+            let name = st.create_profile(&name, from.as_deref(), empty)?;
+            println!("created profile {name:?} ({})", if empty { "empty: every mod disabled".to_string() } else { format!("copy of {:?}", from.unwrap_or(st.active_profile.clone())) });
+            if switch {
+                manage::ensure_idle(paths)?;
+                st.switch_profile(&name)?;
+                println!("switched to {name:?}");
+            }
+        }
+        ProfileCmd::Switch { name } => {
+            let from = st.active_profile.clone();
+            if st.profiles[st.profile_index(&name)?].name == from {
+                println!("{from:?} is already the active profile");
+                return Ok(());
+            }
+            manage::ensure_idle(paths)?;
+            let new = st.switch_profile(&name)?;
+            let p = st.profiles[st.profile_index(&st.active_profile)?].clone();
+            println!("switched {from:?} -> {:?}: {}", p.name, summary(st, &p));
+            if !new.is_empty() {
+                println!("{} mod(s) new to this profile, added disabled: {}", new.len(), new.join(", "));
+            }
+            safety::journal(paths, "profile", &[p.name.clone()], &format!("from {from}"));
+            println!("takes effect at the next launch; `cpmm deps` / `cpmm doctor` check this list");
+        }
+        ProfileCmd::Rename { old, new } => {
+            let (old, new) = st.rename_profile(&old, &new)?;
+            println!("renamed profile {old:?} -> {new:?}");
+        }
+        ProfileCmd::Delete { name } => {
+            let name = st.delete_profile(&name)?;
+            println!("deleted profile {name:?} (mods stay installed)");
+        }
+    }
+    st.save(paths)
+}
+
 fn same_fs_check(paths: &Paths) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     fs::create_dir_all(&paths.data)?;
@@ -1042,6 +1126,9 @@ fn modio_mods(paths: &Paths) -> Vec<(String, String, String, String)> {
 
 fn list(paths: &Paths, st: &State, long: bool) -> Result<()> {
     let owners = if long { Some(conflicts::ownership(paths, &st.mods, true)) } else { None };
+    if st.profiles.len() > 1 {
+        println!("profile: {} (cpmm profile list)", st.active_profile);
+    }
     println!("{:>3} {:<3} {:<34} {:<12} {:>6}  {}", "#", "on", "id", "version", "nexus", "name");
     for (i, m) in st.mods.iter().enumerate() {
         let nid = m.nexus.as_ref().map(|n| n.mod_id.to_string()).unwrap_or("-".into());

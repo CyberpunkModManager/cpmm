@@ -69,6 +69,8 @@ pub fn state(paths: &Paths, st: &State) -> Result<Value> {
         "game_running": crate::game_running(),
         "session": session, "mods": mods, "modio": modio, "overwrite_count": overwrite,
         "nxm_handler": crate::manage::current_nxm_handler() == "cpmm-nxm.desktop",
+        "active_profile": st.active_profile,
+        "profiles": st.synced_profiles().iter().map(|p| json!({"name": p.name, "enabled": p.enabled.len(), "active": p.name == st.active_profile, "created_at": p.created_at})).collect::<Vec<_>>(),
     }))
 }
 

@@ -11,6 +11,7 @@ import { ErrorBox, IconButton, Spinner } from "./components/ui";
 import { ModsView } from "./views/Mods";
 import { HealthView } from "./views/LoadOrder";
 import { api2 } from "./lib/cpmm";
+import { ProfileButton } from "./views/Profiles";
 import { ConflictsView, DepsView, InstallView, OverwriteView, SystemView, UpdatesView } from "./views/Panels";
 
 const SECTIONS = [
@@ -69,13 +70,14 @@ export default function App() {
   return (
     <div className="flex h-full">
       <aside className="flex w-60 shrink-0 flex-col border-r border-ink-800 bg-ink-900/70 p-4">
-        <div className="mb-8 flex items-center gap-3 px-2">
+        <div className="mb-5 flex items-center gap-3 px-2">
           <img src="/icon.png" alt="" className="size-9 rounded-lg" />
           <div>
             <div className="font-semibold tracking-tight">cpmm</div>
             <div className="text-xs text-ink-400">Cyberpunk mod manager</div>
           </div>
         </div>
+        <ProfileButton state={s} />
         <nav className="flex flex-1 flex-col gap-1">
           {SECTIONS.map(({ key, label, icon: Icon }) => (
             <button

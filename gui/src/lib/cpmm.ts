@@ -39,6 +39,8 @@ export interface AppState {
   modio: { id: string; name: string; author: string; version: string }[];
   overwrite_count: number;
   nxm_handler: boolean;
+  active_profile: string;
+  profiles: { name: string; enabled: number; active: boolean; created_at: string }[];
 }
 
 export interface ModInfo {

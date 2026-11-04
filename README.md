@@ -132,6 +132,25 @@ otherwise `touch ~/.local/share/Steam/.cef-enable-remote-debugging` and restart 
 appears at once. With Steam closed it edits `userdata/<user>/config/shortcuts.vdf` and `config/grid/`
 directly. Rerunning refreshes the artwork; the existing entry is matched by its exe path.
 
+## Profiles
+
+A profile is a mod list: which mods are enabled, their priority order and its load-order rules.
+Installed files, hidden files, ignored requirements and `overwrite/` are shared, so a mod is
+downloaded and staged once however many profiles use it, and switching is instant.
+
+```
+cpmm profile                               # list (* = active)
+cpmm profile create "Story run" [--from P | --empty] [--switch]
+cpmm profile switch "Story run"            # alias: use; refused while the game runs
+cpmm profile rename OLD NEW / delete NAME  # delete keeps every mod installed
+```
+
+Everything else (`list`, `enable`, `order`, `sort`, `deps`, `doctor`, `run`) works on the active
+profile. A mod installed while one profile is active is added to the others switched off, at the
+top of their order; uninstalling removes it everywhere (cpmm names the other profiles that had it
+on). Existing setups become the profile "Default" on first run. The GUI's profile button (top of the
+sidebar) does the same.
+
 ## Load order and health
 
 * `cpmm sort [--apply]`: stable dependency-aware sort. Constraints are only enforced between mods that
