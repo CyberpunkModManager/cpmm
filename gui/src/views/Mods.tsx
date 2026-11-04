@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Badge, Button, Confirm, Drawer, Empty, ErrorBox, IconButton, Input, PageHeader, Spinner, Switch } from "../components/ui";
-import { type AppState, api, type ModRow, timeAgo } from "../lib/cpmm";
+import { type AppState, api, type ModRow, type Place, timeAgo } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 import { openLink } from "../lib/nexus";
 import { FomodDialog } from "./Fomod";
@@ -27,7 +27,7 @@ import { ModHistory } from "./Safety";
 type Filter = "all" | "enabled" | "disabled" | "problems" | "conflicts" | "manual";
 
 export function ModsView({ state }: { state: AppState }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [open, setOpen] = useState<string | null>(null);
@@ -63,15 +63,9 @@ export function ModsView({ state }: { state: AppState }) {
 
   const order = (m: ModRow, how: "up" | "down" | "top" | "bottom") => {
     const i = state.mods.findIndex((x) => x.id === m.id);
-    const args =
-      how === "top"
-        ? ["--top"]
-        : how === "bottom"
-          ? ["--bottom"]
-          : how === "up"
-            ? ["--before", state.mods[i - 1]?.id ?? m.id]
-            : ["--after", state.mods[i + 1]?.id ?? m.id];
-    run(`Reorder ${m.name}`, ["order", m.id, ...args]);
+    const place: Place =
+      how === "top" ? "top" : how === "bottom" ? "bottom" : how === "up" ? { before: state.mods[i - 1]?.id ?? m.id } : { after: state.mods[i + 1]?.id ?? m.id };
+    run(`Reorder ${m.name}`, { op: "order", mod: m.id, place });
   };
 
   const current = state.mods.find((m) => m.id === open) ?? null;
@@ -135,7 +129,7 @@ export function ModsView({ state }: { state: AppState }) {
                 checked={m.enabled}
                 label={m.enabled ? `Disable ${m.name}` : `Enable ${m.name}`}
                 disabled={busy}
-                onChange={(v) => run(`${v ? "Enable" : "Disable"} ${m.name}`, [v ? "enable" : "disable", m.id])}
+                onChange={(v) => run(`${v ? "Enable" : "Disable"} ${m.name}`, { op: v ? "enable" : "disable", mods: [m.id] })}
               />
               <div className="min-w-0 flex-1">
                 <div className="truncate font-medium">{m.name}</div>
@@ -197,7 +191,7 @@ function ModDrawer({
   onClose: () => void;
   onOrder: (m: ModRow, how: "up" | "down" | "top" | "bottom") => void;
 }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const [confirm, setConfirm] = useState(false);
   const [reconf, setReconf] = useState(false);
   const info = useQuery({ queryKey: ["info", mod?.id], queryFn: () => api.info(mod!.id), enabled: !!mod });
@@ -226,12 +220,20 @@ function ModDrawer({
           </Button>
         )}
         {mod.nexus && (
-          <Button disabled={busy || locked} onClick={() => run(`Update ${mod.name}`, ["update", mod.id])} title={locked ? "Quit the game first" : undefined}>
+          <Button
+            disabled={busy || locked}
+            onClick={() => run(`Update ${mod.name}`, { op: "update", mods: [mod.id], all: false })}
+            title={locked ? "Quit the game first" : undefined}
+          >
             Update
           </Button>
         )}
         {conflicting.length > 0 && (
-          <Button icon={<Crown className="size-4" />} disabled={busy || locked} onClick={() => run(`Prefer ${mod.name}`, ["prefer", mod.id])}>
+          <Button
+            icon={<Crown className="size-4" />}
+            disabled={busy || locked}
+            onClick={() => run(`Prefer ${mod.name}`, { op: "prefer", mod: mod.id, paths: [] })}
+          >
             Win all conflicts
           </Button>
         )}
@@ -271,18 +273,23 @@ function ModDrawer({
                   size="sm"
                   variant={r.status === "missing" ? "primary" : "secondary"}
                   disabled={busy}
-                  onClick={() => run(`Install ${r.name}`, ["install", String(r.mod_id), "--with-deps"])}
+                  onClick={() => run(`Install ${r.name}`, { op: "install", source: String(r.mod_id), missing: "install" })}
                 >
                   Install
                 </Button>
               )}
               {(r.status === "disabled" || r.status === "optional-disabled") && r.installed_as && (
-                <Button size="sm" disabled={busy} onClick={() => run(`Enable ${r.name}`, ["enable", r.installed_as!])}>
+                <Button size="sm" disabled={busy} onClick={() => run(`Enable ${r.name}`, { op: "enable", mods: [r.installed_as!] })}>
                   Enable
                 </Button>
               )}
               {r.status === "missing" && (
-                <Button size="sm" variant="ghost" disabled={busy} onClick={() => run(`Ignore ${r.name}`, ["deps", "--ignore", mod.id, String(r.mod_id)])}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => run(`Ignore ${r.name}`, { op: "deps", refresh: false, fix: false, ignore: [mod.id, String(r.mod_id)], unignore: null })}
+                >
                   Ignore
                 </Button>
               )}
@@ -291,7 +298,7 @@ function ModDrawer({
                   size="sm"
                   variant="ghost"
                   disabled={busy}
-                  onClick={() => run(`Stop ignoring ${r.name}`, ["deps", "--unignore", mod.id, String(r.mod_id)])}
+                  onClick={() => run(`Stop ignoring ${r.name}`, { op: "deps", refresh: false, fix: false, ignore: null, unignore: [mod.id, String(r.mod_id)] })}
                 >
                   Unignore
                 </Button>
@@ -322,7 +329,7 @@ function ModDrawer({
                   </div>
                 )}
               </div>
-              <IconButton label="Hide this file" disabled={busy || locked} onClick={() => run(`Hide ${f.path}`, ["hide", mod.id, f.path])}>
+              <IconButton label="Hide this file" disabled={busy || locked} onClick={() => run(`Hide ${f.path}`, { op: "hide", mod: mod.id, paths: [f.path] })}>
                 <EyeOff className="size-4" />
               </IconButton>
             </div>
@@ -331,7 +338,7 @@ function ModDrawer({
             <div key={`h-${h}`} className="flex items-center gap-3 border-t border-ink-800 bg-neon-violet/5 px-3 py-2 text-sm">
               <EyeOff className="size-4 text-neon-violet" />
               <div className="min-w-0 flex-1 truncate font-mono text-xs text-ink-400 line-through">{h}</div>
-              <IconButton label="Unhide" disabled={busy || locked} onClick={() => run(`Unhide ${h}`, ["unhide", mod.id, h])}>
+              <IconButton label="Unhide" disabled={busy || locked} onClick={() => run(`Unhide ${h}`, { op: "unhide", mod: mod.id, paths: [h] })}>
                 <Eye className="size-4" />
               </IconButton>
             </div>
@@ -349,16 +356,14 @@ function ModDrawer({
           onInstall={(choices) => {
             setReconf(false);
             const n = mod.nexus!;
-            run(`Reinstall ${mod.name}`, [
-              "install",
-              String(n.mod_id),
-              "--id",
-              mod.id,
-              ...(n.version_gsid ? ["--file", n.version_gsid] : []),
-              "--ignore-deps",
-              "--fomod-choices",
-              JSON.stringify(choices),
-            ]);
+            run(`Reinstall ${mod.name}`, {
+              op: "install",
+              source: String(n.mod_id),
+              id: mod.id,
+              file: n.version_gsid || null,
+              missing: "warn",
+              fomod: choices,
+            });
           }}
         />
       )}
@@ -371,7 +376,7 @@ function ModDrawer({
         onCancel={() => setConfirm(false)}
         onConfirm={async () => {
           setConfirm(false);
-          if (await run(`Uninstall ${mod.name}`, ["uninstall", mod.id, "--force"])) onClose();
+          if (await run(`Uninstall ${mod.name}`, { op: "remove", mod: mod.id, force: true })) onClose();
         }}
       />
     </Drawer>

@@ -9,7 +9,7 @@ const tone = { installed: "lime", "other version": "amber", missing: "muted", bu
 
 /** Install a Nexus collection: exact versions, the curator's installer choices and load order. */
 export function CollectionsCard({ state }: { state: AppState }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const [ref, setRef] = useState("");
   const [look, setLook] = useState<string | null>(null);
   const [optional, setOptional] = useState(false);
@@ -72,13 +72,13 @@ export function CollectionsCard({ state }: { state: AppState }) {
               variant="primary"
               disabled={busy || state.game_running || !!state.session}
               onClick={() =>
-                run(`Install collection ${c.name}`, [
-                  "collection",
-                  "install",
-                  c.slug,
-                  ...(optional ? ["--optional"] : []),
-                  ...(newProfile ? [] : ["--into-current"]),
-                ])
+                run(`Install collection ${c.name}`, {
+                  op: "collection_install",
+                  reference: c.slug,
+                  optional,
+                  into_current: !newProfile,
+                  profile: null,
+                })
               }
             >
               Install collection

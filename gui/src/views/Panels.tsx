@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Input, PageHeader, Spinner, Stat } from "../components/ui";
-import { type AppState, api, ownerLabel, timeAgo } from "../lib/cpmm";
+import { type AppState, api, type OnMissing, ownerLabel, timeAgo } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 import { openLink, openNexus } from "../lib/nexus";
 import { ChangelogDrawer } from "./Changelog";
@@ -37,7 +37,7 @@ const locked = (s: AppState) => s.game_running || !!s.session;
 /* ------------------------------------------------------------------ Conflicts */
 
 export function ConflictsView({ state }: { state: AppState }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const [showSame, setShowSame] = useState(false);
   const q = useQuery({ queryKey: ["conflicts"], queryFn: api.conflicts });
   const arch = useQuery({ queryKey: ["archives"], queryFn: api.archives });
@@ -83,7 +83,7 @@ export function ConflictsView({ state }: { state: AppState }) {
                             type="button"
                             key={m}
                             disabled={busy || locked(state) || m === f.winner}
-                            onClick={() => run(`Prefer ${name(m)} for ${f.path}`, ["prefer", m, f.path])}
+                            onClick={() => run(`Prefer ${name(m)} for ${f.path}`, { op: "prefer", mod: m, paths: [f.path] })}
                             title={m === f.winner ? "Currently wins" : `Make ${name(m)} win this file`}
                             className={clsx(
                               "inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs cursor-pointer disabled:cursor-default",
@@ -137,7 +137,7 @@ export function ConflictsView({ state }: { state: AppState }) {
                                   type="button"
                                   key={k}
                                   disabled={!both || busy || wins}
-                                  onClick={() => run(`${name(o.id)} wins`, ["rule", o.id, "--after", other.id])}
+                                  onClick={() => run(`${name(o.id)} wins`, { op: "rule", mod: o.id, after: other.id, remove: false })}
                                   title={
                                     wins
                                       ? "Currently wins"
@@ -185,7 +185,7 @@ export function ConflictsView({ state }: { state: AppState }) {
                           .map((m) => m.replace(/^(replace|wrap):/, ""))
                           .filter((m) => state.mods.some((x) => x.id === m && x.enabled))
                           .map((m) => (
-                            <Button key={m} size="sm" variant="ghost" disabled={busy} onClick={() => run(`Disable ${name(m)}`, ["disable", m])}>
+                            <Button key={m} size="sm" variant="ghost" disabled={busy} onClick={() => run(`Disable ${name(m)}`, { op: "disable", mods: [m] })}>
                               Keep the other, disable {name(m)}
                             </Button>
                           ))}
@@ -205,7 +205,7 @@ export function ConflictsView({ state }: { state: AppState }) {
 /* ---------------------------------------------------------------- Dependencies */
 
 export function DepsView({ state }: { state: AppState }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const rows = state.mods.filter((m) => m.enabled).flatMap((m) => m.requires.filter((r) => r.status !== "ok").map((r) => ({ m, r })));
   const hard = rows.filter(({ r }) => r.status === "missing" || r.status === "disabled");
   return (
@@ -215,14 +215,18 @@ export function DepsView({ state }: { state: AppState }) {
         subtitle="Requirements from each mod's Nexus page plus file-level dependencies. Checked when a mod is installed or updated and cached after that; re-check to pick up changes authors made since."
         actions={
           <>
-            <Button icon={<RefreshCw className="size-4" />} disabled={busy} onClick={() => run("Re-check requirements", ["deps", "--refresh"])}>
+            <Button
+              icon={<RefreshCw className="size-4" />}
+              disabled={busy}
+              onClick={() => run("Re-check requirements", { op: "deps", refresh: true, fix: false, ignore: null, unignore: null })}
+            >
               Re-check on Nexus
             </Button>
             <Button
               variant="primary"
               icon={<Wand2 className="size-4" />}
               disabled={busy || hard.length === 0}
-              onClick={() => run("Fix requirements", ["deps", "--fix"])}
+              onClick={() => run("Fix requirements", { op: "deps", refresh: false, fix: true, ignore: null, unignore: null })}
             >
               Fix all ({hard.length})
             </Button>
@@ -270,23 +274,33 @@ export function DepsView({ state }: { state: AppState }) {
                   size="sm"
                   variant={r.status === "missing" ? "primary" : "secondary"}
                   disabled={busy}
-                  onClick={() => run(`Install ${r.name}`, ["install", String(r.mod_id), "--with-deps"])}
+                  onClick={() => run(`Install ${r.name}`, { op: "install", source: String(r.mod_id), missing: "install" })}
                 >
                   Install
                 </Button>
               )}
               {(r.status === "disabled" || r.status === "optional-disabled") && r.installed_as && (
-                <Button size="sm" disabled={busy} onClick={() => run(`Enable ${r.name}`, ["enable", r.installed_as!])}>
+                <Button size="sm" disabled={busy} onClick={() => run(`Enable ${r.name}`, { op: "enable", mods: [r.installed_as!] })}>
                   Enable
                 </Button>
               )}
               {r.status === "missing" && (
-                <Button size="sm" variant="ghost" disabled={busy} onClick={() => run(`Ignore ${r.name}`, ["deps", "--ignore", m.id, String(r.mod_id)])}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => run(`Ignore ${r.name}`, { op: "deps", refresh: false, fix: false, ignore: [m.id, String(r.mod_id)], unignore: null })}
+                >
                   Ignore
                 </Button>
               )}
               {r.status === "ignored" && (
-                <Button size="sm" variant="ghost" disabled={busy} onClick={() => run(`Unignore ${r.name}`, ["deps", "--unignore", m.id, String(r.mod_id)])}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => run(`Unignore ${r.name}`, { op: "deps", refresh: false, fix: false, ignore: null, unignore: [m.id, String(r.mod_id)] })}
+                >
                   Unignore
                 </Button>
               )}
@@ -301,7 +315,7 @@ export function DepsView({ state }: { state: AppState }) {
 /* --------------------------------------------------------------------- Updates */
 
 export function UpdatesView({ state }: { state: AppState }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const [refresh, setRefresh] = useState(false);
   const safety = useQuery({ queryKey: ["safety"], queryFn: api.safety, staleTime: 30_000 });
   const [log, setLog] = useState<string | null>(null);
@@ -328,7 +342,7 @@ export function UpdatesView({ state }: { state: AppState }) {
               <Button
                 icon={<Undo2 className="size-4" />}
                 disabled={busy || locked(state)}
-                onClick={() => run("Undo last update run", ["undo-update", lastBatch.batch])}
+                onClick={() => run("Undo last update run", { op: "undo_update", batch: lastBatch.batch })}
                 title={lastBatch.mods.map(([id, v]) => `${id} → ${v}`).join(", ")}
               >
                 Undo last update ({lastBatch.mods.length})
@@ -338,7 +352,7 @@ export function UpdatesView({ state }: { state: AppState }) {
               variant="primary"
               icon={<ArrowDownToLine className="size-4" />}
               disabled={busy || locked(state) || avail.length === 0}
-              onClick={() => run("Update all", ["update", "--all"])}
+              onClick={() => run("Update all", { op: "update", mods: [], all: true })}
             >
               Update all ({avail.length})
             </Button>
@@ -372,7 +386,12 @@ export function UpdatesView({ state }: { state: AppState }) {
                       <Button size="sm" variant="ghost" icon={<ScrollText className="size-3.5" />} onClick={() => setLog(u.id)}>
                         What's new
                       </Button>
-                      <Button size="sm" variant="primary" disabled={busy || locked(state)} onClick={() => run(`Update ${name(u.id)}`, ["update", u.id])}>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        disabled={busy || locked(state)}
+                        onClick={() => run(`Update ${name(u.id)}`, { op: "update", mods: [u.id], all: false })}
+                      >
                         Update
                       </Button>
                     </>
@@ -393,7 +412,7 @@ export function UpdatesView({ state }: { state: AppState }) {
 /* ------------------------------------------------------------------- Overwrite */
 
 export function OverwriteView({ state }: { state: AppState }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const q = useQuery({ queryKey: ["overwrite"], queryFn: api.overwrite });
   const [target, setTarget] = useState("");
   const [confirm, setConfirm] = useState(false);
@@ -417,7 +436,7 @@ export function OverwriteView({ state }: { state: AppState }) {
         <Button
           variant="primary"
           disabled={busy || locked(state) || !target.trim()}
-          onClick={() => run(`Move overwrite to ${target}`, ["overwrite", "move", target.trim()])}
+          onClick={() => run(`Move overwrite to ${target}`, { op: "overwrite_move", to: target.trim(), paths: [] })}
         >
           Move all into mod
         </Button>
@@ -450,7 +469,7 @@ export function OverwriteView({ state }: { state: AppState }) {
         onCancel={() => setConfirm(false)}
         onConfirm={() => {
           setConfirm(false);
-          run("Clear overwrite", ["overwrite", "clear"]);
+          run("Clear overwrite", { op: "overwrite_clear", paths: [] });
         }}
       />
     </>
@@ -460,7 +479,7 @@ export function OverwriteView({ state }: { state: AppState }) {
 /* --------------------------------------------------------------------- Install */
 
 export function InstallView({ state }: { state: AppState }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const [src, setSrc] = useState("");
   const [lookupId, setLookupId] = useState<string | null>(null);
   const [file, setFile] = useState<string | null>(null);
@@ -468,15 +487,15 @@ export function InstallView({ state }: { state: AppState }) {
   const tracked = useQuery({ queryKey: ["tracked"], queryFn: api.tracked });
   const installedIds = new Set(state.mods.map((m) => m.nexus?.mod_id));
   const isLocal = src.startsWith("/") || src.startsWith("~");
-  const [fomod, setFomod] = useState<{ source: string; file: string | null; title: string; extra: string[] } | null>(null);
+  const [fomod, setFomod] = useState<{ source: string; file: string | null; title: string; missing: OnMissing } | null>(null);
   const [checking, setChecking] = useState(false);
   /** Look for a FOMOD installer first (downloads the archive, which the install then reuses). */
-  const install = async (source: string, fileSel: string | null, title: string, extra: string[]) => {
+  const install = async (source: string, fileSel: string | null, title: string, missing: OnMissing) => {
     setChecking(true);
     try {
       const d = await api.fomod(source, fileSel);
       if (d.fomod) {
-        setFomod({ source, file: fileSel, title, extra });
+        setFomod({ source, file: fileSel, title, missing });
         return;
       }
     } catch {
@@ -484,7 +503,7 @@ export function InstallView({ state }: { state: AppState }) {
     } finally {
       setChecking(false);
     }
-    run(`Install ${title}`, ["install", source, ...extra, ...(fileSel ? ["--file", fileSel] : [])]);
+    run(`Install ${title}`, { op: "install", source, file: fileSel, missing });
   };
 
   return (
@@ -509,7 +528,7 @@ export function InstallView({ state }: { state: AppState }) {
           onSubmit={(e) => {
             e.preventDefault();
             if (!src.trim()) return;
-            if (isLocal) install(src.trim(), null, src.trim(), []);
+            if (isLocal) install(src.trim(), null, src.trim(), "refuse");
             else {
               setFile(null);
               setLookupId(src.trim());
@@ -557,14 +576,14 @@ export function InstallView({ state }: { state: AppState }) {
                   icon={<Download className="size-4" />}
                   disabled={busy || checking}
                   loading={checking}
-                  onClick={() => install(String(look.data!.mod_id), file, look.data!.name, ["--with-deps"])}
+                  onClick={() => install(String(look.data!.mod_id), file, look.data!.name, "install")}
                 >
                   {installedIds.has(look.data.mod_id) ? "Reinstall / switch file" : "Install"}
                 </Button>
                 <Button
                   icon={<Download className="size-4" />}
                   disabled={busy}
-                  onClick={() => run(`Download ${look.data!.name}`, ["download", String(look.data!.mod_id), ...(file ? ["--file", file] : [])])}
+                  onClick={() => run(`Download ${look.data!.name}`, { op: "download", source: String(look.data!.mod_id), file })}
                   title="Add it to Downloads without installing"
                 >
                   Download only
@@ -634,7 +653,7 @@ export function InstallView({ state }: { state: AppState }) {
             <Button
               size="sm"
               disabled={busy || !tracked.data?.some((t) => !t.installed_as)}
-              onClick={() => run("Install tracked mods", ["tracked", "--install", "--untrack"])}
+              onClick={() => run("Install tracked mods", { op: "tracked", install: true, untrack: true })}
             >
               Install all
             </Button>
@@ -649,7 +668,12 @@ export function InstallView({ state }: { state: AppState }) {
                 {t.installed_as ? <Badge tone="lime">installed</Badge> : <Badge tone="cyan">new</Badge>}
                 <span className="min-w-0 flex-1 truncate">{t.name}</span>
                 {!t.installed_as && (
-                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => run(`Install ${t.name}`, ["install", String(t.mod_id), "--with-deps"])}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => run(`Install ${t.name}`, { op: "install", source: String(t.mod_id), missing: "install" })}
+                  >
                     Install
                   </Button>
                 )}
@@ -672,7 +696,7 @@ export function InstallView({ state }: { state: AppState }) {
             )}
           </p>
           <div className="mt-4">
-            <Button disabled={busy} onClick={() => run("Register link handler", ["register-handler"])}>
+            <Button disabled={busy} onClick={() => run("Register link handler", { op: "register_handler" })}>
               {state.nxm_handler ? "Re-register handler" : "Register as handler"}
             </Button>
           </div>
@@ -687,7 +711,7 @@ export function InstallView({ state }: { state: AppState }) {
           onInstall={(choices) => {
             const f = fomod;
             setFomod(null);
-            run(`Install ${f.title}`, ["install", f.source, ...f.extra, ...(f.file ? ["--file", f.file] : []), "--fomod-choices", JSON.stringify(choices)]);
+            run(`Install ${f.title}`, { op: "install", source: f.source, file: f.file, missing: f.missing, fomod: choices });
           }}
         />
       )}
@@ -698,7 +722,7 @@ export function InstallView({ state }: { state: AppState }) {
 /* ---------------------------------------------------------------------- System */
 
 export function SystemView({ state }: { state: AppState }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   return (
     <>
       <PageHeader title="System" subtitle="Session, paths and housekeeping." />
@@ -721,7 +745,7 @@ export function SystemView({ state }: { state: AppState }) {
           <p className="mb-4 text-sm text-ink-300">
             Empty the trash (uninstalled mods, replaced versions, cleared overwrites), temp files and cached downloads.
           </p>
-          <Button icon={<Trash2 className="size-4" />} disabled={busy} onClick={() => run("Clean", ["clean"])}>
+          <Button icon={<Trash2 className="size-4" />} disabled={busy} onClick={() => run("Clean", { op: "clean", dry_run: false })}>
             Clean up
           </Button>
         </Card>

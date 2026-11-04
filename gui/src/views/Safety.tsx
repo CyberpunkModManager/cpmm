@@ -8,7 +8,7 @@ import { useJobs } from "../lib/jobs";
 
 /** Crash triage, new log errors, the game-patch guard, save snapshots and undoable update runs. */
 export function SafetyPanel({ state }: { state: AppState }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const q = useQuery({ queryKey: ["safety"], queryFn: api.safety, staleTime: 30_000 });
   const [restore, setRestore] = useState<string | null>(null);
   const [showErr, setShowErr] = useState(false);
@@ -43,7 +43,12 @@ export function SafetyPanel({ state }: { state: AppState }) {
                   <div key={f.id} className="flex items-center gap-2 text-sm">
                     <span className="min-w-0 flex-1 truncate">{f.name}</span>
                     {f.update_available ? (
-                      <Button size="sm" variant="primary" disabled={busy || locked} onClick={() => run(`Update ${f.name}`, ["update", f.id])}>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        disabled={busy || locked}
+                        onClick={() => run(`Update ${f.name}`, { op: "update", mods: [f.id], all: false })}
+                      >
                         Update
                       </Button>
                     ) : (
@@ -67,7 +72,7 @@ export function SafetyPanel({ state }: { state: AppState }) {
               size="sm"
               variant={s.patch.vanilla ? "primary" : "secondary"}
               disabled={busy}
-              onClick={() => run(s.patch.vanilla ? "Modded launch" : "Vanilla launch", ["vanilla", s.patch.vanilla ? "off" : "on"])}
+              onClick={() => run(s.patch.vanilla ? "Modded launch" : "Vanilla launch", { op: "vanilla", on: !s.patch.vanilla })}
             >
               {s.patch.vanilla ? "Next launch: vanilla (tap to cancel)" : "Launch vanilla next time"}
             </Button>
@@ -154,7 +159,7 @@ export function SafetyPanel({ state }: { state: AppState }) {
                         size="sm"
                         icon={<RotateCcw className="size-3.5" />}
                         disabled={busy || locked}
-                        onClick={() => run(`Roll back ${name(m)}`, ["rollback", m])}
+                        onClick={() => run(`Roll back ${name(m)}`, { op: "rollback", mod: m, to: null })}
                       >
                         Roll back {name(m)}
                       </Button>
@@ -179,7 +184,7 @@ export function SafetyPanel({ state }: { state: AppState }) {
                   <div>{when(b.ts)}</div>
                   <div className="truncate text-xs text-ink-400">{b.mods.map(([id, v]) => `${name(id)} → ${v}`).join(", ")}</div>
                 </div>
-                <Button size="sm" disabled={busy || locked} onClick={() => run("Undo update run", ["undo-update", b.batch])}>
+                <Button size="sm" disabled={busy || locked} onClick={() => run("Undo update run", { op: "undo_update", batch: b.batch })}>
                   Undo
                 </Button>
               </div>
@@ -193,7 +198,7 @@ export function SafetyPanel({ state }: { state: AppState }) {
             <h3 className="flex items-center gap-2 text-sm font-semibold">
               <Camera className="size-4 text-neon-pink" /> Save snapshots
             </h3>
-            <Button size="sm" variant="ghost" disabled={busy} onClick={() => run("Snapshot saves", ["saves", "--snapshot"])}>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => run("Snapshot saves", { op: "snapshot_saves" })}>
               Snapshot now
             </Button>
           </div>
@@ -228,7 +233,7 @@ export function SafetyPanel({ state }: { state: AppState }) {
         onConfirm={() => {
           const r = restore!;
           setRestore(null);
-          run("Restore saves", ["saves", "--restore", r]);
+          run("Restore saves", { op: "restore_saves", name: r });
         }}
       />
     </section>
@@ -237,7 +242,7 @@ export function SafetyPanel({ state }: { state: AppState }) {
 
 /** Earlier versions of one mod, for its detail drawer. */
 export function ModHistory({ id, locked }: { id: string; locked: boolean }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const q = useQuery({ queryKey: ["history", id], queryFn: () => api.history(id) });
   if (!q.data?.length) return <p className="text-sm text-ink-400">No earlier versions kept yet. The last 3 are kept when a mod is updated or replaced.</p>;
   return (
@@ -257,7 +262,7 @@ export function ModHistory({ id, locked }: { id: string; locked: boolean }) {
             size="sm"
             icon={<RotateCcw className="size-3.5" />}
             disabled={busy || locked}
-            onClick={() => run(`Roll back to v${h.version}`, ["rollback", id, "--to", String(h.ts)])}
+            onClick={() => run(`Roll back to v${h.version}`, { op: "rollback", mod: id, to: h.ts })}
           >
             Roll back
           </Button>

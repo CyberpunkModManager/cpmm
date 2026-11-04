@@ -7,7 +7,7 @@ import { useJobs } from "../lib/jobs";
 
 /** mod.io watcher: subscriptions made in the in-game Mods menu, what changed, and collisions. */
 export function ModioCard({ state }: { state: AppState }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const q = useQuery({ queryKey: ["modio"], queryFn: api.modio, staleTime: 30_000 });
   const d = q.data;
   if (!d) return null;
@@ -20,7 +20,7 @@ export function ModioCard({ state }: { state: AppState }) {
           <Radar className="size-4 text-neon-cyan" /> mod.io watcher
         </h2>
         {(changed || (d.changes.first_look && d.mods.length > 0)) && (
-          <Button size="sm" disabled={busy} onClick={() => run("Mark mod.io as reviewed", ["modio", "--ack"])}>
+          <Button size="sm" disabled={busy} onClick={() => run("Mark mod.io as reviewed", { op: "modio_ack" })}>
             Mark as reviewed
           </Button>
         )}

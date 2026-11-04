@@ -20,7 +20,7 @@ const PREFS = [
 
 /** First-launch setup: game folder, Nexus key, Steam launch options and the main preferences. */
 export function Onboarding({ onClose }: { onClose: () => void }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const qc = useQueryClient();
   const st = useQuery({ queryKey: ["onboarding"], queryFn: api.onboarding });
   const cfg = useQuery({ queryKey: ["settings"], queryFn: api.settings });
@@ -35,7 +35,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
   }, [step]);
   const s = st.data;
   const finish = async () => {
-    await run("Finish setup", ["settings", "set", "onboarded", "on"]);
+    await run("Finish setup", { op: "settings_set", key: "onboarded", value: "on" });
     await qc.invalidateQueries();
     onClose();
   };
@@ -95,7 +95,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                   className="flex gap-2"
                   onSubmit={(e) => {
                     e.preventDefault();
-                    if (gamePath.trim()) run("Set game folder", ["init", "--game", gamePath.trim()]).then(() => st.refetch());
+                    if (gamePath.trim()) run("Set game folder", { op: "init", game: gamePath.trim() }).then(() => st.refetch());
                   }}
                 >
                   <Input
@@ -125,7 +125,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                   Get your key
                 </Button>
                 {s.api_key && (
-                  <Button variant="ghost" disabled={busy} onClick={() => run("Check Nexus key", ["nexus-key", "--check"])}>
+                  <Button variant="ghost" disabled={busy} onClick={() => run("Check Nexus key", { op: "nexus_key", check: true })}>
                     Check it
                   </Button>
                 )}
@@ -135,7 +135,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                 onSubmit={(e) => {
                   e.preventDefault();
                   if (key.trim())
-                    run("Save Nexus key", ["nexus-key", key.trim()]).then((good) => {
+                    run("Save Nexus key", { op: "nexus_key_set", key: key.trim() }).then((good) => {
                       if (good) setKey("");
                       st.refetch();
                     });
@@ -162,7 +162,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
               </pre>
               {!s.launch_ok && (
                 <>
-                  <Button variant="primary" disabled={busy} onClick={() => run("Set launch options", ["launch-options", "--apply"]).then(() => st.refetch())}>
+                  <Button variant="primary" disabled={busy} onClick={() => run("Set launch options", { op: "launch_options_apply" }).then(() => st.refetch())}>
                     Set it up
                   </Button>
                   {s.steam_running && !s.steam_cef && (
@@ -191,7 +191,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                       checked={!!cfg.data?.values[f.key]}
                       label={f.label}
                       disabled={busy}
-                      onChange={(v) => run(`Setting: ${f.key}`, ["settings", "set", f.key, v ? "on" : "off"])}
+                      onChange={(v) => run(`Setting: ${f.key}`, { op: "settings_set", key: f.key, value: v ? "on" : "off" })}
                     />
                   </div>
                 ))}
@@ -203,7 +203,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                 {s.nxm_handler ? (
                   ok(true, "Registered")
                 ) : (
-                  <Button size="sm" disabled={busy} onClick={() => run("Register link handler", ["register-handler"]).then(() => st.refetch())}>
+                  <Button size="sm" disabled={busy} onClick={() => run("Register link handler", { op: "register_handler" }).then(() => st.refetch())}>
                     Register
                   </Button>
                 )}

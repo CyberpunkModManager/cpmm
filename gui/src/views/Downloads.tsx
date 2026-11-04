@@ -11,7 +11,7 @@ const mb = (b: number) => (b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : `
 
 /** Everything downloaded, separate from what's installed (like Vortex's / MO2's downloads list). */
 export function DownloadsView({ state }: { state: AppState }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const q = useQuery({ queryKey: ["downloads"], queryFn: api.downloads, refetchInterval: 10_000 });
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
   const [del, setDel] = useState<DownloadEntry | null>(null);
@@ -32,7 +32,7 @@ export function DownloadsView({ state }: { state: AppState }) {
     } finally {
       setChecking(null);
     }
-    run(`Install ${d.name}`, ["downloads", "install", d.file, "--with-deps"]);
+    run(`Install ${d.name}`, { op: "downloads_install", key: d.file, fomod: null, ask: false, with_deps: true });
   };
 
   const list = q.data ?? [];
@@ -113,7 +113,7 @@ export function DownloadsView({ state }: { state: AppState }) {
         onConfirm={() => {
           const d = del!;
           setDel(null);
-          run(`Delete ${d.name || d.file}`, ["downloads", "remove", d.file]);
+          run(`Delete ${d.name || d.file}`, { op: "downloads_remove", key: d.file });
         }}
       />
       {fomod && (
@@ -125,7 +125,7 @@ export function DownloadsView({ state }: { state: AppState }) {
           onInstall={(choices) => {
             const d = fomod;
             setFomod(null);
-            run(`Install ${d.name}`, ["downloads", "install", d.file, "--with-deps", "--fomod-choices", JSON.stringify(choices)]);
+            run(`Install ${d.name}`, { op: "downloads_install", key: d.file, fomod: choices, ask: false, with_deps: true });
           }}
         />
       )}

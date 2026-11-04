@@ -7,7 +7,7 @@ import { useJobs } from "./jobs";
  * install them if allowed (never while the game runs), and install new downloads.
  */
 export function useAutomation(state: AppState | undefined, settings: SettingsData | undefined) {
-  const { runArgs: run, busy, toast } = useJobs();
+  const { run, busy, toast } = useJobs();
   const started = useRef(false);
   const toldModio = useRef("");
   const latest = useRef({ state, settings, busy });
@@ -23,7 +23,7 @@ export function useAutomation(state: AppState | undefined, settings: SettingsDat
       if (v.check_updates_on_start || !first) {
         try {
           const ups = (await api.updates(!first)).filter((u) => u.update);
-          if (ups.length && v.auto_install_updates && !gameUp) await run(`Auto-update (${ups.length})`, ["update", "--all"]);
+          if (ups.length && v.auto_install_updates && !gameUp) await run(`Auto-update (${ups.length})`, { op: "update", mods: [], all: true });
           else if (ups.length && first) toast("info", `${ups.length} mod update${ups.length > 1 ? "s" : ""} available`);
         } catch {
           /* offline: try again next interval */

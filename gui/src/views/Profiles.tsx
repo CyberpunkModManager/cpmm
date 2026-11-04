@@ -2,7 +2,7 @@ import clsx from "clsx";
 import { Check, Copy, FilePlus2, HardDrive, Pencil, Save, Trash2, UserRound } from "lucide-react";
 import { useState } from "react";
 import { Badge, Button, Confirm, Drawer, Input } from "../components/ui";
-import type { AppState } from "../lib/cpmm";
+import type { Action, AppState } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 
 /** Sidebar button showing the active profile; opens the profile manager. */
@@ -29,7 +29,7 @@ export function ProfileButton({ state }: { state: AppState | undefined }) {
 }
 
 function ProfilesDrawer({ open, onClose, state }: { open: boolean; onClose: () => void; state: AppState }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const [name, setName] = useState("");
   const [renaming, setRenaming] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
@@ -43,15 +43,17 @@ function ProfilesDrawer({ open, onClose, state }: { open: boolean; onClose: () =
   const nameOk = name.trim().length > 0 && !taken(name);
 
   const create = async (empty: boolean) => {
-    const args = [
-      "profile",
-      "create",
-      name.trim(),
-      ...(empty ? ["--empty"] : []),
-      ...(ownSaves ? ["--own-saves", ...(copySaves ? ["--copy-saves"] : [])] : []),
-      ...(locked ? [] : ["--switch"]),
-    ];
-    if (await run(`New profile ${name.trim()}`, args)) setName("");
+    const create: Action = {
+      op: "profile",
+      do: "create",
+      name: name.trim(),
+      from: null,
+      empty,
+      own_saves: ownSaves,
+      copy_saves: ownSaves && copySaves,
+      switch: !locked,
+    };
+    if (await run(`New profile ${name.trim()}`, create)) setName("");
   };
 
   return (
@@ -89,7 +91,7 @@ function ProfilesDrawer({ open, onClose, state }: { open: boolean; onClose: () =
                     className="flex min-w-0 flex-1 gap-2"
                     onSubmit={async (e) => {
                       e.preventDefault();
-                      if (await run(`Rename profile ${p.name}`, ["profile", "rename", p.name, newName.trim()])) setRenaming(null);
+                      if (await run(`Rename profile ${p.name}`, { op: "profile", do: "rename", old: p.name, new: newName.trim() })) setRenaming(null);
                     }}
                   >
                     <Input autoFocus value={newName} onChange={(e) => setNewName(e.target.value)} className="flex-1" aria-label="New profile name" />
@@ -127,7 +129,7 @@ function ProfilesDrawer({ open, onClose, state }: { open: boolean; onClose: () =
                         variant="primary"
                         icon={<Check className="size-3.5" />}
                         disabled={busy || locked}
-                        onClick={() => run(`Switch to ${p.name}`, ["profile", "switch", p.name])}
+                        onClick={() => run(`Switch to ${p.name}`, { op: "profile", do: "switch", name: p.name })}
                       >
                         Switch
                       </Button>
@@ -208,7 +210,7 @@ function ProfilesDrawer({ open, onClose, state }: { open: boolean; onClose: () =
         onConfirm={async () => {
           const s = savesFor!;
           setSavesFor(null);
-          await run(`${s.name}: ${s.own ? "own" : "shared"} saves`, ["profile", "saves", s.name, s.own ? "own" : "shared"]);
+          await run(`${s.name}: ${s.own ? "own" : "shared"} saves`, { op: "profile", do: "saves", name: s.name, own: s.own, copy: false });
         }}
       />
       <Confirm
@@ -221,7 +223,7 @@ function ProfilesDrawer({ open, onClose, state }: { open: boolean; onClose: () =
         onConfirm={async () => {
           const n = deleting!;
           setDeleting(null);
-          await run(`Delete profile ${n}`, ["profile", "delete", n]);
+          await run(`Delete profile ${n}`, { op: "profile", do: "delete", name: n });
         }}
       />
     </>

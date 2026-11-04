@@ -18,16 +18,17 @@ function nexusToast(kind: "ok" | "error" | "info", text: string) {
   invoke("nexus_toast", { kind, text }).catch(() => {});
 }
 
-/** What an install printed, in one line for a toast. */
-function summary(output: string): string {
-  const lines = output
-    .trim()
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const installed = lines.filter((l) => /^installed \S+: \d+ files/.test(l));
-  if (installed.length) return installed.map((l) => l.replace(/^installed (\S+): .*/, "$1")).join(", ");
-  return (lines.pop() ?? "").replace(/^error:\s*/, "");
+/** How an install went, in one line for a toast: the mods it installed, else its last line. */
+function summary(r: { output: string; installed: string[] }): string {
+  if (r.installed.length) return r.installed.join(", ");
+  const last =
+    r.output
+      .trim()
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .pop() ?? "";
+  return last.replace(/^error:\s*/, "");
 }
 
 /**
@@ -35,21 +36,20 @@ function summary(output: string): string {
  * become normal cpmm jobs here, so they show in Activity; the result is echoed into the browser.
  */
 export function useNexusBridge() {
-  const { execArgs: exec } = useJobs();
+  const { exec } = useJobs();
   useEffect(() => {
-    const report = (ok: boolean, output: string) => nexusToast(ok ? "ok" : "error", ok ? `Installed ${summary(output)}` : `Install failed: ${summary(output)}`);
+    const report = (r: { ok: boolean; output: string; installed: string[] }) =>
+      nexusToast(r.ok ? "ok" : "error", r.ok ? `Installed ${summary(r)}` : `Install failed: ${summary(r)}`);
     const unNxm = listen<{ url: string }>("nexus-nxm", async (e) => {
       const id = /\/mods\/(\d+)/.exec(e.payload.url)?.[1];
-      const r = await exec(id ? `Install Nexus mod #${id}` : "Install from Nexus", ["nxm", e.payload.url]);
-      report(r.ok, r.output);
+      report(await exec(id ? `Install Nexus mod #${id}` : "Install from Nexus", { op: "nxm", url: e.payload.url, register: false }));
     });
     const unArchive = listen<{ path: string; mod_id: number | null }>("nexus-archive", async (e) => {
       const { path, mod_id } = e.payload;
       const name = path.split("/").pop() ?? path;
       // into the Downloads list; installed right away only with "Install downloads automatically"
-      const args = ["downloads", "add", path, "--move", "--source", "browser", "--auto", ...(mod_id ? ["--nexus", String(mod_id)] : [])];
-      const r = await exec(`Download ${name}`, args);
-      report(r.ok, r.output);
+      const add = { op: "downloads_add", path, nexus: mod_id || null, move_it: true, source: "browser", auto: true } as const;
+      report(await exec(`Download ${name}`, add));
     });
     return () => {
       unNxm.then((f) => f());

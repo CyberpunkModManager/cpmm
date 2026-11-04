@@ -17,7 +17,7 @@ const sev: Record<Finding["severity"], { tone: "red" | "amber" | "violet" | "mut
 };
 
 export function HealthView({ state }: { state: AppState }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, runArgs, busy } = useJobs();
   const doc = useQuery({ queryKey: ["doctor"], queryFn: api.doctor });
   const lo = useQuery({ queryKey: ["loadorder"], queryFn: api.loadorder });
   const [showAcked, setShowAcked] = useState(false);
@@ -38,7 +38,7 @@ export function HealthView({ state }: { state: AppState }) {
             variant="primary"
             icon={<Wand2 className="size-4" />}
             disabled={busy || !plan || plan.moved.length === 0}
-            onClick={() => run("Sort load order", ["sort", "--apply"])}
+            onClick={() => run("Sort load order", { op: "sort", apply: true })}
           >
             {plan && plan.moved.length > 0 ? `Sort (${plan.moved.length} moves)` : "Load order OK"}
           </Button>
@@ -88,7 +88,7 @@ export function HealthView({ state }: { state: AppState }) {
                             size="sm"
                             variant={a.style === "primary" ? "primary" : "secondary"}
                             disabled={busy}
-                            onClick={() => run(a.label, a.args)}
+                            onClick={() => runArgs(a.label, a.args)}
                           >
                             {a.label}
                           </Button>
@@ -97,7 +97,7 @@ export function HealthView({ state }: { state: AppState }) {
                     )}
                   </div>
                   {f.severity === "acked" ? (
-                    <Button size="sm" variant="ghost" disabled={busy} onClick={() => run("Un-accept finding", ["doctor", "--unack", f.title])}>
+                    <Button size="sm" variant="ghost" disabled={busy} onClick={() => run("Un-accept finding", { op: "unack", finding: f.title })}>
                       Restore
                     </Button>
                   ) : (
@@ -106,7 +106,7 @@ export function HealthView({ state }: { state: AppState }) {
                       variant="ghost"
                       icon={<EyeOff className="size-3.5" />}
                       disabled={busy}
-                      onClick={() => run("Accept finding", ["doctor", "--ack", f.title])}
+                      onClick={() => run("Accept finding", { op: "ack", finding: f.title })}
                       title="Known and fine: stop warning"
                     >
                       Accept
@@ -160,10 +160,20 @@ export function HealthView({ state }: { state: AppState }) {
                   <span className="text-xs text-ink-400">winner: {p.winner ?? "game order (mod.io)"}</span>
                   {p.a.kind === "mod" && p.b.kind === "mod" && (
                     <>
-                      <Button size="sm" variant="ghost" disabled={busy} onClick={() => run(`Rule: ${p.a.id} wins`, ["rule", p.a.id, "--after", p.b.id])}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => run(`Rule: ${p.a.id} wins`, { op: "rule", mod: p.a.id, after: p.b.id, remove: false })}
+                      >
                         {name(p.a.id)} wins
                       </Button>
-                      <Button size="sm" variant="ghost" disabled={busy} onClick={() => run(`Rule: ${p.b.id} wins`, ["rule", p.b.id, "--after", p.a.id])}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => run(`Rule: ${p.b.id} wins`, { op: "rule", mod: p.b.id, after: p.a.id, remove: false })}
+                      >
                         {name(p.b.id)} wins
                       </Button>
                     </>
@@ -188,7 +198,7 @@ export function HealthView({ state }: { state: AppState }) {
                   type="button"
                   className="rounded-lg p-1.5 text-ink-400 hover:bg-ink-800 hover:text-neon-red cursor-pointer"
                   aria-label="Remove rule"
-                  onClick={() => run("Remove rule", ["rule", r.mod, "--after", r.after, "--remove"])}
+                  onClick={() => run("Remove rule", { op: "rule", mod: r.mod, after: r.after, remove: true })}
                 >
                   <Trash2 className="size-4" />
                 </button>
@@ -221,7 +231,11 @@ export function HealthView({ state }: { state: AppState }) {
                 </option>
               ))}
             </select>
-            <Button size="sm" disabled={busy || !ruleA || !ruleB || ruleA === ruleB} onClick={() => run("Add rule", ["rule", ruleA, "--after", ruleB])}>
+            <Button
+              size="sm"
+              disabled={busy || !ruleA || !ruleB || ruleA === ruleB}
+              onClick={() => run("Add rule", { op: "rule", mod: ruleA, after: ruleB, remove: false })}
+            >
               Add
             </Button>
           </div>

@@ -9,12 +9,12 @@ const GROUPS = ["Updates", "Load order", "After installing", "Downloads", "Stora
 
 /** Settings page, rendered from the schema `cpmm api settings` returns. */
 export function SettingsView({ onSetup }: { onSetup: () => void }) {
-  const { runArgs: run, busy } = useJobs();
+  const { run, busy } = useJobs();
   const q = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   if (q.isLoading) return <Spinner />;
   if (q.error) return <ErrorBox error={q.error} />;
   const d = q.data!;
-  const set = (key: string, value: string) => run(`Setting: ${key}`, ["settings", "set", key, value]);
+  const set = (key: string, value: string) => run(`Setting: ${key}`, { op: "settings_set", key, value });
   return (
     <>
       <PageHeader
@@ -25,7 +25,12 @@ export function SettingsView({ onSetup }: { onSetup: () => void }) {
             <Button variant="ghost" onClick={onSetup}>
               Run setup again
             </Button>
-            <Button variant="ghost" icon={<RotateCcw className="size-4" />} disabled={busy} onClick={() => run("Reset settings", ["settings", "reset"])}>
+            <Button
+              variant="ghost"
+              icon={<RotateCcw className="size-4" />}
+              disabled={busy}
+              onClick={() => run("Reset settings", { op: "settings_reset", key: null })}
+            >
               Reset to defaults
             </Button>
           </>
