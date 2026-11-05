@@ -146,16 +146,50 @@ fn self_mnt_ns() -> String {
 }
 
 /// Find a live process inside the namespace recorded in run.json.
+/// The mount point of a /proc/<pid>/mountinfo line (its 5th field), with the kernel's octal
+/// escapes (`\040` for a space) undone.
+fn mount_point(line: &str) -> Option<PathBuf> {
+    let raw = line.split(' ').nth(4)?.as_bytes();
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        let oct = raw.get(i + 1..i + 4).and_then(|d| std::str::from_utf8(d).ok()).and_then(|d| u8::from_str_radix(d, 8).ok());
+        match (raw[i], oct) {
+            (b'\\', Some(b)) => {
+                out.push(b);
+                i += 4;
+            }
+            (c, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&out)))
+}
+
 pub fn running(paths: &Paths) -> Option<(RunInfo, u32)> {
     let info: RunInfo = serde_json::from_slice(&fs::read(paths.run_file()).ok()?).ok()?;
     let mine = unsafe { libc::getuid() };
+    // What cpmm mounts in a session's namespace: the overlay over the game dir, and the
+    // profile's own saves over the shared save folder. The kernel reuses namespace ids, so
+    // a namespace with neither (Steam's pressure-vessel container, hours after the game
+    // exited) is someone else's.
+    let canon = |p: PathBuf| fs::canonicalize(&p).unwrap_or(p);
+    let mut ours = vec![canon(paths.game.clone())];
+    if info.saves.is_some() {
+        ours.push(canon(crate::safety::shared_saves_dir(paths)));
+    }
     for e in fs::read_dir("/proc").ok()?.flatten() {
         let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
         let Ok(ns) = fs::read_link(e.path().join("ns/mnt")) else { continue };
         if ns.to_string_lossy() == info.mnt_ns {
             use std::os::unix::fs::MetadataExt;
             if fs::metadata(e.path()).map(|m| m.uid() == mine).unwrap_or(false) {
-                return Some((info, pid));
+                // every process in a namespace sees the same mounts: one look decides
+                let mounts = fs::read_to_string(e.path().join("mountinfo")).ok()?;
+                let is_ours = mounts.lines().filter_map(mount_point).any(|m| ours.contains(&m));
+                return is_ours.then_some((info, pid));
             }
         }
     }
@@ -288,4 +322,48 @@ pub fn exec_in(paths: &Paths, mods: &[Mod], saves: Option<&Path>, cmd: &[String]
         enter_new(paths, Some(mods), saves, cmd)?;
     }
     exec(cmd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A session record whose mount namespace is this test's own, with `game` as the game dir.
+    fn session(tag: &str, game: PathBuf) -> Paths {
+        let d = std::env::temp_dir().join(format!("cpmm-vfs-test-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let p = Paths { data: d, game, cfg: Default::default() };
+        let run = serde_json::json!({"pid": std::process::id(), "mnt_ns": self_mnt_ns(), "layers": [], "started": "", "command": []});
+        fs::write(p.run_file(), run.to_string()).unwrap();
+        p
+    }
+
+    /// The kernel reuses mount namespace ids: after the game exits, another program's new
+    /// namespace (Steam's pressure-vessel container) can get the id run.json recorded. Only a
+    /// namespace with cpmm's mounts in it is a session.
+    #[test]
+    fn a_reused_namespace_id_is_not_a_session() {
+        let game = std::env::temp_dir().join(format!("cpmm-vfs-test-game-{}", std::process::id()));
+        fs::create_dir_all(&game).unwrap();
+        let p = session("reused", game.clone());
+        assert!(running(&p).is_none(), "a namespace without the game dir mounted counted as a session");
+        let _ = fs::remove_dir_all(&p.data);
+        let _ = fs::remove_dir_all(&game);
+    }
+
+    /// The same record with the game dir mounted in that namespace (here /proc stands in for
+    /// the overlay over the game dir) is a running session.
+    #[test]
+    fn a_namespace_with_the_game_dir_mounted_is_a_session() {
+        let p = session("live", PathBuf::from("/proc"));
+        assert!(running(&p).is_some());
+        let _ = fs::remove_dir_all(&p.data);
+    }
+
+    #[test]
+    fn mount_points_unescape_spaces() {
+        let line = r"811 808 0:34 / /home/u/Cyberpunk\0402077 rw,relatime - overlay overlay rw";
+        assert_eq!(mount_point(line), Some(PathBuf::from("/home/u/Cyberpunk 2077")));
+    }
 }

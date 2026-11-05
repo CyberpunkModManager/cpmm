@@ -414,9 +414,11 @@ mod tests {
 
     #[test]
     fn idle_check_runs_before_the_edit() {
-        let p = paths("idle");
+        let mut p = paths("idle");
         let _l = Lock::acquire(&p).unwrap();
-        // a cpmm session whose mount namespace is this test's own: vfs::running finds it
+        // a cpmm session whose mount namespace is this test's own, with /proc standing in for
+        // the overlay mounted over the game dir: vfs::running finds it
+        p.game = std::path::PathBuf::from("/proc");
         let ns = fs::read_link("/proc/self/ns/mnt").unwrap().to_string_lossy().into_owned();
         let run = serde_json::json!({"pid": std::process::id(), "mnt_ns": ns, "layers": [], "started": "", "command": []});
         fs::write(p.run_file(), run.to_string()).unwrap();
