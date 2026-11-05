@@ -7,6 +7,7 @@ import { useEffect } from "react";
  * - Arrow keys or D-pad / left stick: move focus to the nearest control in that direction
  * - Enter / A: activate; Escape / B: "back" (closes drawers & dialogs)
  * - LB / RB or [ / ]: previous / next section
+ * - Select or ?: the control map (lib/controls.ts lists every binding)
  * Elements opt in by being focusable (buttons, inputs, [tabindex]).
  */
 
@@ -186,6 +187,8 @@ export function useSpatialNav(onSection: (delta: number) => void, onBack: () => 
         onBack();
       } else if (!typing && (e.key === "[" || e.key === "]")) {
         onSection(e.key === "]" ? 1 : -1);
+      } else if (!typing && e.key === "?") {
+        onSelect();
       }
     };
     window.addEventListener("keydown", onKey);

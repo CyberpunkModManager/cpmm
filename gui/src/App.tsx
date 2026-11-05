@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import clsx from "clsx";
 import {
@@ -24,6 +24,7 @@ import {
   X,
 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { ControlMap } from "./components/ControlMap";
 import { ErrorBox, IconButton, Spinner } from "./components/ui";
 import { useAutomation } from "./lib/automation";
 import { api } from "./lib/cpmm";
@@ -76,11 +77,9 @@ export default function App() {
     if (top) (top.firstElementChild as HTMLElement | null)?.click();
     else setLogOpen(false);
   }, []);
-  const qc = useQueryClient();
+  const [controlsOpen, setControlsOpen] = useState(false);
   const onStart = useCallback(() => setLogOpen((v) => !v), []);
-  const onSelect = useCallback(() => {
-    qc.invalidateQueries();
-  }, [qc]);
+  const onSelect = useCallback(() => setControlsOpen((v) => !v), []);
   useSpatialNav(onSection, onBack, onStart, onSelect);
   useNexusBridge();
 
@@ -108,14 +107,14 @@ export default function App() {
           </div>
         </div>
         {settings.data?.values.profiles_enabled !== false && <ProfileButton state={s} />}
-        <nav className="flex flex-1 flex-col gap-1">
+        <nav className="-mx-1 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1">
           {SECTIONS.map(({ key, label, icon: Icon }) => (
             <button
               type="button"
               key={key}
               onClick={() => setSection(key)}
               className={clsx(
-                "flex h-11 items-center gap-3 rounded-xl px-3 text-sm cursor-pointer",
+                "flex h-11 shrink-0 items-center gap-3 rounded-xl px-3 text-sm cursor-pointer",
                 section === key ? "bg-neon-cyan/12 text-neon-cyan" : "text-ink-300 hover:bg-ink-800 hover:text-ink-100",
               )}
             >
@@ -134,15 +133,13 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <div className="mt-4 space-y-1 px-2 text-[11px] leading-4 text-ink-400">
-          <div className="flex items-center gap-1.5">
-            <Gamepad2 className="size-3.5" /> D-pad move · A select · B back
-          </div>
-          <div className="pl-5">LB/RB section · L-stick scroll</div>
-          <div className="pl-5">R-stick cursor · RT/R3 click</div>
-          <div className="pl-5">Start activity · Select refresh</div>
-          <div className="pl-5">In Nexus: Y keyboard · Start back</div>
-        </div>
+        <button
+          type="button"
+          onClick={() => setControlsOpen(true)}
+          className="mt-3 flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] text-ink-400 hover:bg-ink-800 hover:text-ink-200 cursor-pointer"
+        >
+          <Gamepad2 className="size-3.5" /> Select or ? · controls
+        </button>
         <button
           type="button"
           onClick={() => openNexus().catch((e) => alert(String(e)))}
@@ -230,6 +227,7 @@ export default function App() {
         </div>
       </div>
       {showSetup && <Onboarding onClose={() => setSetupOpen(false)} />}
+      {controlsOpen && <ControlMap onClose={() => setControlsOpen(false)} />}
       <Toasts />
     </div>
   );

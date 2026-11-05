@@ -155,6 +155,47 @@ fn glog(msg: &str) {
     }
 }
 
+/// The controller's buttons and the action each sends to the page (gamepad.ts, nexus.js):
+/// the one place they are bound, read by the input thread and shown in the control map.
+const BUTTONS: &[(gilrs::Button, &str, &str)] = {
+    use gilrs::Button::*;
+    &[
+        (South, "A", "a"),
+        (East, "B", "b"),
+        (North, "Y", "y"),
+        (LeftTrigger, "LB", "lb"),
+        (RightTrigger, "RB", "rb"),
+        (Start, "Start", "start"),
+        (Select, "Select", "select"),
+        // R3 and RT both click at the virtual cursor
+        (RightThumb, "R3", "click"),
+        (RightTrigger2, "RT", "click"),
+    ]
+};
+
+fn button_action(b: gilrs::Button) -> Option<&'static str> {
+    BUTTONS.iter().find(|(x, _, _)| *x == b).map(|(_, _, a)| *a)
+}
+
+#[derive(serde::Serialize)]
+struct Binding {
+    /// The control as printed on an Xbox-style pad (ROG Ally, Steam Deck in Game Mode)
+    input: &'static str,
+    /// The action it sends: a button's action name, or move / scroll / cursor
+    action: &'static str,
+}
+
+/// What each control on the controller does, for the control map.
+#[tauri::command]
+fn controller_bindings() -> Vec<Binding> {
+    let sticks = [("D-pad", "move"), ("Left stick", "scroll"), ("Right stick", "cursor")];
+    sticks
+        .into_iter()
+        .chain(BUTTONS.iter().map(|(_, input, action)| (*input, *action)))
+        .map(|(input, action)| Binding { input, action })
+        .collect()
+}
+
 fn spawn_gamepad(app: AppHandle) {
     use gilrs::{Axis, Button, EventType, Gilrs};
     use std::time::{Duration, Instant};
@@ -208,20 +249,12 @@ fn spawn_gamepad(app: AppHandle) {
                     glog(&format!("connected: {}", gil.gamepad(ev.id).name()));
                 }
                 match ev.event {
-                    EventType::ButtonPressed(b, _) => match b {
-                        Button::South => emit("a"),
-                        Button::North => emit("y"),
-                        Button::East => emit("b"),
-                        Button::LeftTrigger => emit("lb"),
-                        Button::RightTrigger => emit("rb"),
-                        Button::Start => emit("start"),
-                        Button::Select => emit("select"),
-                        // R3 and RT both click at the virtual cursor
-                        Button::RightThumb | Button::RightTrigger2 => emit("click"),
-                        Button::DPadUp => dpad[0] = true,
-                        Button::DPadDown => dpad[1] = true,
-                        Button::DPadLeft => dpad[2] = true,
-                        Button::DPadRight => dpad[3] = true,
+                    EventType::ButtonPressed(b, _) => match (b, button_action(b)) {
+                        (_, Some(a)) => emit(a),
+                        (Button::DPadUp, _) => dpad[0] = true,
+                        (Button::DPadDown, _) => dpad[1] = true,
+                        (Button::DPadLeft, _) => dpad[2] = true,
+                        (Button::DPadRight, _) => dpad[3] = true,
                         _ => {}
                     },
                     EventType::ButtonReleased(b, _) => match b {
@@ -328,7 +361,8 @@ fn main() {
             launch_game,
             nexus::open_nexus,
             nexus::close_nexus,
-            nexus::nexus_toast
+            nexus::nexus_toast,
+            controller_bindings
         ])
         .run(tauri::generate_context!())
         .expect("error while running cpmm GUI");

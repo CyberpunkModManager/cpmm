@@ -3,11 +3,12 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import clsx from "clsx";
 import { ArrowLeft, ArrowRight, Check, CircleAlert, ExternalLink, FolderOpen, Gamepad2, KeyRound, Layers, Rocket, Settings2, Sparkles } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { ControlTable } from "../components/ControlMap";
 import { Button, Card, Input, Spinner, Switch } from "../components/ui";
 import { api } from "../lib/cpmm";
 import { useJobs } from "../lib/jobs";
 
-const STEPS = ["Welcome", "Game", "Nexus Mods", "Steam", "Preferences", "Done"] as const;
+const STEPS = ["Welcome", "Controls", "Game", "Nexus Mods", "Steam", "Preferences", "Done"] as const;
 const PREFS = [
   "check_updates_on_start",
   "auto_install_updates",
@@ -59,7 +60,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
               >
                 {i < step ? <Check className="size-3.5" /> : i + 1}
               </span>
-              <span className={clsx("hidden text-xs md:inline", i === step ? "text-ink-100" : "text-ink-400")}>{n}</span>
+              <span className={i === step ? "text-xs whitespace-nowrap text-ink-100" : "sr-only"}>{n}</span>
               {i < STEPS.length - 1 && <span className="mx-1 h-px w-4 bg-ink-700" />}
             </div>
           ))}
@@ -80,11 +81,18 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                 <li>• Conflicts, requirements and the load order are handled automatically.</li>
                 <li>• Every update can be undone, and your saves are snapshotted before risky changes.</li>
               </ul>
-              <p className="mt-4 flex items-center gap-2 text-xs text-ink-400">
-                <Gamepad2 className="size-4" /> D-pad / stick to move, A to select, B to go back.
-              </p>
             </div>
           ) : step === 1 ? (
+            <div className="space-y-4">
+              <h2 className="flex items-center gap-2 text-xl font-semibold">
+                <Gamepad2 className="size-5 text-neon-cyan" /> Controls
+              </h2>
+              <p className="text-sm text-ink-300">
+                cpmm works with a controller, a keyboard or touch. Press <b>Select</b> (or <b>?</b> on a keyboard) any time to see this again.
+              </p>
+              <ControlTable />
+            </div>
+          ) : step === 2 ? (
             <div className="space-y-4">
               <h2 className="flex items-center gap-2 text-xl font-semibold">
                 <FolderOpen className="size-5 text-neon-cyan" /> Cyberpunk 2077
@@ -110,7 +118,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                 </form>
               )}
             </div>
-          ) : step === 2 ? (
+          ) : step === 3 ? (
             <div className="space-y-4">
               <h2 className="flex items-center gap-2 text-xl font-semibold">
                 <KeyRound className="size-5 text-neon-pink" /> Nexus Mods API key
@@ -147,7 +155,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                 </Button>
               </form>
             </div>
-          ) : step === 3 ? (
+          ) : step === 4 ? (
             <div className="space-y-4">
               <h2 className="flex items-center gap-2 text-xl font-semibold">
                 <Rocket className="size-5 text-neon-violet" /> Launch through cpmm
@@ -174,7 +182,7 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                 </>
               )}
             </div>
-          ) : step === 4 ? (
+          ) : step === 5 ? (
             <div className="space-y-5">
               <h2 className="flex items-center gap-2 text-xl font-semibold">
                 <Settings2 className="size-5 text-neon-amber" /> Preferences
