@@ -38,7 +38,7 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").expect("HOME not set"))
 }
 
-fn steam_root() -> PathBuf {
+pub(crate) fn steam_root() -> PathBuf {
     let link = home().join(".steam/root");
     fs::canonicalize(&link).unwrap_or_else(|_| home().join(".local/share/Steam"))
 }

@@ -34,6 +34,8 @@ fn roots(c: &mut Collect) {
     c.visit::<query::ModioView>();
     c.visit::<query::FomodView>();
     c.visit::<query::CollectionView>();
+    c.visit::<query::ToolsView>();
+    c.visit::<query::ToolFile>();
 }
 
 /// Declarations by TypeScript name (sorted, so the file is stable).

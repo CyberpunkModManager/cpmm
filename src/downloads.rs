@@ -73,6 +73,7 @@ pub fn list(paths: &Paths, st: &State) -> Vec<Download> {
         .filter(|p| is_archive_file(p))
         .collect();
     files.sort_by_key(|p| std::cmp::Reverse(fs::metadata(p).and_then(|m| m.modified()).ok()));
+    let tools = crate::tools::list(paths);
     files
         .into_iter()
         .map(|p| {
@@ -84,7 +85,12 @@ pub fn list(paths: &Paths, st: &State) -> Vec<Download> {
                 source: "local".into(),
                 ..Default::default()
             });
-            let (status, installed_as) = status(st, &rel, &meta);
+            let (mut status, mut installed_as) = status(st, &rel, &meta);
+            if installed_as.is_none()
+                && let Some(t) = tools.iter().find(|t| t.meta.archive == rel)
+            {
+                (status, installed_as) = ("installed", Some(format!("tool {}", t.meta.id)));
+            }
             Download { size: fs::metadata(&p).map(|m| m.len()).unwrap_or(0), file: rel, path: p, meta, status, installed_as }
         })
         .collect()

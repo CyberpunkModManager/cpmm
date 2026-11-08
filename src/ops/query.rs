@@ -67,6 +67,13 @@ pub enum Query {
     Collection {
         reference: String,
     },
+    /// Installed Windows tools, the Wine that runs them, and recent runs ([`ToolsView`])
+    Tools,
+    /// A file a tool run wrote (a report), as text ([`ToolFile`])
+    ToolFile {
+        run: String,
+        path: String,
+    },
 }
 
 /// Answer a query. `ui` hears progress (a FOMOD query may download the archive first).
@@ -100,6 +107,8 @@ pub fn view(paths: &Paths, q: &Query, ui: &mut dyn super::Ui) -> Result<serde_js
         Query::Modio => serde_json::to_value(modio(paths, &st))?,
         Query::Fomod { source, file, choices } => serde_json::to_value(fomod(paths, &st, ui, source, file.as_deref(), choices.as_ref())?)?,
         Query::Collection { reference } => serde_json::to_value(collection(paths, &st, reference)?)?,
+        Query::Tools => serde_json::to_value(tools(paths, &st))?,
+        Query::ToolFile { run, path } => serde_json::to_value(tool_file(paths, run, path)?)?,
     };
     Ok(v)
 }
@@ -985,4 +994,46 @@ pub fn launch_options(ui: &dyn super::Ui) -> Result<LaunchOptions> {
     let ok = current.as_deref().is_some_and(steam::launch_options_ok);
     let with_cpmm = steam::with_cpmm(current.as_deref().unwrap_or(""), &exe);
     Ok(LaunchOptions { current, ok, with_cpmm })
+}
+
+#[derive(Serialize, Debug, TS)]
+pub struct ToolsView {
+    pub tools: Vec<crate::tools::Tool>,
+    pub runs: Vec<crate::tools::ToolRun>,
+    /// What runs them, or why nothing can
+    pub wine: Option<crate::tools::Wine>,
+    pub wine_error: Option<String>,
+    pub prefix: PathBuf,
+}
+
+pub fn tools(paths: &Paths, st: &State) -> ToolsView {
+    let (wine, wine_error) = match crate::tools::find_wine(paths) {
+        Ok(w) => (Some(w), None),
+        Err(e) => (None, Some(format!("{e:#}"))),
+    };
+    ToolsView {
+        tools: crate::tools::all(paths, st),
+        runs: crate::tools::runs(paths),
+        wine,
+        wine_error,
+        prefix: crate::tools::prefix_dir(paths),
+    }
+}
+
+#[derive(Serialize, Debug, TS)]
+pub struct ToolFile {
+    pub path: String,
+    /// Where it is on disk
+    pub file: PathBuf,
+    pub text: String,
+    /// Longer than the 24 MB shown
+    pub truncated: bool,
+}
+
+pub fn tool_file(paths: &Paths, run: &str, path: &str) -> Result<ToolFile> {
+    let r = crate::tools::find_run(paths, run)?;
+    let file = crate::tools::output_path(paths, &r, path)?;
+    let b = fs::read(&file)?;
+    const MAX: usize = 24 << 20;
+    Ok(ToolFile { path: path.into(), text: String::from_utf8_lossy(&b[..b.len().min(MAX)]).into_owned(), truncated: b.len() > MAX, file })
 }

@@ -21,7 +21,7 @@ pub mod render;
 #[cfg(test)]
 mod tests;
 
-pub use act::{Action, CollectionDone, InstallRequest, Place, ProfileAction, act, exec, installed_exe, launch};
+pub use act::{Action, CollectionDone, InstallRequest, Place, ProfileAction, act, exec, installed_exe, launch, tool_sandbox};
 
 use crate::fomod::{Choices, Fomod};
 use crate::{import, install, loadorder, nexus, safety, steam};
@@ -300,6 +300,7 @@ pub enum Note {
     Profile(ProfileNote),
     Collection(CollectionNote),
     Launch(LaunchNote),
+    Tool(ToolNote),
 }
 
 #[derive(Clone, Debug)]
@@ -349,6 +350,42 @@ pub enum CollectionNote {
     Step { n: usize, total: usize, name: String, version: String },
     Failed(String),
     Done { name: String, optional: bool, instructions: String, done: CollectionDone },
+}
+
+#[derive(Clone, Debug)]
+pub enum ToolNote {
+    /// A download that is a Windows tool, installed under Tools instead of as a mod
+    IsTool(String),
+    Installed {
+        id: String,
+        name: String,
+        version: String,
+        actions: Vec<String>,
+        replaced: bool,
+    },
+    Removed {
+        id: String,
+        trash: PathBuf,
+    },
+    PrefixSetup(PathBuf),
+    Starting {
+        label: String,
+        wine: String,
+        game_prefix: bool,
+        live: bool,
+    },
+    /// A line the tool printed
+    Output {
+        line: String,
+        stderr: bool,
+    },
+    Finished(Box<crate::tools::ToolRun>),
+    Saved {
+        run: String,
+        id: String,
+        rules: usize,
+    },
+    Discarded(String),
 }
 
 #[derive(Clone, Debug)]

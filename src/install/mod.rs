@@ -14,7 +14,7 @@
 //! [`Releases`] port (production adapter: the Nexus catalogue), so tests run the whole
 //! pipeline against a fake.
 
-mod stage;
+pub mod stage;
 #[cfg(test)]
 mod tests;
 

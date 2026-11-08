@@ -1,7 +1,7 @@
 //! The text of events: what the CLI prints and the GUI's job log shows, the same for both.
 
 use super::query::KeyStatus;
-use super::{CollectionNote, Event, LaunchNote, Note, ProfileNote, SetupStep};
+use super::{CollectionNote, Event, LaunchNote, Note, ProfileNote, SetupStep, ToolNote};
 use crate::import::Progress;
 use crate::install;
 use crate::nexus::Transfer;
@@ -292,6 +292,7 @@ fn note(n: &Note) -> Vec<Line> {
         Note::Setup(s) => out(setup(s)),
         Note::Profile(p) => out(profile(p)),
         Note::Collection(c) => out(collection(c)),
+        Note::Tool(t) => tool(t),
         Note::Launch(l) => err(match l {
             LaunchNote::Vanilla => "cpmm: vanilla launch (no mods mounted)".into(),
             LaunchNote::ModlistFailed(e) => format!("cpmm: modlist.txt not updated: {e}"),
@@ -415,5 +416,74 @@ fn collection(c: &CollectionNote) -> Vec<String> {
             }
             v
         }
+    }
+}
+
+fn tool(t: &ToolNote) -> Vec<Line> {
+    use crate::tools::OutputKind as K;
+    match t {
+        ToolNote::IsTool(name) => out(vec![format!("{name} is a Windows tool, not a mod: installing it under Tools (cpmm tools)")]),
+        ToolNote::Installed { id, name, version, actions, replaced } => out(vec![
+            format!("{} tool {id} ({name} {version})", if *replaced { "replaced" } else { "installed" }),
+            format!("  actions: {}  (cpmm tools run {id} <action>)", actions.join(", ")),
+        ]),
+        ToolNote::Removed { id, trash } => out(vec![format!("removed tool {id} (moved to {})", trash.display())]),
+        ToolNote::PrefixSetup(p) => {
+            err(format!("setting up the Wine prefix for tools in {} (first run only; takes a minute)…", p.display()))
+        }
+        ToolNote::Starting { label, wine, game_prefix, live } => err(format!(
+            "running {label} with {wine}{}, mods mounted; {}",
+            if *game_prefix { " in the game's Wine prefix" } else { "" },
+            if *live { "its writes go where the game sees them (cpmm's overwrite folder)" } else { "its writes go to a scratch layer" }
+        )),
+        ToolNote::Output { line, stderr } => vec![Line { text: line.clone(), err: *stderr, open: false }],
+        ToolNote::Finished(r) => {
+            let mut v = vec![format!(
+                "{}: {}; wrote {} report file(s), {} game file(s)",
+                r.id,
+                match r.exit_code {
+                    Some(0) => "finished".to_string(),
+                    Some(c) => format!("exited with code {c}"),
+                    None => "killed".to_string(),
+                },
+                r.count(K::Report),
+                r.count(K::GameFile)
+            )];
+            for o in r.outputs.iter().filter(|o| o.kind == K::Report && !o.path.to_lowercase().contains("/history/")).take(6) {
+                v.push(format!("  report: {}", r.upper.join(&o.path).display()));
+            }
+            for o in r.outputs.iter().filter(|o| o.kind == K::GameFile).take(12) {
+                v.push(format!("  game file: {} ({:.1} MB)", o.path, mb(o.size)));
+            }
+            if r.live {
+                v[0] = format!(
+                    "{}: {}",
+                    r.id,
+                    match r.exit_code {
+                        Some(0) => "finished".to_string(),
+                        Some(c) => format!("exited with code {c}"),
+                        None => "killed".to_string(),
+                    }
+                );
+            }
+            if r.count(K::GameFile) > 0 {
+                v.push(format!("  not applied yet: `cpmm tools save {}` installs them as a mod", r.id));
+            }
+            if r.count(K::LoadOrder) > 0 {
+                v.push(format!(
+                    "  it edited modlist.txt; cpmm writes the load order, so that edit isn't applied{}",
+                    if r.load_first.is_empty() { String::new() } else { " (saving makes its archives win instead)".into() }
+                ));
+            }
+            if r.count(K::Deleted) > 0 {
+                v.push(format!("  it deleted {} file(s); not applied (disable or remove the mod instead)", r.count(K::Deleted)));
+            }
+            out(v)
+        }
+        ToolNote::Saved { run, id, rules } => out(vec![format!(
+            "saved {run}'s game files as mod {id}{}",
+            if *rules > 0 { format!(" (loads first: {rules} load-order rule(s) added)") } else { String::new() }
+        )]),
+        ToolNote::Discarded(run) => out(vec![format!("discarded {run}")]),
     }
 }

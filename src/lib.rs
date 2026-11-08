@@ -23,6 +23,7 @@ pub mod safety;
 pub mod settings;
 pub mod state;
 pub mod steam;
+pub mod tools;
 pub mod vanilla;
 pub mod verify;
 pub mod vfs;

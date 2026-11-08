@@ -539,3 +539,62 @@ pub fn launch_options(lo: &LaunchOptions) {
         None => println!("Cyberpunk isn't in Steam's local config yet; start it once from Steam. Use:\n  {}", lo.with_cpmm),
     }
 }
+
+pub fn tools(v: &query::ToolsView) {
+    match (&v.wine, &v.wine_error) {
+        (Some(w), _) => println!("runs with: {}{}", w.name, if w.games { " (the game's Proton)" } else { "" }),
+        (None, Some(e)) => println!("can't run tools: {e}"),
+        _ => {}
+    }
+    if v.tools.is_empty() {
+        println!("no tools installed (cpmm tools install <nexus id|download|archive>)");
+    }
+    for (i, t) in v.tools.iter().enumerate() {
+        println!(
+            "{:>3}  {:<28} {:<40} {}{}",
+            i + 1,
+            t.meta.id,
+            t.meta.name.chars().take(40).collect::<String>(),
+            t.meta.version,
+            t.from_mod.as_ref().map(|m| format!("  (comes with mod {m})")).unwrap_or_default()
+        );
+        if let Some(g) = &t.guide {
+            println!("       {g}");
+        }
+        for a in &t.actions {
+            let notes = [
+                (a.game_prefix, "game's prefix"),
+                (a.live, "writes where the game sees them"),
+                (a.when == cpmm::tools::GameState::Closed, "game closed"),
+            ];
+            let notes: Vec<&str> = notes.iter().filter(|(on, _)| *on).map(|(_, n)| *n).collect();
+            println!(
+                "       {:<28} {}{}",
+                a.id.chars().take(28).collect::<String>(),
+                a.label,
+                if notes.is_empty() { String::new() } else { format!("  ({})", notes.join(", ")) }
+            );
+        }
+    }
+    if let Some(r) = v.runs.first() {
+        println!("\nlast run: {} ({}){}", r.id, r.label, r.saved_as.as_ref().map(|m| format!(", saved as {m}")).unwrap_or_default());
+    }
+}
+
+pub fn tool_runs(runs: &[cpmm::tools::ToolRun]) {
+    use cpmm::tools::OutputKind as K;
+    if runs.is_empty() {
+        println!("no tool runs yet");
+    }
+    for r in runs {
+        println!(
+            "{:<44} {:<28} exit {:<4} {} report(s), {} game file(s){}",
+            r.id,
+            r.label.chars().take(28).collect::<String>(),
+            r.exit_code.map(|c| c.to_string()).unwrap_or("-".into()),
+            r.count(K::Report),
+            r.count(K::GameFile),
+            r.saved_as.as_ref().map(|m| format!(", saved as {m}")).unwrap_or_default()
+        );
+    }
+}

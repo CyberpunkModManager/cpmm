@@ -21,9 +21,10 @@ import {
   RefreshCw,
   Save,
   Settings2,
+  Wrench,
   X,
 } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import { ControlMap } from "./components/ControlMap";
 import { ErrorBox, IconButton, Spinner } from "./components/ui";
 import { useAutomation } from "./lib/automation";
@@ -38,6 +39,7 @@ import { Onboarding } from "./views/Onboarding";
 import { ConflictsView, DepsView, InstallView, OverwriteView, SystemView, UpdatesView } from "./views/Panels";
 import { ProfileButton } from "./views/Profiles";
 import { SettingsView } from "./views/Settings";
+import { ToolsView } from "./views/Tools";
 
 const SECTIONS = [
   { key: "mods", label: "Mods", icon: Layers },
@@ -48,6 +50,7 @@ const SECTIONS = [
   { key: "overwrite", label: "Overwrite", icon: Save },
   { key: "install", label: "Install", icon: PackagePlus },
   { key: "downloads", label: "Downloads", icon: Download },
+  { key: "tools", label: "Tools", icon: Wrench },
   { key: "system", label: "System", icon: Cpu },
   { key: "settings", label: "Settings", icon: Settings2 },
 ] as const;
@@ -82,10 +85,6 @@ export default function App() {
   const onSelect = useCallback(() => setControlsOpen((v) => !v), []);
   useSpatialNav(onSection, onBack, onStart, onSelect);
   useNexusBridge();
-
-  useEffect(() => {
-    if (busy) setLogOpen(true);
-  }, [busy]);
 
   const s = state.data;
   const badge: Partial<Record<Section, ReactNode>> = s
@@ -218,6 +217,7 @@ export default function App() {
                 {section === "overwrite" && <OverwriteView state={s} />}
                 {section === "install" && <InstallView state={s} />}
                 {section === "downloads" && <DownloadsView state={s} />}
+                {section === "tools" && <ToolsView state={s} />}
                 {section === "system" && <SystemView state={s} />}
                 {section === "settings" && <SettingsView onSetup={() => setSetupOpen(true)} />}
               </div>

@@ -285,6 +285,18 @@ fn remedies_read_as_their_cli_command() {
         (Action::Update { mods: vec!["a".into()], all: false }, s(&["update", "a"])),
         (Action::Vanilla { on: true }, s(&["vanilla", "on"])),
         (Action::Sort { apply: true }, s(&["sort", "--apply"])),
+        (Action::ToolInstall { source: "36878".into() }, s(&["tools", "install", "36878"])),
+        (
+            Action::ToolRun {
+                tool: "vram-ripperdoc".into(),
+                action: "measure".into(),
+                input: Some("after".into()),
+                extra: s(&["--seconds", "60"]),
+            },
+            s(&["tools", "run", "vram-ripperdoc", "measure", "--input", "after", "--", "--seconds", "60"]),
+        ),
+        (Action::ToolSave { run: "last".into(), name: Some("Fix".into()) }, s(&["tools", "save", "last", "--name", "Fix"])),
+        (Action::ToolDiscard { run: "r1".into() }, s(&["tools", "discard", "r1"])),
     ];
     for (a, argv) in cases {
         assert_eq!(a.argv(), argv);

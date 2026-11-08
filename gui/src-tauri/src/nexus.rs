@@ -7,6 +7,10 @@
 //! `nxm://…` (install), `cpmm://close` and `cpmm://keyboard`. Everything it can trigger, a click
 //! on an nxm:// link could trigger anyway. The backend drives the page with `eval` (gamepad,
 //! toasts) through the `window.__cpmm` object that `nexus.js` installs.
+//!
+//! It also shows tool reports (HTML files a tool run wrote, under cpmm's tool-runs folder),
+//! so they get the same controller support. A report is no more trusted than the tool that
+//! wrote it, and that tool already ran as the user.
 
 use serde::Serialize;
 use std::path::PathBuf;
@@ -24,6 +28,14 @@ fn home_dir() -> PathBuf {
 
 fn is_nexus(u: &Url) -> bool {
     u.scheme() == "https" && u.host_str().is_some_and(|h| h == "nexusmods.com" || h.ends_with(".nexusmods.com"))
+}
+
+/// A file a tool run wrote (`file://<data>/tool-runs/…`).
+fn is_report(u: &Url) -> bool {
+    let runs = cpmm::state::Paths::load().map(|p| cpmm::tools::runs_dir(&p)).unwrap_or_default();
+    u.scheme() == "file"
+        && u.to_file_path()
+            .is_ok_and(|p| !runs.as_os_str().is_empty() && p.starts_with(&runs) && !p.components().any(|c| c.as_os_str() == ".."))
 }
 
 /// Nexus mod id from a page URL like …/cyberpunk2077/mods/4626?tab=files (the core's parser).
@@ -275,6 +287,7 @@ fn on_navigation(app: &AppHandle, url: &Url) -> bool {
         }
         // Login, Cloudflare checks and CDNs live on other hosts, so any web page is fine.
         "http" | "https" | "about" | "data" | "blob" => true,
+        "file" => is_report(url),
         // mailto:, steam:, … would leave the app (or do nothing); ignore them.
         _ => false,
     }
@@ -289,7 +302,11 @@ fn downloads_dir() -> PathBuf {
 
 #[tauri::command]
 pub fn open_nexus(app: AppHandle, url: Option<String>) -> Result<(), String> {
-    let target = url.as_deref().and_then(|u| Url::parse(u).ok()).filter(is_nexus).unwrap_or_else(|| Url::parse(HOME).unwrap());
+    let target = url
+        .as_deref()
+        .and_then(|u| Url::parse(u).ok())
+        .filter(|u| is_nexus(u) || is_report(u))
+        .unwrap_or_else(|| Url::parse(HOME).unwrap());
     if let Some(w) = app.get_webview_window(LABEL) {
         if url.is_some() {
             let _ = w.navigate(target);
@@ -473,4 +490,19 @@ mod tests {
         assert_eq!(mod_id_of(&Url::parse("https://www.nexusmods.com/cyberpunk2077/mods/4626?tab=files&file_id=1").unwrap()), Some(4626));
         assert_eq!(mod_id_of(&Url::parse("https://www.nexusmods.com/games/cyberpunk2077/mods").unwrap()), None);
     }
+}
+
+/// Show a tool run's HTML report in the built-in browser window.
+#[tauri::command]
+pub fn open_report(app: AppHandle, path: PathBuf) -> Result<(), String> {
+    let url = Url::from_file_path(&path).map_err(|_| format!("not a file path: {}", path.display()))?;
+    if !is_report(&url) {
+        return Err(format!("{} isn't a tool report", path.display()));
+    }
+    std::thread::spawn(move || {
+        if let Err(e) = open_nexus(app, Some(url.to_string())) {
+            crate::glog(&format!("report: {e}"));
+        }
+    });
+    Ok(())
 }

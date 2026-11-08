@@ -2,14 +2,14 @@
 //! and through the Change module. Progress and step results go to the adapter's [`Ui`] as
 //! [`Event`]s; the text the CLI prints is their rendering ([`super::render`]).
 
-use super::{Event, Note, Ui};
+use super::{Event, Note, ToolNote, Ui};
 use crate::change::{Change, Edit, Idle, Lock};
 use crate::fomod::Choices;
 use crate::install::{self, OnMissing};
 use crate::nexus::{self, Catalogue};
 use crate::requirements::{self, Status};
 use crate::state::{InstalledCollection, Paths, ReqCheck, State, now, slugify};
-use crate::{collections, downloads, files, health, import, loadorder, manage, modio, profiles, safety, settings, steam, vfs};
+use crate::{collections, downloads, files, health, import, loadorder, manage, modio, profiles, safety, settings, steam, tools, vfs};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -267,6 +267,30 @@ pub enum Action {
     },
     /// The terminal first-run flow (asks through the adapter; without answers, the defaults).
     Setup,
+    /// Install a Windows tool: a Nexus mod id or URL, a Downloads entry, or an archive or folder.
+    ToolInstall {
+        source: String,
+    },
+    ToolRemove {
+        tool: String,
+    },
+    /// Run a tool action in its own view of the modded game. `extra` arguments follow the
+    /// action's own; `input` answers its question (default: the suggested answer).
+    ToolRun {
+        tool: String,
+        action: String,
+        input: Option<String>,
+        extra: Vec<String>,
+    },
+    /// Install the game files a run wrote as a mod (named `name`, default after the action).
+    ToolSave {
+        run: String,
+        name: Option<String>,
+    },
+    /// Delete a run and what it wrote.
+    ToolDiscard {
+        run: String,
+    },
 }
 
 impl Action {
@@ -276,7 +300,8 @@ impl Action {
     /// choose, and a change made by an action declared read-only fails.
     pub fn changes_state(&self) -> bool {
         match self {
-            Action::SteamShortcut { .. } | Action::RegisterHandler | Action::UnregisterHandler | Action::NexusKey { .. } => false,
+            // a run writes only its own folder (and the tools' Wine prefix), never State
+            Action::SteamShortcut { .. } | Action::RegisterHandler | Action::UnregisterHandler | Action::NexusKey { .. } | Action::ToolRun { .. } => false,
             Action::Init { .. }
             | Action::Enable { .. }
             | Action::Disable { .. }
@@ -314,7 +339,11 @@ impl Action {
             | Action::LaunchOptionsApply
             | Action::NexusKeySet { .. }
             | Action::NexusKeyRemove
-            | Action::Setup => true,
+            | Action::Setup
+            | Action::ToolInstall { .. }
+            | Action::ToolRemove { .. }
+            | Action::ToolSave { .. }
+            | Action::ToolDiscard { .. } => true,
             Action::Tracked { install, untrack } => *install || *untrack,
             Action::Import { apply, .. } | Action::Eject { apply } | Action::Sort { apply } => *apply,
             Action::Clean { dry_run } => !dry_run,
@@ -519,6 +548,21 @@ impl Action {
                 put(&on(*dry_run, "--dry-run"));
             }
             Action::Setup => put(&["setup"]),
+            Action::ToolInstall { source } => put(&["tools", "install", source]),
+            Action::ToolRemove { tool } => put(&["tools", "remove", tool]),
+            Action::ToolRun { tool, action, input, extra } => {
+                put(&["tools", "run", tool, action]);
+                put(&opt(input, "--input").iter().map(String::as_str).collect::<Vec<_>>());
+                if !extra.is_empty() {
+                    put(&["--"]);
+                    put(&extra.iter().map(String::as_str).collect::<Vec<_>>());
+                }
+            }
+            Action::ToolSave { run, name } => {
+                put(&["tools", "save", run]);
+                put(&opt(name, "--name").iter().map(String::as_str).collect::<Vec<_>>());
+            }
+            Action::ToolDiscard { run } => put(&["tools", "discard", run]),
         }
         a
     }
@@ -913,7 +957,154 @@ fn run(paths: &Paths, st: &mut State, action: Action, ui: &mut dyn Ui) -> Result
             steam::run(steam::Opts { name, exe, remove, dry_run }, &mut |s| say(ui, Note::Shortcut(s)))?
         }
         Action::Setup => setup(paths, ui)?,
+        Action::ToolInstall { source } => tool_install(paths, st, ui, &source)?,
+        Action::ToolRemove { tool } => {
+            let t = tools::find(paths, st, &tool)?;
+            if let Some(m) = &t.from_mod {
+                bail!("{} comes with the mod {m}; remove or disable that mod instead", t.meta.name);
+            }
+            let trash = tools::remove(paths, &t)?;
+            say(ui, Note::Tool(ToolNote::Removed { id: t.meta.id, trash }));
+        }
+        Action::ToolRun { tool, action, input, extra } => {
+            let t = tools::find(paths, st, &tool)?;
+            let cpmm = ui.this_exe()?;
+            // the tool's last words: usually why it stopped
+            let mut last = String::new();
+            let r = tools::run(paths, st, &t, &action, input.as_deref(), &extra, &cpmm, &mut |e| {
+                let n = match e {
+                    tools::ToolEvent::PrefixSetup(p) => ToolNote::PrefixSetup(p),
+                    tools::ToolEvent::Starting { label, wine, game_prefix, live } => ToolNote::Starting { label, wine, game_prefix, live },
+                    tools::ToolEvent::Output { line, stderr } => {
+                        if !line.trim().is_empty() && line.trim() != "ntsync: up and running." {
+                            last = line.trim().to_string();
+                        }
+                        ToolNote::Output { line, stderr }
+                    }
+                };
+                say(ui, Note::Tool(n))
+            })?;
+            let (code, live, label) = (r.exit_code, r.live, r.label.clone());
+            say(ui, Note::Tool(ToolNote::Finished(Box::new(r))));
+            let kept = if live { "" } else { "; what it wrote is kept (cpmm tools runs)" };
+            match code {
+                Some(0) => {}
+                Some(_) if !last.is_empty() => bail!("{label}: {last}"),
+                Some(c) => bail!("{label}: the tool exited with code {c}{kept}"),
+                None => bail!("{label}: the tool was killed{kept}"),
+            }
+        }
+        Action::ToolSave { run, name } => tool_save(paths, st, ui, &run, name)?,
+        Action::ToolDiscard { run } => {
+            let r = tools::find_run(paths, &run)?;
+            tools::discard(paths, &r)?;
+            say(ui, Note::Tool(ToolNote::Discarded(r.id)));
+        }
     }
+    Ok(())
+}
+
+/// `cpmm tools sandbox <run dir>`: the child side of a tool run.
+pub fn tool_sandbox(paths: &Paths, dir: &Path) -> Result<()> {
+    tools::sandbox(paths, dir)
+}
+
+/// What a Downloads entry says about the tool in it.
+fn tool_meta(d: &downloads::Download) -> tools::ToolMeta {
+    tools::ToolMeta {
+        name: if d.meta.name.is_empty() { nexus::catalogue::download_name(&d.file) } else { d.meta.name.clone() },
+        version: d.meta.version.clone(),
+        mod_id: d.meta.mod_id,
+        file_id: d.meta.file_id.clone(),
+        archive: d.file.clone(),
+        ..Default::default()
+    }
+}
+
+fn install_tool(paths: &Paths, ui: &mut dyn Ui, source: &Path, meta: tools::ToolMeta) -> Result<()> {
+    let (meta, replaced) = tools::install(paths, source, meta)?;
+    let t = tools::find(paths, &State::default(), &meta.id)?;
+    say(
+        ui,
+        Note::Tool(ToolNote::Installed {
+            id: meta.id,
+            name: meta.name,
+            version: meta.version,
+            actions: t.actions.iter().map(|a| a.id.clone()).collect(),
+            replaced,
+        }),
+    );
+    Ok(())
+}
+
+/// Install a tool from a Nexus mod (into Downloads first), a Downloads entry, or a local
+/// archive or folder.
+fn tool_install(paths: &Paths, st: &State, ui: &mut dyn Ui, source: &str) -> Result<()> {
+    let local = files::expand_home(source);
+    if local.exists() {
+        let name = local.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "tool".into());
+        return install_tool(paths, ui, &local, tools::ToolMeta { name: nexus::catalogue::download_name(&name), ..Default::default() });
+    }
+    let d = match nexus::catalogue::mod_id(source) {
+        // a number or a mod page: from Nexus, through the Downloads list like any download
+        Some(gid) => {
+            let arc = fetch_nexus(paths, &Catalogue::open(paths), ui, gid, None, None, "nexus")?;
+            downloads::find(paths, st, &arc.file_name().unwrap_or_default().to_string_lossy())?
+        }
+        None => downloads::find(paths, st, source)?,
+    };
+    install_tool(paths, ui, &d.path, tool_meta(&d))
+}
+
+/// A Downloads entry that is a Windows tool goes under Tools, not into the mod list. True if
+/// it was one.
+fn tool_download(paths: &Paths, ui: &mut dyn Ui, d: &downloads::Download) -> Result<bool> {
+    if !tools::archive_files(&d.path).is_ok_and(|f| tools::is_tool(&f)) {
+        return Ok(false);
+    }
+    say(ui, Note::Tool(ToolNote::IsTool(d.meta.name.clone())));
+    install_tool(paths, ui, &d.path, tool_meta(d))?;
+    Ok(true)
+}
+
+/// Install what a run wrote to the game folder as a mod. If the tool put its archives first
+/// in modlist.txt, it wants them to win: the new mod gets top priority and a rule over each
+/// mod whose archives it overlaps.
+fn tool_save(paths: &Paths, st: &mut State, ui: &mut dyn Ui, run: &str, name: Option<String>) -> Result<()> {
+    let r = tools::find_run(paths, run)?;
+    let dir = tools::export_game_files(paths, &r)?;
+    let name = name.unwrap_or_else(|| format!("{} ({})", crate::state::short_name(&r.tool_name), r.label));
+    let policy = install::Policy { id: Some(slugify(&name)), name: Some(name), missing: OnMissing::Warn, ..Default::default() };
+    let res = Change::setup().idle(Idle::NotNeeded).apply(paths, st, ui, |cx, st| {
+        let rep = install::run(cx, st, &Catalogue::open(cx.paths()), install::Source::Local { path: dir.clone(), nexus: None }, &policy)?;
+        let id = rep.requested().id.clone();
+        let mut rules = 0;
+        if !r.load_first.is_empty() {
+            if let Some(i) = st.find(&id) {
+                let m = st.mods.remove(i);
+                st.mods.push(m);
+            }
+            let ids: Vec<String> = st.mods.iter().map(|m| m.id.clone()).collect();
+            for p in loadorder::archive_conflicts(cx.paths(), st, &ids) {
+                let other = match (&p.a, &p.b) {
+                    (loadorder::Owner::Mod(a), loadorder::Owner::Mod(b)) if *a == id => b.clone(),
+                    (loadorder::Owner::Mod(a), loadorder::Owner::Mod(b)) if *b == id => a.clone(),
+                    _ => continue,
+                };
+                let rule = loadorder::Rule { r#mod: id.clone(), after: other };
+                if !st.rules.contains(&rule) {
+                    st.rules.push(rule);
+                    rules += 1;
+                }
+            }
+        }
+        cx.journal("tool-save", std::slice::from_ref(&id), &r.id);
+        Ok((id, rules))
+    });
+    let _ = fs::remove_dir_all(&dir);
+    let (id, rules) = res?;
+    tools::mark_saved(paths, &r, &id)?;
+    say(ui, Note::Tool(ToolNote::Saved { run: r.id, id, rules }));
     Ok(())
 }
 
@@ -1153,7 +1344,9 @@ fn nxm(paths: &Paths, st: &mut State, ui: &mut dyn Ui, url: &str) -> Result<()> 
     };
     let file = arc.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let d = downloads::find(paths, st, &file)?;
-    if paths.cfg.auto_install_downloads {
+    if paths.cfg.auto_install_downloads && tool_download(paths, ui, &d).unwrap_or(false) {
+        manage::notify("Tool installed", &format!("{}\nRun it from cpmm's Tools page.", d.meta.name));
+    } else if paths.cfg.auto_install_downloads {
         let policy = install::Policy { missing: OnMissing::Install, ..Default::default() };
         // a new mod doesn't touch a running session; replacing a mounted one is refused by staging
         let r = Change::setup()
@@ -1177,6 +1370,9 @@ fn nxm(paths: &Paths, st: &mut State, ui: &mut dyn Ui, url: &str) -> Result<()> 
 }
 
 fn install_download(paths: &Paths, st: &mut State, ui: &mut dyn Ui, d: &downloads::Download, policy: &install::Policy) -> Result<()> {
+    if tool_download(paths, ui, d)? {
+        return Ok(());
+    }
     // a new mod doesn't touch a running session; replacing a mounted one is refused by staging
     Change::setup()
         .idle(Idle::NotNeeded)

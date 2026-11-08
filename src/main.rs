@@ -235,6 +235,12 @@ enum Cmd {
         #[arg(long)]
         file: Option<String>,
     },
+    /// Windows tools (VRAM RipperDoc, …) run through Proton with your mods mounted:
+    /// `cpmm tools`, `install <nexus id|download|path>`, `run <tool> [action]`, `runs`, `save <run>`.
+    Tools {
+        #[command(subcommand)]
+        action: Option<ToolsCmd>,
+    },
     /// The Downloads list: `cpmm downloads`, `install <#|name>`, `remove <#|name>`, `add <path>`.
     Downloads {
         #[command(subcommand)]
@@ -444,6 +450,40 @@ enum DownloadsCmd {
 }
 
 #[derive(Subcommand)]
+enum ToolsCmd {
+    /// Installed tools and their actions (default)
+    List,
+    /// Install a tool: a Nexus mod id or URL, a Downloads entry, or an archive or folder
+    Install { source: String },
+    /// Uninstall a tool (its files go to cpmm's trash)
+    Remove { tool: String },
+    /// Run a tool action (default: its first). Its writes are caught; `save` applies them.
+    Run {
+        tool: String,
+        action: Option<String>,
+        /// Answer to the action's question (e.g. a measurement's name)
+        #[arg(long)]
+        input: Option<String>,
+        /// Extra arguments for the program, after `--`
+        #[arg(last = true)]
+        extra: Vec<String>,
+    },
+    /// Recent runs and what they wrote
+    Runs,
+    /// Install the game files a run wrote as a mod (`last` for the newest run)
+    Save {
+        run: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Delete a run and what it wrote
+    Discard { run: String },
+    /// (internal) enter a run's sandbox and start the tool
+    #[command(hide = true)]
+    Sandbox { dir: PathBuf },
+}
+
+#[derive(Subcommand)]
 enum CollectionCmd {
     /// What a collection contains and what you already have
     Show { reference: String },
@@ -483,6 +523,8 @@ enum SettingsCmd {
 
 #[derive(Subcommand)]
 enum ApiCmd {
+    /// Installed tools, their Wine and recent runs
+    Tools,
     /// Settings values, their schema and the resolved folders
     Settings,
     /// A Nexus collection's contents with install status
@@ -578,6 +620,8 @@ fn real_main() -> Result<()> {
     match cli.cmd {
         Cmd::Run { cmd } => return ops::launch(&paths, &cmd, &mut term),
         Cmd::Exec { cmd } => return ops::exec(&paths, &cmd),
+        // the child of a tool run: must stay single-threaded until it has entered its namespace
+        Cmd::Tools { action: Some(ToolsCmd::Sandbox { dir }) } => return ops::tool_sandbox(&paths, &dir),
         _ if in_ns => bail!("run cpmm management commands outside `cpmm exec`/the game session"),
         _ => {}
     }
@@ -745,6 +789,26 @@ fn real_main() -> Result<()> {
             SettingsCmd::Reset { key } => act(Action::SettingsReset { key })?,
         },
         Cmd::Download { source, file } => act(Action::Download { source, file })?,
+        Cmd::Tools { action } => match action.unwrap_or(ToolsCmd::List) {
+            ToolsCmd::List => cli::tools(&ops::query::tools(&paths, &State::load(&paths)?)),
+            ToolsCmd::Install { source } => act(Action::ToolInstall { source })?,
+            ToolsCmd::Remove { tool } => act(Action::ToolRemove { tool })?,
+            ToolsCmd::Run { tool, action, input, extra } => {
+                let action = match action {
+                    Some(a) => a,
+                    None => cpmm::tools::find(&paths, &State::load(&paths)?, &tool)?
+                        .actions
+                        .first()
+                        .map(|a| a.id.clone())
+                        .context("this tool has no programs")?,
+                };
+                act(Action::ToolRun { tool, action, input, extra })?
+            }
+            ToolsCmd::Runs => cli::tool_runs(&cpmm::tools::runs(&paths)),
+            ToolsCmd::Save { run, name } => act(Action::ToolSave { run, name })?,
+            ToolsCmd::Discard { run } => act(Action::ToolDiscard { run })?,
+            ToolsCmd::Sandbox { .. } => unreachable!(),
+        },
         Cmd::Downloads { action } => match action.unwrap_or(DownloadsCmd::List) {
             DownloadsCmd::List => cli::downloads(&paths, &State::load(&paths)?),
             DownloadsCmd::Install { key, fomod_choices: fc, fomod_defaults, with_deps } => {
@@ -792,6 +856,7 @@ fn api(paths: &Paths, a: ApiCmd) -> Result<()> {
         ApiCmd::History { r#mod } => Query::History { r#mod },
         ApiCmd::Archives => Query::Archives,
         ApiCmd::Lookup { source } => Query::Lookup { source },
+        ApiCmd::Tools => Query::Tools,
     };
     let v = ops::query::view(paths, &q, &mut cli::Term)?;
     cli::warnings();

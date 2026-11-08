@@ -216,6 +216,34 @@ fn enter_new(paths: &Paths, mods: Option<&[Mod]>, saves: Option<&Path>, cmd: &[S
         fs::create_dir_all(s)?;
         fs::create_dir_all(&shared_saves)?;
     }
+    let game = mods.is_some().then_some(&paths.game);
+    let mut layers_out = vec![];
+    enter(game.map(|g| (g.as_path(), lowers.as_slice(), paths.upper(), paths.work())), saves.map(|s| (s, shared_saves.as_path())), || {
+        let info = RunInfo {
+            pid: std::process::id(),
+            mnt_ns: self_mnt_ns(),
+            layers: ls.iter().map(|(id, _)| id.clone()).collect(),
+            started: crate::state::now(),
+            command: cmd.to_vec(),
+            saves: saves.map(Path::to_path_buf),
+        };
+        // Written from inside userns#1 (root there == us outside), so it is owned by us.
+        fs::write(paths.run_file(), serde_json::to_vec_pretty(&info)?)?;
+        layers_out = info.layers;
+        Ok(())
+    })?;
+    Ok(layers_out)
+}
+
+/// The namespace dance (see the module docs): userns#1 + a private mount namespace, the
+/// overlay `(target, lowers top first, upper, work)` and the bind `(src, dst)` mounted, then
+/// `inside` (still as root of userns#1), then userns#2 mapping us back to our own uid.
+/// Must be called while single-threaded.
+fn enter(
+    overlay: Option<(&Path, &[PathBuf], PathBuf, PathBuf)>,
+    bind: Option<(&Path, &Path)>,
+    inside: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
     unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS)?;
     write_maps(0, uid, 0, gid)?;
@@ -223,27 +251,59 @@ fn enter_new(paths: &Paths, mods: Option<&[Mod]>, saves: Option<&Path>, cmd: &[S
     if unsafe { libc::mount(std::ptr::null(), root.as_ptr(), std::ptr::null(), libc::MS_REC | libc::MS_PRIVATE, std::ptr::null()) } != 0 {
         return Err(cerr("make / private"));
     }
-    if mods.is_some() {
-        mount_overlay(&paths.game, &lowers, &paths.upper(), &paths.work())?;
+    if let Some((target, lowers, upper, work)) = overlay {
+        mount_overlay(target, lowers, &upper, &work)?;
     }
-    if let Some(s) = saves {
-        bind_mount(s, &shared_saves)?;
+    if let Some((src, dst)) = bind {
+        bind_mount(src, dst)?;
     }
-
-    let info = RunInfo {
-        pid: std::process::id(),
-        mnt_ns: self_mnt_ns(),
-        layers: ls.iter().map(|(id, _)| id.clone()).collect(),
-        started: crate::state::now(),
-        command: cmd.to_vec(),
-        saves: saves.map(Path::to_path_buf),
-    };
-    // Written from inside userns#1 (root there == us outside), so it is owned by us.
-    fs::write(paths.run_file(), serde_json::to_vec_pretty(&info)?)?;
-
+    inside()?;
     unshare(libc::CLONE_NEWUSER)?;
     write_maps(uid, 0, gid, 0)?;
-    Ok(info.layers)
+    Ok(())
+}
+
+/// A tool run's own view of the game: a fresh namespace (not the game session's) whose
+/// overlay has `top` (the tool's files) above the overwrite folder, the enabled mods and the
+/// game, and the run's own `upper`/`work`, so nothing the tool writes reaches cpmm's
+/// overwrite folder. The overwrite folder is a read-only layer here; while the game runs it
+/// is also a live session's upper, so the tool may not see the session's newest writes.
+/// Then `cmd` replaces this process, in `cwd`. Must be called while single-threaded.
+#[allow(clippy::too_many_arguments)]
+pub fn sandbox_exec(
+    paths: &Paths,
+    mods: &[Mod],
+    top: &Path,
+    upper: &Path,
+    work: &Path,
+    saves: Option<&Path>,
+    cwd: &Path,
+    cmd: &mut Command,
+) -> Result<()> {
+    if !paths.game.is_dir() {
+        bail!("game directory {} not found", paths.game.display());
+    }
+    let ls = layers(paths, mods);
+    if ls.len() > 440 {
+        bail!("{} layers exceeds overlayfs's limit of ~500", ls.len());
+    }
+    let mut lowers = vec![top.to_path_buf()];
+    if paths.upper().is_dir() {
+        lowers.push(paths.upper());
+    }
+    lowers.extend(ls.into_iter().map(|(_, p)| p));
+    lowers.push(paths.game.clone());
+    fs::create_dir_all(upper)?;
+    fs::create_dir_all(work)?;
+    let shared_saves = crate::safety::shared_saves_dir(paths);
+    if let Some(s) = saves {
+        fs::create_dir_all(s)?;
+        fs::create_dir_all(&shared_saves)?;
+    }
+    enter(Some((&paths.game, &lowers, upper.to_path_buf(), work.to_path_buf())), saves.map(|s| (s, shared_saves.as_path())), || Ok(()))?;
+    std::env::set_current_dir(cwd).with_context(|| format!("cd {}", cwd.display()))?;
+    let err = cmd.env("CPMM_NS", "1").exec();
+    Err(anyhow::anyhow!("exec {:?}: {err}", cmd.get_program()))
 }
 
 fn join(pid: u32) -> Result<()> {

@@ -12,7 +12,9 @@ export type ActResult = { code: number, output: string, installed: Array<string>
  * Every change to the mod setup and cpmm's data that the CLI or the GUI can ask for
  * (`{"op": "enable", "mods": ["…"]}` from the GUI).
  */
-export type Action = { "op": "init", game: string | null, } | { "op": "enable", mods: Array<string>, } | { "op": "disable", mods: Array<string>, } | { "op": "order", mod: string, place: Place | null, } | { "op": "install" } & InstallRequest | { "op": "update", mods: Array<string>, all: boolean, } | { "op": "rename", mod: string, new_id: string, } | { "op": "remove", mod: string, force: boolean, } | { "op": "deps", refresh: boolean, fix: boolean, ignore: [string, string] | null, unignore: [string, string] | null, } | { "op": "hide", mod: string, paths: Array<string>, } | { "op": "unhide", mod: string, paths: Array<string>, } | { "op": "prefer", mod: string, paths: Array<string>, } | { "op": "nxm", url: string | null, register: boolean, } | { "op": "tracked", install: boolean, untrack: boolean, } | { "op": "register_handler" } | { "op": "unregister_handler" } | { "op": "import", modlist: string, apply: boolean, } | { "op": "adopt", id: string, name: string | null, paths: Array<string>, } | { "op": "overwrite_move", to: string, paths: Array<string>, } | { "op": "overwrite_clear", paths: Array<string>, } | { "op": "eject", apply: boolean, } | { "op": "collection_install", reference: string, optional: boolean, into_current: boolean, profile: string | null, } | { "op": "settings_set", key: string, value: string, } | { "op": "settings_reset", key: string | null, } | { "op": "download", source: string, file: string | null, } | { "op": "downloads_install", key: string, fomod: { [key in string]: Array<string> } | null, ask: boolean, with_deps: boolean, } | { "op": "downloads_remove", key: string, } | { "op": "downloads_add", path: string, nexus: number | null, move_it: boolean, source: string, auto: boolean, } | { "op": "clean", dry_run: boolean, } | { "op": "sort", apply: boolean, } | { "op": "rule", mod: string, after: string, remove: boolean, } | { "op": "ack", finding: string, } | { "op": "unack", finding: string, } | { "op": "rollback", mod: string, to: number | null, } | { "op": "undo_update", batch: string | null, } | { "op": "errors" } | { "op": "vanilla", on: boolean, } | { "op": "snapshot_saves" } | { "op": "restore_saves", name: string, } | { "op": "profile" } & ProfileAction | { "op": "modio_ack" } | { "op": "launch_options_apply" } | { "op": "nexus_key_set", key: string, } | { "op": "nexus_key_remove" } | { "op": "nexus_key", check: boolean, } | { "op": "steam_shortcut", name: string, exe: string | null, remove: boolean, dry_run: boolean, } | { "op": "setup" };
+export type Action = { "op": "init", game: string | null, } | { "op": "enable", mods: Array<string>, } | { "op": "disable", mods: Array<string>, } | { "op": "order", mod: string, place: Place | null, } | { "op": "install" } & InstallRequest | { "op": "update", mods: Array<string>, all: boolean, } | { "op": "rename", mod: string, new_id: string, } | { "op": "remove", mod: string, force: boolean, } | { "op": "deps", refresh: boolean, fix: boolean, ignore: [string, string] | null, unignore: [string, string] | null, } | { "op": "hide", mod: string, paths: Array<string>, } | { "op": "unhide", mod: string, paths: Array<string>, } | { "op": "prefer", mod: string, paths: Array<string>, } | { "op": "nxm", url: string | null, register: boolean, } | { "op": "tracked", install: boolean, untrack: boolean, } | { "op": "register_handler" } | { "op": "unregister_handler" } | { "op": "import", modlist: string, apply: boolean, } | { "op": "adopt", id: string, name: string | null, paths: Array<string>, } | { "op": "overwrite_move", to: string, paths: Array<string>, } | { "op": "overwrite_clear", paths: Array<string>, } | { "op": "eject", apply: boolean, } | { "op": "collection_install", reference: string, optional: boolean, into_current: boolean, profile: string | null, } | { "op": "settings_set", key: string, value: string, } | { "op": "settings_reset", key: string | null, } | { "op": "download", source: string, file: string | null, } | { "op": "downloads_install", key: string, fomod: { [key in string]: Array<string> } | null, ask: boolean, with_deps: boolean, } | { "op": "downloads_remove", key: string, } | { "op": "downloads_add", path: string, nexus: number | null, move_it: boolean, source: string, auto: boolean, } | { "op": "clean", dry_run: boolean, } | { "op": "sort", apply: boolean, } | { "op": "rule", mod: string, after: string, remove: boolean, } | { "op": "ack", finding: string, } | { "op": "unack", finding: string, } | { "op": "rollback", mod: string, to: number | null, } | { "op": "undo_update", batch: string | null, } | { "op": "errors" } | { "op": "vanilla", on: boolean, } | { "op": "snapshot_saves" } | { "op": "restore_saves", name: string, } | { "op": "profile" } & ProfileAction | { "op": "modio_ack" } | { "op": "launch_options_apply" } | { "op": "nexus_key_set", key: string, } | { "op": "nexus_key_remove" } | { "op": "nexus_key", check: boolean, } | { "op": "steam_shortcut", name: string, exe: string | null, remove: boolean, dry_run: boolean, } | { "op": "setup" } | { "op": "tool_install", source: string, } | { "op": "tool_remove", tool: string, } | { "op": "tool_run", tool: string, action: string, input: string | null, extra: Array<string>, } | { "op": "tool_save", run: string, name: string | null, } | { "op": "tool_discard", run: string, };
+
+export type ActionInput = { label: string, default: string, };
 
 export type AppState = { game_dir: string, data_dir: string, game_running: boolean, session: SessionInfo | null, mods: Array<ModRow>, modio: Array<ModioSub>, overwrite_count: number, nxm_handler: boolean, active_profile: string, profiles: Array<ProfileRow>, };
 
@@ -155,6 +157,11 @@ visible: boolean, groups: Array<FomodGroup>, };
 
 export type Framework = { id: string, name: string, version: string, latest_upload: string | null, update_available: boolean, released_since_patch: boolean, };
 
+/**
+ * Whether an action needs the game closed or running.
+ */
+export type GameState = "any" | "closed";
+
 export type HistEntry = { files: number, ts: number, id: string, version: string, nexus: NexusSource | null, reason: string, batch: string | null, };
 
 /**
@@ -265,6 +272,17 @@ export type OnMissing = "refuse" | "install" | "warn";
 
 export type Onboarding = { game_dir: string, game_found: boolean, api_key: boolean, launch_options: string | null, launch_ok: boolean, launch_suggested: string, steam_running: boolean, steam_cef: boolean, nxm_handler: boolean, onboarded: boolean, mods_installed: number, };
 
+export type Output = { 
+/**
+ * game-relative
+ */
+path: string, size: number, kind: OutputKind, };
+
+/**
+ * What a run wrote, by kind.
+ */
+export type OutputKind = "report" | "game_file" | "load_order" | "deleted";
+
 export type OverwriteRow = { path: string, kind: OwKind, shadows: string | null, };
 
 export type OwKind = "deleted" | "edited mod file" | "edited base file" | "new";
@@ -300,9 +318,30 @@ export type ProfileRow = { name: string,
 enabled: number, active: boolean, created_at: string, own_saves: boolean, saves: number, };
 
 /**
+ * A step-by-step helper's checklist and how far along it is.
+ */
+export type Progress = { 
+/**
+ * Where things stand, in a sentence
+ */
+stage: string, steps: Array<Step>, 
+/**
+ * The step to do next (steps.len() when all are done)
+ */
+current: number, 
+/**
+ * The tweak is in effect: rolling back undoes it
+ */
+active: boolean, 
+/**
+ * Why no step can run now (another mod owns the setting)
+ */
+blocked: string | null, };
+
+/**
  * A read-only view, by name (`{"view": "info", "mod": "…"}` from the GUI; `cpmm api info …`).
  */
-export type Query = { "view": "state" } | { "view": "info", mod: string, } | { "view": "conflicts" } | { "view": "updates", refresh: boolean, } | { "view": "overwrite" } | { "view": "tracked" } | { "view": "lookup", source: string, } | { "view": "loadorder" } | { "view": "doctor" } | { "view": "archives" } | { "view": "safety" } | { "view": "history", mod: string, } | { "view": "settings" } | { "view": "downloads" } | { "view": "onboarding" } | { "view": "changelog", mod: string, } | { "view": "modio" } | { "view": "fomod", source: string, file?: string | null, choices?: { [key in string]: Array<string> } | null, } | { "view": "collection", reference: string, };
+export type Query = { "view": "state" } | { "view": "info", mod: string, } | { "view": "conflicts" } | { "view": "updates", refresh: boolean, } | { "view": "overwrite" } | { "view": "tracked" } | { "view": "lookup", source: string, } | { "view": "loadorder" } | { "view": "doctor" } | { "view": "archives" } | { "view": "safety" } | { "view": "history", mod: string, } | { "view": "settings" } | { "view": "downloads" } | { "view": "onboarding" } | { "view": "changelog", mod: string, } | { "view": "modio" } | { "view": "fomod", source: string, file?: string | null, choices?: { [key in string]: Array<string> } | null, } | { "view": "collection", reference: string, } | { "view": "tools" } | { "view": "tool_file", run: string, path: string, };
 
 /**
  * A one-click fix: the operation the GUI runs when the user picks `label`. `args` is the
@@ -330,6 +369,11 @@ export type Rule = {
  * This mod must load after (win over) `after`.
  */
 mod: string, after: string, };
+
+/**
+ * What runs a tool's program.
+ */
+export type Runner = "wine" | "python";
 
 export type Safety = { crashes: Array<Crash>, errors: ErrDiff, patch: PatchStatus, snapshots: Array<Snapshot>, save_risks: Array<SaveRisk>, batches: Array<Batch>, 
 /**
@@ -360,6 +404,110 @@ profile: string, };
 
 export type SortPlan = { order: Array<string>, moved: Array<Moved>, edges: Array<Edge>, cycles: Array<Array<string>>, unresolved: Array<ArchivePair>, };
 
+export type Step = { title: string, detail: string, 
+/**
+ * The action that does it; None: start the game (and quit it)
+ */
+action: string | null, };
+
+/**
+ * Something a tool can do: a known preset, or one of its programs run as is.
+ */
+export type ToolAction = { 
+/**
+ * What `cpmm tools run <tool> <action>` names: a preset's id, or the program's path
+ */
+id: string, label: string, description: string, 
+/**
+ * The program, game-relative ('/'-separated)
+ */
+program: string, 
+/**
+ * Arguments; `{game}` is the game folder as Windows sees it, `{game_dir}` as Linux does,
+ * `{input}` the user's answer
+ */
+args: Array<string>, input: ActionInput | null, runner: Runner, 
+/**
+ * Runs in the game's own Wine prefix (to see the running game)
+ */
+game_prefix: boolean, 
+/**
+ * Writes go where the game sees them (cpmm's overwrite folder, like the game's own
+ * writes) instead of a scratch layer: for helpers whose steps build on each other
+ */
+live: boolean, 
+/**
+ * When it can run
+ */
+when: GameState, 
+/**
+ * A known action for this tool (shown first); else a program found in its files
+ */
+preset: boolean, };
+
+/**
+ * An installed tool with what it can do: a standalone tool, or a helper that ships inside
+ * an installed mod (whose actions then run in the game's own view).
+ */
+export type ToolEntry = { dir: string, actions: Array<ToolAction>, 
+/**
+ * The installed mod this helper comes with (remove that mod to remove it)
+ */
+from_mod: string | null, 
+/**
+ * How to use it, in order (a helper with steps across game launches)
+ */
+guide: string | null, 
+/**
+ * Where a step-by-step helper is, read from its state files
+ */
+progress: Progress | null, id: string, name: string, version: string, mod_id: number | null, file_id: string, 
+/**
+ * The Downloads entry it was installed from, if any
+ */
+archive: string, installed_at: string, };
+
+export type ToolFile = { path: string, 
+/**
+ * Where it is on disk
+ */
+file: string, text: string, 
+/**
+ * Longer than the 24 MB shown
+ */
+truncated: boolean, };
+
+/**
+ * One run of a tool action (`tool-runs/<id>/run.json`).
+ */
+export type ToolRun = { id: string, tool: string, tool_name: string, action: string, label: string, wine: string, started: string, finished: string | null, 
+/**
+ * None: still running, or killed
+ */
+exit_code: number | null, outputs: Array<Output>, 
+/**
+ * Archives the tool asked to load first (it put them at the top of modlist.txt)
+ */
+load_first: Array<string>, 
+/**
+ * The mod its game files were saved as
+ */
+saved_as: string | null, 
+/**
+ * Where its files are (reports open from here)
+ */
+upper: string, 
+/**
+ * It wrote where the game sees them (cpmm's overwrite folder); nothing to review or save
+ */
+live: boolean, };
+
+export type ToolsView = { tools: Array<ToolEntry>, runs: Array<ToolRun>, 
+/**
+ * What runs them, or why nothing can
+ */
+wine: Wine | null, wine_error: string | null, prefix: string, };
+
 export type TrackedRow = { mod_id: number, name: string, installed_as: string | null, url: string, };
 
 export type UpdateInfo = { version: string, uploaded_at: string, 
@@ -369,3 +517,20 @@ export type UpdateInfo = { version: string, uploaded_at: string,
 gsid: string, };
 
 export type UpdateRow = { id: string, status: string, update: UpdateInfo | null, };
+
+/**
+ * The Wine that runs tools.
+ */
+export type Wine = { 
+/**
+ * e.g. "proton-cachyos-slr", "Proton - Experimental", "system wine"
+ */
+name: string, wine: string, 
+/**
+ * Its Wine libraries (WINEDLLPATH), for a Proton build
+ */
+lib: string | null, 
+/**
+ * It's the compatibility tool Steam runs the game with
+ */
+games: boolean, };

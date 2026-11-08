@@ -23,6 +23,8 @@ import type {
   Query,
   Safety,
   SettingsData,
+  ToolFile,
+  ToolsView,
   TrackedRow,
   UpdateRow,
 } from "./bindings";
@@ -57,6 +59,8 @@ export const api = {
   fomod: (source: string, file?: string | null, choices?: Record<string, string[]>) =>
     query<FomodDesc>({ view: "fomod", source, file, choices: choices && Object.keys(choices).length ? choices : null }),
   collection: (reference: string) => query<CollectionInfo>({ view: "collection", reference }),
+  tools: () => query<ToolsView>({ view: "tools" }),
+  toolFile: (run: string, path: string) => query<ToolFile>({ view: "tool_file", run, path }),
 };
 
 let nextJob = 1;
@@ -95,6 +99,11 @@ const COMMAND: Partial<Record<Action["op"], string>> = {
   nexus_key_remove: "nexus-key",
   nexus_key: "nexus-key",
   steam_shortcut: "steam-shortcut",
+  tool_install: "tools",
+  tool_remove: "tools",
+  tool_run: "tools",
+  tool_save: "tools",
+  tool_discard: "tools",
 };
 export const command = (a: Action) => COMMAND[a.op] ?? a.op;
 

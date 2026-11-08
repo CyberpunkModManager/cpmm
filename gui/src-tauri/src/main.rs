@@ -362,6 +362,7 @@ fn main() {
             nexus::open_nexus,
             nexus::close_nexus,
             nexus::nexus_toast,
+            nexus::open_report,
             controller_bindings
         ])
         .run(tauri::generate_context!())

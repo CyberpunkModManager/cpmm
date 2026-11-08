@@ -265,6 +265,52 @@ Downloads only install themselves when **Settings → Downloads → Install down
 is on (off by default). Installing a Nexus download reuses the archive on disk, keeps update
 tracking exact, and opens the FOMOD chooser in the GUI when the mod has an installer.
 
+## Tools
+
+Some Nexus uploads are Windows programs that work *on* your mods rather than mods themselves
+(VRAM RipperDoc, texture optimisers, save editors). cpmm runs them through Proton with your mods
+mounted, and catches everything they write.
+
+```
+cpmm tools                                   # installed tools, their actions, the Wine that runs them
+cpmm tools install <nexus id | url | download | path>
+cpmm tools run <tool> [action] [--input …] [-- extra args]
+cpmm tools runs                              # recent runs and what they wrote
+cpmm tools save <run | last> [--name …]      # install a run's game files as a mod
+cpmm tools discard <run>
+cpmm tools remove <tool>
+```
+
+- **Installing:** a download that has a program and nothing under the game's mod folders is
+  installed as a tool, not a mod (also from the Downloads list). Tools live in `tools/<id>/`, laid
+  out as they'd sit in the game folder (`tools/<Name>/…`), and are never mounted in the game.
+- **Running:** each run gets its own view of the game: the tool's files over the overwrite folder
+  (read-only), your enabled mods and the game, with a scratch layer on top in
+  `tool-runs/<run>/upper`. Nothing a tool writes reaches the game or the overwrite folder. Runs
+  work while the game is running.
+- **Wine:** the game's own Proton build (Steam's compatibility tool for Cyberpunk), with its
+  `wine` run directly (`proton run` hides console output). Tools get their own prefix
+  (`tool-prefix`) with the game's settings and saves folders linked in, so a tool reads your
+  real in-game settings. An action that must see the running game uses the game's prefix.
+- **Outputs:** reports (anything under `tools/`) open in the GUI, HTML in the built-in browser
+  window with controller support. Game files wait until you **save the run as a mod**; disable
+  or remove that mod to undo it. cpmm writes `modlist.txt`, so a tool's edit to it isn't applied:
+  if the tool put its own archive first, the saved mod gets top priority and a load-order rule
+  over every mod it overlaps. Deletions aren't applied either. The newest 20 runs are kept.
+- **Presets:** cpmm knows VRAM RipperDoc's actions (Scan my mods, Make budget fix, Measure VRAM
+  in game). Any other tool's `.exe`/`.bat` files run as they are, without arguments.
+- **Helpers inside mods:** some mods ship a Linux-side helper. cpmm knows
+  [Save Load Optimizer](https://www.nexusmods.com/cyberpunk2077/mods/37424)'s `profile.py`: install
+  the mod as usual, and its steps (Status, 1. Fingerprint, 2. Prepare, 3. Activate, 4. Verify, Roll
+  back) appear under Tools. They run with `python3` in the game's own view, like `cpmm exec`,
+  joining the game session if it's running. Their writes (the ownership record, the collector's
+  fingerprint, the one-line engine INI) go to the overwrite folder, where the game and the later
+  steps see them, rather than a scratch layer. So don't clear the overwrite folder while it is
+  active. Steps that need the game closed refuse while it runs.
+
+A tool runs as you, with access to your files (Wine is not a sandbox): only run tools you would
+trust on Windows.
+
 ## Settings
 
 Settings live in `~/.local/share/cpmm/settings.json` (every key has a default) and are shared by
