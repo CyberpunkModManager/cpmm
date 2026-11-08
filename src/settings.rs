@@ -220,7 +220,7 @@ pub fn schema() -> Vec<Field> {
             "snapshot_saves",
             "Safety",
             "Snapshot saves before changes",
-            "Before disabling, uninstalling, updating or rolling back mods. Copy-on-write, so free on btrfs.",
+            "Before disabling, uninstalling, updating or rolling back mods, and before a tool that can edit saves runs. Copy-on-write, so free on btrfs.",
             "bool",
         ),
         f("keep_versions", "Safety", "Earlier versions to keep per mod", "For rollback.", "number"),

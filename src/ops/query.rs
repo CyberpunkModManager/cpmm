@@ -1004,6 +1004,8 @@ pub struct ToolsView {
     pub wine: Option<crate::tools::Wine>,
     pub wine_error: Option<String>,
     pub prefix: PathBuf,
+    /// The save folder tools see: the active profile's
+    pub saves: PathBuf,
 }
 
 pub fn tools(paths: &Paths, st: &State) -> ToolsView {
@@ -1012,11 +1014,12 @@ pub fn tools(paths: &Paths, st: &State) -> ToolsView {
         Err(e) => (None, Some(format!("{e:#}"))),
     };
     ToolsView {
-        tools: crate::tools::all(paths, st),
+        tools: crate::tools::list(paths),
         runs: crate::tools::runs(paths),
         wine,
         wine_error,
         prefix: crate::tools::prefix_dir(paths),
+        saves: safety::active_saves_dir(paths, st),
     }
 }
 

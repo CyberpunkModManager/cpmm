@@ -420,7 +420,7 @@ fn collection(c: &CollectionNote) -> Vec<String> {
 }
 
 fn tool(t: &ToolNote) -> Vec<Line> {
-    use crate::tools::OutputKind as K;
+    use crate::tools::{OutputKind as K, SavesSnapshot as Snapshot};
     match t {
         ToolNote::IsTool(name) => out(vec![format!("{name} is a Windows tool, not a mod: installing it under Tools (cpmm tools)")]),
         ToolNote::Installed { id, name, version, actions, replaced } => out(vec![
@@ -431,15 +431,23 @@ fn tool(t: &ToolNote) -> Vec<Line> {
         ToolNote::PrefixSetup(p) => {
             err(format!("setting up the Wine prefix for tools in {} (first run only; takes a minute)…", p.display()))
         }
-        ToolNote::Starting { label, wine, game_prefix, live } => err(format!(
-            "running {label} with {wine}{}, mods mounted; {}",
+        ToolNote::Snapshot(s) => err(match s {
+            Snapshot::Taken(name) => {
+                format!("snapshot of your saves before the run: {name} (cpmm saves --restore {name} undoes its save edits)")
+            }
+            Snapshot::NoSaves => "no saves to snapshot yet".into(),
+            Snapshot::Off => "not snapshotting your saves first: the snapshot_saves setting is off".into(),
+        }),
+        ToolNote::Starting { label, wine, game_prefix, interactive } => err(format!(
+            "running {label} with {wine}{}, mods mounted; its writes go to a scratch layer, except to your saves{}",
             if *game_prefix { " in the game's Wine prefix" } else { "" },
-            if *live { "its writes go where the game sees them (cpmm's overwrite folder)" } else { "its writes go to a scratch layer" }
+            if *interactive { ". It opens a window: close it when you're done" } else { "" }
         )),
         ToolNote::Output { line, stderr } => vec![Line { text: line.clone(), err: *stderr, open: false }],
         ToolNote::Finished(r) => {
+            let saves = r.count(K::Save) + r.count(K::SaveRemoved);
             let mut v = vec![format!(
-                "{}: {}; wrote {} report file(s), {} game file(s)",
+                "{}: {}; wrote {} report file(s), {} game file(s){}",
                 r.id,
                 match r.exit_code {
                     Some(0) => "finished".to_string(),
@@ -447,7 +455,8 @@ fn tool(t: &ToolNote) -> Vec<Line> {
                     None => "killed".to_string(),
                 },
                 r.count(K::Report),
-                r.count(K::GameFile)
+                r.count(K::GameFile),
+                if saves > 0 { format!(", changed {saves} save file(s)") } else { String::new() }
             )];
             for o in r.outputs.iter().filter(|o| o.kind == K::Report && !o.path.to_lowercase().contains("/history/")).take(6) {
                 v.push(format!("  report: {}", r.upper.join(&o.path).display()));
@@ -455,16 +464,15 @@ fn tool(t: &ToolNote) -> Vec<Line> {
             for o in r.outputs.iter().filter(|o| o.kind == K::GameFile).take(12) {
                 v.push(format!("  game file: {} ({:.1} MB)", o.path, mb(o.size)));
             }
-            if r.live {
-                v[0] = format!(
-                    "{}: {}",
-                    r.id,
-                    match r.exit_code {
-                        Some(0) => "finished".to_string(),
-                        Some(c) => format!("exited with code {c}"),
-                        None => "killed".to_string(),
-                    }
-                );
+            for o in r.outputs.iter().filter(|o| matches!(o.kind, K::Save | K::SaveRemoved)).take(12) {
+                let gone = if o.kind == K::SaveRemoved { " (removed)" } else { "" };
+                v.push(format!("  save: {}{gone}", o.path));
+            }
+            if saves > 0 {
+                v.push(match &r.snapshot {
+                    Some(s) => format!("  save changes are in effect; `cpmm saves --restore {s}` undoes them"),
+                    None => "  save changes are in effect (no snapshot was taken before the run)".into(),
+                });
             }
             if r.count(K::GameFile) > 0 {
                 v.push(format!("  not applied yet: `cpmm tools save {}` installs them as a mod", r.id));

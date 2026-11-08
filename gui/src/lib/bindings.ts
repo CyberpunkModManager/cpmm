@@ -274,14 +274,14 @@ export type Onboarding = { game_dir: string, game_found: boolean, api_key: boole
 
 export type Output = { 
 /**
- * game-relative
+ * game-relative; a save file's is relative to the save folder (`ManualSave-3/sav.dat`)
  */
 path: string, size: number, kind: OutputKind, };
 
 /**
  * What a run wrote, by kind.
  */
-export type OutputKind = "report" | "game_file" | "load_order" | "deleted";
+export type OutputKind = "report" | "game_file" | "load_order" | "deleted" | "save" | "save_removed";
 
 export type OverwriteRow = { path: string, kind: OwKind, shadows: string | null, };
 
@@ -318,27 +318,6 @@ export type ProfileRow = { name: string,
 enabled: number, active: boolean, created_at: string, own_saves: boolean, saves: number, };
 
 /**
- * A step-by-step helper's checklist and how far along it is.
- */
-export type Progress = { 
-/**
- * Where things stand, in a sentence
- */
-stage: string, steps: Array<Step>, 
-/**
- * The step to do next (steps.len() when all are done)
- */
-current: number, 
-/**
- * The tweak is in effect: rolling back undoes it
- */
-active: boolean, 
-/**
- * Why no step can run now (another mod owns the setting)
- */
-blocked: string | null, };
-
-/**
  * A read-only view, by name (`{"view": "info", "mod": "…"}` from the GUI; `cpmm api info …`).
  */
 export type Query = { "view": "state" } | { "view": "info", mod: string, } | { "view": "conflicts" } | { "view": "updates", refresh: boolean, } | { "view": "overwrite" } | { "view": "tracked" } | { "view": "lookup", source: string, } | { "view": "loadorder" } | { "view": "doctor" } | { "view": "archives" } | { "view": "safety" } | { "view": "history", mod: string, } | { "view": "settings" } | { "view": "downloads" } | { "view": "onboarding" } | { "view": "changelog", mod: string, } | { "view": "modio" } | { "view": "fomod", source: string, file?: string | null, choices?: { [key in string]: Array<string> } | null, } | { "view": "collection", reference: string, } | { "view": "tools" } | { "view": "tool_file", run: string, path: string, };
@@ -370,11 +349,6 @@ export type Rule = {
  */
 mod: string, after: string, };
 
-/**
- * What runs a tool's program.
- */
-export type Runner = "wine" | "python";
-
 export type Safety = { crashes: Array<Crash>, errors: ErrDiff, patch: PatchStatus, snapshots: Array<Snapshot>, save_risks: Array<SaveRisk>, batches: Array<Batch>, 
 /**
  * Game sessions recorded
@@ -404,12 +378,6 @@ profile: string, };
 
 export type SortPlan = { order: Array<string>, moved: Array<Moved>, edges: Array<Edge>, cycles: Array<Array<string>>, unresolved: Array<ArchivePair>, };
 
-export type Step = { title: string, detail: string, 
-/**
- * The action that does it; None: start the game (and quit it)
- */
-action: string | null, };
-
 /**
  * Something a tool can do: a known preset, or one of its programs run as is.
  */
@@ -423,45 +391,40 @@ id: string, label: string, description: string,
  */
 program: string, 
 /**
- * Arguments; `{game}` is the game folder as Windows sees it, `{game_dir}` as Linux does,
- * `{input}` the user's answer
+ * Arguments; `{game}` is the game folder as Windows sees it, `{input}` the user's answer
  */
-args: Array<string>, input: ActionInput | null, runner: Runner, 
+args: Array<string>, input: ActionInput | null, 
 /**
  * Runs in the game's own Wine prefix (to see the running game)
  */
 game_prefix: boolean, 
 /**
- * Writes go where the game sees them (cpmm's overwrite folder, like the game's own
- * writes) instead of a scratch layer: for helpers whose steps build on each other
- */
-live: boolean, 
-/**
  * When it can run
  */
 when: GameState, 
+/**
+ * It opens a window and works with the user until they close it (a save editor); else
+ * it runs to the end without questions
+ */
+interactive: boolean, 
+/**
+ * It can write the saves: the active profile's saves are snapshotted first. A program
+ * cpmm doesn't know counts as one.
+ */
+saves: boolean, 
 /**
  * A known action for this tool (shown first); else a program found in its files
  */
 preset: boolean, };
 
 /**
- * An installed tool with what it can do: a standalone tool, or a helper that ships inside
- * an installed mod (whose actions then run in the game's own view).
+ * An installed tool with what it can do.
  */
-export type ToolEntry = { dir: string, actions: Array<ToolAction>, 
+export type ToolEntry = { dir: string, kind: ToolKind, 
 /**
- * The installed mod this helper comes with (remove that mod to remove it)
+ * What it is for, in a sentence ("" for a tool cpmm doesn't know)
  */
-from_mod: string | null, 
-/**
- * How to use it, in order (a helper with steps across game launches)
- */
-guide: string | null, 
-/**
- * Where a step-by-step helper is, read from its state files
- */
-progress: Progress | null, id: string, name: string, version: string, mod_id: number | null, file_id: string, 
+about: string, actions: Array<ToolAction>, id: string, name: string, version: string, mod_id: number | null, file_id: string, 
 /**
  * The Downloads entry it was installed from, if any
  */
@@ -476,6 +439,11 @@ file: string, text: string,
  * Longer than the 24 MB shown
  */
 truncated: boolean, };
+
+/**
+ * What a tool is for, from the programs cpmm knows.
+ */
+export type ToolKind = "texture_optimizer" | "save_editor" | "unknown";
 
 /**
  * One run of a tool action (`tool-runs/<id>/run.json`).
@@ -498,15 +466,23 @@ saved_as: string | null,
  */
 upper: string, 
 /**
- * It wrote where the game sees them (cpmm's overwrite folder); nothing to review or save
+ * The save folder it saw: the active profile's
  */
-live: boolean, };
+saves_dir: string | null, 
+/**
+ * The save snapshot taken before it ran (an action that can write saves)
+ */
+snapshot: string | null, };
 
 export type ToolsView = { tools: Array<ToolEntry>, runs: Array<ToolRun>, 
 /**
  * What runs them, or why nothing can
  */
-wine: Wine | null, wine_error: string | null, prefix: string, };
+wine: Wine | null, wine_error: string | null, prefix: string, 
+/**
+ * The save folder tools see: the active profile's
+ */
+saves: string, };
 
 export type TrackedRow = { mod_id: number, name: string, installed_as: string | null, url: string, };
 

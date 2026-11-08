@@ -203,7 +203,8 @@ export function SafetyPanel({ state }: { state: AppState }) {
             </Button>
           </div>
           <p className="mb-3 text-xs text-ink-400">
-            Taken automatically before disabling, uninstalling, updating or rolling back mods. Copy-on-write: no extra disk space.
+            Taken automatically before disabling, uninstalling, updating or rolling back mods, and before a tool that can edit saves runs. Copy-on-write: no
+            extra disk space.
           </p>
           {s.save_risks.map((r) => (
             <p key={r.save} className="mb-2 text-xs text-neon-amber">

@@ -959,22 +959,23 @@ fn run(paths: &Paths, st: &mut State, action: Action, ui: &mut dyn Ui) -> Result
         Action::Setup => setup(paths, ui)?,
         Action::ToolInstall { source } => tool_install(paths, st, ui, &source)?,
         Action::ToolRemove { tool } => {
-            let t = tools::find(paths, st, &tool)?;
-            if let Some(m) = &t.from_mod {
-                bail!("{} comes with the mod {m}; remove or disable that mod instead", t.meta.name);
-            }
+            let t = tools::find(paths, &tool)?;
             let trash = tools::remove(paths, &t)?;
             say(ui, Note::Tool(ToolNote::Removed { id: t.meta.id, trash }));
         }
         Action::ToolRun { tool, action, input, extra } => {
-            let t = tools::find(paths, st, &tool)?;
+            let t = tools::find(paths, &tool)?;
+            let wine = tools::find_wine(paths)?;
             let cpmm = ui.this_exe()?;
             // the tool's last words: usually why it stopped
             let mut last = String::new();
-            let r = tools::run(paths, st, &t, &action, input.as_deref(), &extra, &cpmm, &mut |e| {
+            let r = tools::run(paths, st, &wine, &t, &action, input.as_deref(), &extra, &cpmm, &mut |e| {
                 let n = match e {
                     tools::ToolEvent::PrefixSetup(p) => ToolNote::PrefixSetup(p),
-                    tools::ToolEvent::Starting { label, wine, game_prefix, live } => ToolNote::Starting { label, wine, game_prefix, live },
+                    tools::ToolEvent::Snapshot(s) => ToolNote::Snapshot(s),
+                    tools::ToolEvent::Starting { label, wine, game_prefix, interactive } => {
+                        ToolNote::Starting { label, wine, game_prefix, interactive }
+                    }
                     tools::ToolEvent::Output { line, stderr } => {
                         if !line.trim().is_empty() && line.trim() != "ntsync: up and running." {
                             last = line.trim().to_string();
@@ -984,9 +985,9 @@ fn run(paths: &Paths, st: &mut State, action: Action, ui: &mut dyn Ui) -> Result
                 };
                 say(ui, Note::Tool(n))
             })?;
-            let (code, live, label) = (r.exit_code, r.live, r.label.clone());
+            let (code, label) = (r.exit_code, r.label.clone());
             say(ui, Note::Tool(ToolNote::Finished(Box::new(r))));
-            let kept = if live { "" } else { "; what it wrote is kept (cpmm tools runs)" };
+            let kept = "; what it wrote is kept (cpmm tools runs)";
             match code {
                 Some(0) => {}
                 Some(_) if !last.is_empty() => bail!("{label}: {last}"),
@@ -1023,7 +1024,7 @@ fn tool_meta(d: &downloads::Download) -> tools::ToolMeta {
 
 fn install_tool(paths: &Paths, ui: &mut dyn Ui, source: &Path, meta: tools::ToolMeta) -> Result<()> {
     let (meta, replaced) = tools::install(paths, source, meta)?;
-    let t = tools::find(paths, &State::default(), &meta.id)?;
+    let t = tools::find(paths, &meta.id)?;
     say(
         ui,
         Note::Tool(ToolNote::Installed {

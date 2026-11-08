@@ -290,23 +290,30 @@ cpmm tools remove <tool>
   work while the game is running.
 - **Wine:** the game's own Proton build (Steam's compatibility tool for Cyberpunk), with its
   `wine` run directly (`proton run` hides console output). Tools get their own prefix
-  (`tool-prefix`) with the game's settings and saves folders linked in, so a tool reads your
-  real in-game settings. An action that must see the running game uses the game's prefix.
+  (`tool-prefix`) with the game's settings folder and the active profile's saves linked in (a
+  profile with its own saves gets those, not the shared ones). An action that must see the
+  running game uses the game's prefix. .NET programs run with
+  `DOTNET_SYSTEM_GLOBALIZATION_USENLS=1`, since Wine has no ICU; nothing else is installed into
+  the prefix.
 - **Outputs:** reports (anything under `tools/`) open in the GUI, HTML in the built-in browser
   window with controller support. Game files wait until you **save the run as a mod**; disable
   or remove that mod to undo it. cpmm writes `modlist.txt`, so a tool's edit to it isn't applied:
   if the tool put its own archive first, the saved mod gets top priority and a load-order rule
   over every mod it overlaps. Deletions aren't applied either. The newest 20 runs are kept.
-- **Presets:** cpmm knows VRAM RipperDoc's actions (Scan my mods, Make budget fix, Measure VRAM
-  in game). Any other tool's `.exe`/`.bat` files run as they are, without arguments.
-- **Helpers inside mods:** some mods ship a Linux-side helper. cpmm knows
-  [Save Load Optimizer](https://www.nexusmods.com/cyberpunk2077/mods/37424)'s `profile.py`: install
-  the mod as usual, and its steps (Status, 1. Fingerprint, 2. Prepare, 3. Activate, 4. Verify, Roll
-  back) appear under Tools. They run with `python3` in the game's own view, like `cpmm exec`,
-  joining the game session if it's running. Their writes (the ownership record, the collector's
-  fingerprint, the one-line engine INI) go to the overwrite folder, where the game and the later
-  steps see them, rather than a scratch layer. So don't clear the overwrite folder while it is
-  active. Steps that need the game closed refuse while it runs.
+- **Saves:** the one thing a run changes for real, since that is a save editor's job. Before an
+  action that can write saves (a save editor, or any program cpmm has no presets for), cpmm takes
+  a save snapshot (unless **Settings → Safety → Snapshot saves before changes** is off). After every run it
+  lists the save files that changed; `cpmm saves --restore <snapshot>` (or **Restore** on the run
+  in the GUI) undoes them.
+- **Presets:** cpmm knows these tools' actions:
+  - [VRAM RipperDoc](https://www.nexusmods.com/cyberpunk2077/mods/36878) (texture optimiser):
+    Scan my mods, Make budget fix, Measure VRAM in game. They run without questions.
+  - [Save Editor (Project CyberCAT-SimpleGUI)](https://www.nexusmods.com/cyberpunk2077/mods/718)
+    (save editor, `cpmm tools install 718`): Open the save editor, an interactive action. It
+    opens the editor's window (a self-contained .NET program, nothing to install) on the active
+    profile's saves, needs the game closed, and the run lasts until you close the window.
+
+  Any other tool's `.exe`/`.bat` files run as they are, without arguments.
 
 A tool runs as you, with access to your files (Wine is not a sandbox): only run tools you would
 trust on Windows.

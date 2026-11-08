@@ -10,16 +10,22 @@
 //! [`save`] turns into a mod), load-order edits (cpmm owns modlist.txt; they are not applied)
 //! and deletions (not applied either).
 //!
+//! Saves are the exception: a save editor's writes have to reach them. The save folder the
+//! game sees for the active profile is linked into the prefix, an action that can write saves
+//! runs after a save snapshot, and every run lists the save files it changed
+//! ([`OutputKind::Save`]); restoring the snapshot undoes them.
+//!
 //! Wine: the game's own Proton build (Steam's compatibility tool for the game), its `wine`
 //! binary run directly. `proton run` detaches console programs from the terminal, and
 //! Steam's runtime container isn't needed for a tool. Tools get their own Wine prefix
-//! (`tool-prefix`) so they can't upset the game's; the game's settings and saves folders are
-//! linked into it. An action that has to see the running game uses the game's prefix.
+//! (`tool-prefix`) so they can't upset the game's; the game's settings folder and the active
+//! profile's saves are linked into it. An action that has to see the running game uses the
+//! game's prefix.
 
 use crate::state::{Paths, STEAM_APP_ID, now, slugify};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -84,30 +90,21 @@ pub struct ToolAction {
     pub description: String,
     /// The program, game-relative ('/'-separated)
     pub program: String,
-    /// Arguments; `{game}` is the game folder as Windows sees it, `{game_dir}` as Linux does,
-    /// `{input}` the user's answer
+    /// Arguments; `{game}` is the game folder as Windows sees it, `{input}` the user's answer
     pub args: Vec<String>,
     pub input: Option<ActionInput>,
-    pub runner: Runner,
     /// Runs in the game's own Wine prefix (to see the running game)
     pub game_prefix: bool,
-    /// Writes go where the game sees them (cpmm's overwrite folder, like the game's own
-    /// writes) instead of a scratch layer: for helpers whose steps build on each other
-    pub live: bool,
     /// When it can run
     pub when: GameState,
+    /// It opens a window and works with the user until they close it (a save editor); else
+    /// it runs to the end without questions
+    pub interactive: bool,
+    /// It can write the saves: the active profile's saves are snapshotted first. A program
+    /// cpmm doesn't know counts as one.
+    pub saves: bool,
     /// A known action for this tool (shown first); else a program found in its files
     pub preset: bool,
-}
-
-/// What runs a tool's program.
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum Runner {
-    /// Proton's wine (Windows programs, .bat files)
-    Wine,
-    /// The system's python3 (Linux-side helpers that come with a mod)
-    Python,
 }
 
 /// Whether an action needs the game closed or running.
@@ -124,61 +121,70 @@ pub struct ActionInput {
     pub default: String,
 }
 
-/// An installed tool with what it can do: a standalone tool, or a helper that ships inside
-/// an installed mod (whose actions then run in the game's own view).
+/// What a tool is for, from the programs cpmm knows.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolKind {
+    /// Reports what the mods cost and makes lighter textures, saved as a mod
+    TextureOptimizer,
+    /// Opens the saves for editing
+    SaveEditor,
+    /// A Windows program cpmm has no presets for
+    Unknown,
+}
+
+/// An installed tool with what it can do.
 #[derive(Serialize, Clone, Debug, TS)]
 #[ts(rename = "ToolEntry")]
 pub struct Tool {
     #[serde(flatten)]
     pub meta: ToolMeta,
     pub dir: PathBuf,
+    pub kind: ToolKind,
+    /// What it is for, in a sentence ("" for a tool cpmm doesn't know)
+    pub about: String,
     pub actions: Vec<ToolAction>,
-    /// The installed mod this helper comes with (remove that mod to remove it)
-    pub from_mod: Option<String>,
-    /// How to use it, in order (a helper with steps across game launches)
-    pub guide: Option<String>,
-    /// Where a step-by-step helper is, read from its state files
-    pub progress: Option<Progress>,
 }
 
-/// A step-by-step helper's checklist and how far along it is.
-#[derive(Serialize, Clone, Debug, PartialEq, TS)]
-pub struct Progress {
-    /// Where things stand, in a sentence
-    pub stage: String,
-    pub steps: Vec<Step>,
-    /// The step to do next (steps.len() when all are done)
-    pub current: usize,
-    /// The tweak is in effect: rolling back undoes it
-    pub active: bool,
-    /// Why no step can run now (another mod owns the setting)
-    pub blocked: Option<String>,
+/// A program cpmm knows (by file name, lower case, so a copy installed from anywhere is
+/// recognised).
+struct Known {
+    program: &'static str,
+    kind: ToolKind,
+    about: &'static str,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq, TS)]
-pub struct Step {
-    pub title: String,
-    pub detail: String,
-    /// The action that does it; None: start the game (and quit it)
-    pub action: Option<String>,
-}
+const KNOWN: &[Known] = &[
+    Known {
+        program: "vramripperdoc.exe",
+        kind: ToolKind::TextureOptimizer,
+        about: "Reports which texture and mesh mods cost the most VRAM, and makes a budget fix: half-size copies of the heaviest textures, \
+                which you save as a mod.",
+    },
+    Known {
+        program: "cp2077saveeditor.exe",
+        kind: ToolKind::SaveEditor,
+        about: "Edits saves: inventory, money, attributes, perks, appearance and quest facts. It opens the active profile's saves; \
+                cpmm snapshots them first and lists the save files it changed.",
+    },
+];
 
 struct Preset {
-    /// the program's path, lower case: its file name, or a game-relative path for a helper
-    /// that ships inside a mod
+    /// the program's file name, lower case
     program: &'static str,
     id: &'static str,
     label: &'static str,
     description: &'static str,
     args: &'static [&'static str],
     input: Option<(&'static str, &'static str)>,
-    runner: Runner,
     game_prefix: bool,
-    live: bool,
     when: GameState,
+    interactive: bool,
+    saves: bool,
 }
 
-const fn wine(
+/// A preset that runs to the end without questions, changing no saves.
+const fn unattended(
     program: &'static str,
     id: &'static str,
     label: &'static str,
@@ -192,38 +198,32 @@ const fn wine(
         description,
         args,
         input: None,
-        runner: Runner::Wine,
         game_prefix: false,
-        live: false,
         when: GameState::Any,
+        interactive: false,
+        saves: false,
     }
 }
 
-/// Save Load Optimizer's helper (Nexus 37424): ships in the mod's tools/ folder; its steps keep
-/// an ownership record next to it and write one engine INI, so they run live.
-const SLO: &str = "tools/saveloadoptimizer/profile.py";
-const fn slo(id: &'static str, label: &'static str, description: &'static str, args: &'static [&'static str], when: GameState) -> Preset {
-    Preset { program: SLO, id, label, description, args, input: None, runner: Runner::Python, game_prefix: false, live: true, when }
-}
-
 /// Actions cpmm knows for particular tools (matched by program, so a copy installed from
-/// anywhere gets them). Each one runs without questions: a run has no keyboard in Game Mode.
+/// anywhere gets them). An unattended one runs without questions: a run has no keyboard in
+/// Game Mode. An interactive one opens a window for the user.
 const PRESETS: &[Preset] = &[
-    wine(
+    unattended(
         "vramripperdoc.exe",
         "scan",
         "Scan my mods",
         "Ranks your texture and mesh mods by the VRAM they add and writes a report. Changes nothing.",
         &["--game", "{game}", "--no-open"],
     ),
-    wine(
+    unattended(
         "vramripperdoc.exe",
         "budget-fix",
         "Make budget fix",
         "Writes one archive with half-size copies of only the heaviest textures. Save the output as a mod to use it; disable or remove that mod to undo.",
         &["--game", "{game}", "--no-open", "--make-budget-archive"],
     ),
-    wine(
+    unattended(
         "vramripperdoc.exe",
         "budget-fix-all",
         "Make budget fix (with new items)",
@@ -237,194 +237,33 @@ const PRESETS: &[Preset] = &[
         description: "Records the game's real VRAM use: start it, then launch the game, play a minute and close it to finish. Experimental under cpmm (runs in the game's Wine prefix).",
         args: &["--game", "{game}", "--live", "--label", "{input}"],
         input: Some(("Name this measurement", "before")),
-        runner: Runner::Wine,
         game_prefix: true,
-        live: false,
         when: GameState::Any,
+        interactive: false,
+        saves: false,
     },
-    slo("status", "Status", "Shows the recorded state. Changes nothing.", &["status", "--game", "{game_dir}"], GameState::Any),
-    slo(
-        "initialize",
-        "1. Fingerprint this setup",
-        "Records your game, CET and engine-config fingerprint. Changes no settings. Then start the game once and quit: the collector records your baseline.",
-        &["initialize", "--game", "{game_dir}"],
-        GameState::Closed,
-    ),
-    slo(
-        "prepare",
-        "2. Prepare",
-        "After that launch: proposes your baseline +25% (at most +16 MiB). Changes nothing yet.",
-        &["prepare", "--game", "{game_dir}"],
-        GameState::Closed,
-    ),
-    slo("activate", "3. Activate", "Writes the one-line engine INI. It takes effect at the next launch.", &["activate"], GameState::Closed),
-    slo(
-        "verify",
-        "4. Verify",
-        "After a launch with it active: checks the game read the new value (not a speed measurement).",
-        &["verify"],
-        GameState::Any,
-    ),
-    slo(
-        "rollback",
-        "Roll back",
-        "Removes the INI it wrote, if unchanged. A new baseline launch is needed before preparing again.",
-        &["rollback"],
-        GameState::Closed,
-    ),
+    Preset {
+        program: "cp2077saveeditor.exe",
+        id: "edit",
+        label: "Open the save editor",
+        description: "Opens the editor's window on the active profile's saves: open a save, change it, save it, then close the window. \
+                      Your saves are snapshotted first; restore the snapshot to undo.",
+        args: &[],
+        input: None,
+        game_prefix: false,
+        when: GameState::Closed,
+        interactive: true,
+        saves: true,
+    },
 ];
-
-const SLO_GUIDE: &str = "Experimental: raises one decompression-memory setting (how much memory the game uses to unpack data while loading) \
-by 25%, at most 16 MiB, over your own setup's value. Follow the steps in order; cpmm shows which one is next. Its state lives in cpmm's overwrite \
-folder, so don't clear that while it's active. Updating the game or CET, or changing mods that add engine INIs, invalidates the fingerprint: \
-roll back first, then start over.";
-
-/// Save Load Optimizer's files, game-relative (lower case; found case-insensitively).
-const SLO_BUILD: &str = "bin/x64/plugins/cyber_engine_tweaks/mods/saveloadoptimizer/build.json";
-const SLO_CAPTURE: &str = "bin/x64/plugins/cyber_engine_tweaks/mods/saveloadoptimizer/capture.json";
-const SLO_PROFILE: &str = "tools/saveloadoptimizer/profile.json";
-
-fn slo_steps() -> Vec<Step> {
-    let s = |title: &str, detail: &str, action: Option<&str>| Step {
-        title: title.into(),
-        detail: detail.into(),
-        action: action.map(String::from),
-    };
-    vec![
-        s(
-            "Fingerprint your setup",
-            "Records checksums of the game, CET and your engine INIs. Changes no settings. Game closed.",
-            Some("initialize"),
-        ),
-        s("Start the game, then quit", "Reaching the main menu is enough: the collector records your current value (the baseline).", None),
-        s("Prepare", "Works out the new value from your baseline. Changes nothing yet.", Some("prepare")),
-        s("Activate", "Writes the one-line engine INI with the new value. Game closed.", Some("activate")),
-        s(
-            "Start the game and load a save",
-            "The game now starts with the new value; the collector reads it back. Quit when you've tried it, or keep playing.",
-            None,
-        ),
-        s("Verify", "Checks that the game read the new value. It doesn't measure speed: time a few loads yourself.", Some("verify")),
-    ]
-}
-
-/// Read a file of the game's view (overwrite folder above the mod's own files).
-fn view_json(paths: &Paths, mod_files: &Path, rel_lower: &str) -> Option<serde_json::Value> {
-    let p = [paths.upper(), mod_files.to_path_buf()].into_iter().find_map(|r| find_ci(&r, rel_lower).map(|f| r.join(f)))?;
-    serde_json::from_slice(&fs::read(p).ok()?).ok()
-}
-
-/// Where Save Load Optimizer is, from its fingerprint, capture and ownership record.
-/// The value `[section] key = value` sets in an INI text (last one wins), case-insensitively.
-pub fn ini_value(text: &str, section: &str, key: &str) -> Option<String> {
-    let (mut cur, mut found) = (String::new(), None);
-    for line in text.trim_start_matches('\u{feff}').lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with([';', '#']) {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix('[')
-            && let Some(end) = rest.find(']')
-        {
-            cur = rest[..end].trim().to_lowercase();
-        } else if let Some((k, v)) = line.split_once('=')
-            && cur == section.to_lowercase()
-            && k.trim().eq_ignore_ascii_case(key)
-        {
-            found = Some(v.split([';', '#']).next().unwrap_or("").trim().to_string());
-        }
-    }
-    found
-}
-
-/// Another engine INI in the game's view that sets Save Load Optimizer's option:
-/// (who it comes from, its game-relative path, the value).
-fn slo_conflict(paths: &Paths, st: &crate::state::State) -> Option<(String, String, String)> {
-    let mut roots = vec![("cpmm's overwrite folder".to_string(), paths.upper())];
-    roots.extend(st.mods.iter().rev().filter(|m| m.enabled).map(|m| (m.name.clone(), paths.mod_files(&m.id))));
-    roots.push(("the game folder".to_string(), paths.game.clone()));
-    for (owner, root) in roots {
-        for e in walkdir::WalkDir::new(root.join("engine/config")).into_iter().flatten() {
-            let name = e.file_name().to_string_lossy().to_lowercase();
-            if !e.file_type().is_file() || !name.ends_with(".ini") || name == "zzz_save_load_optimizer.ini" {
-                continue;
-            }
-            let text = String::from_utf8_lossy(&fs::read(e.path()).unwrap_or_default()).into_owned();
-            if let Some(v) = ini_value(&text, "ResourceLoaderThrottler", "DedicatedDecompressionMemoryBytes") {
-                let rel = e.path().strip_prefix(&root).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-                return Some((owner, rel, v));
-            }
-        }
-    }
-    None
-}
-
-pub fn slo_progress(paths: &Paths, st: &crate::state::State, mod_files: &Path) -> Progress {
-    let mut p = slo_progress_files(paths, mod_files);
-    if let Some((owner, rel, value)) = slo_conflict(paths, st) {
-        let mib = value.parse::<f64>().map(|b| format!(" ({:.2} MiB)", b / 1048576.0)).unwrap_or_default();
-        let msg = format!(
-            "{owner} already sets this setting: DedicatedDecompressionMemoryBytes = {value}{mib}, in {rel}. \
-             Save Load Optimizer won't add a second override, so its steps refuse while that is enabled. \
-             To use it instead, disable that mod (or remove that line from its INI); otherwise that mod's value stays in effect."
-        );
-        p.stage = msg.clone();
-        p.blocked = Some(msg);
-    }
-    p
-}
-
-fn slo_progress_files(paths: &Paths, mod_files: &Path) -> Progress {
-    let build = view_json(paths, mod_files, SLO_BUILD).is_some();
-    let capture = view_json(paths, mod_files, SLO_CAPTURE);
-    let profile = view_json(paths, mod_files, SLO_PROFILE);
-    let captured = capture.as_ref().and_then(|c| c["captured_at"].as_f64()).unwrap_or(0.0);
-    let fresh = captured > 0.0 && (crate::safety::now_unix() as f64 - captured) <= 7.0 * 86400.0;
-    let num = |k: &str| profile.as_ref().and_then(|p| p[k].as_i64());
-    let status = profile.as_ref().and_then(|p| p["status"].as_str()).unwrap_or("");
-    let (current, stage, active) = match status {
-        _ if !build => (0, "Not set up yet.".to_string(), false),
-        "" if capture.is_none() => (1, "Fingerprinted. Start the game once so the collector records your baseline.".into(), false),
-        "" if !fresh => (1, "The baseline is more than 7 days old: start the game once for a fresh one.".into(), false),
-        "" => (2, "Baseline recorded. Prepare, then activate.".into(), false),
-        "staged" => (
-            3,
-            format!(
-                "Prepared: {} → {} bytes. Activate it while the game is closed.",
-                num("baseline").unwrap_or(0),
-                num("candidate").unwrap_or(0)
-            ),
-            false,
-        ),
-        "installing" | "configured_unverified" if captured >= num("activated_at").unwrap_or(i64::MAX) as f64 => {
-            (5, "Active, and the game has started with it. Verify that it read the new value.".into(), true)
-        }
-        "installing" | "configured_unverified" => (4, "Active from the next launch: start the game and load a save.".into(), true),
-        "configured_readback_verified" => (
-            6,
-            format!(
-                "Active and verified: the game reads {} bytes (was {}). Roll back if loads aren't faster or NPCs or textures pop in.",
-                num("observed_bytes").or(num("candidate")).unwrap_or(0),
-                num("baseline").unwrap_or(0)
-            ),
-            true,
-        ),
-        "rolled_back" if fresh && captured > num("rolled_back_at").unwrap_or(i64::MAX) as f64 => {
-            (2, "Rolled back; a new baseline has been recorded. Prepare again to retry.".into(), false)
-        }
-        "rolled_back" => (1, "Rolled back. To try again, start the game once for a new baseline.".into(), false),
-        other => (0, format!("Unknown state {other:?}: run Status to see the details."), false),
-    };
-    Progress { stage, steps: slo_steps(), current, active, blocked: None }
-}
 
 fn is_program(rel: &str) -> bool {
     let l = rel.to_lowercase();
     l.ends_with(".exe") || l.ends_with(".bat") || l.ends_with(".cmd")
 }
 
-fn preset_matches(p: &Preset, rel_lower: &str) -> bool {
-    if p.program.contains('/') { rel_lower == p.program } else { rel_lower.rsplit('/').next() == Some(p.program) }
+fn file_name_lower(rel: &str) -> String {
+    rel.rsplit('/').next().unwrap_or(rel).to_lowercase()
 }
 
 fn from_preset(p: &Preset, program: &str) -> ToolAction {
@@ -435,10 +274,10 @@ fn from_preset(p: &Preset, program: &str) -> ToolAction {
         program: program.to_string(),
         args: p.args.iter().map(|a| a.to_string()).collect(),
         input: p.input.map(|(label, default)| ActionInput { label: label.into(), default: default.into() }),
-        runner: p.runner,
         game_prefix: p.game_prefix,
-        live: p.live,
         when: p.when,
+        interactive: p.interactive,
+        saves: p.saves,
         preset: true,
     }
 }
@@ -447,40 +286,55 @@ fn from_preset(p: &Preset, program: &str) -> ToolAction {
 pub fn actions(files: &[String]) -> Vec<ToolAction> {
     let mut out = vec![];
     for f in files {
-        let l = f.to_lowercase();
-        out.extend(PRESETS.iter().filter(|p| preset_matches(p, &l)).map(|p| from_preset(p, f)));
+        let name = file_name_lower(f);
+        out.extend(PRESETS.iter().filter(|p| p.program == name).map(|p| from_preset(p, f)));
     }
     for f in files.iter().filter(|f| is_program(f)) {
-        let name = f.rsplit('/').next().unwrap_or(f);
-        let lower = name.to_lowercase();
+        let lower = file_name_lower(f);
         if lower.starts_with("unins") || lower.contains("vc_redist") || lower.contains("vcredist") || lower.starts_with("dotnet") {
             continue;
         }
         out.push(ToolAction {
             id: f.clone(),
-            label: format!("Run {name}"),
+            label: format!("Run {}", f.rsplit('/').next().unwrap_or(f)),
             description: String::new(),
             program: f.clone(),
             args: vec![],
             input: None,
-            runner: Runner::Wine,
             game_prefix: false,
-            live: false,
             when: GameState::Any,
+            interactive: false,
+            // cpmm can't tell what an unknown program writes
+            saves: true,
             preset: false,
         });
     }
     out
 }
 
+/// What the first program cpmm knows among `files` says the tool is for.
+fn known(files: &[String]) -> Option<&'static Known> {
+    files.iter().find_map(|f| {
+        let name = file_name_lower(f);
+        KNOWN.iter().find(|k| k.program == name)
+    })
+}
+
 fn load(paths: &Paths, id: &str) -> Result<Tool> {
     let dir = tool_dir(paths, id);
     let meta: ToolMeta = serde_json::from_slice(&fs::read(dir.join("tool.json")).with_context(|| format!("no tool {id:?}"))?)?;
     let files = crate::files::list_tree(&dir.join("files"));
-    Ok(Tool { actions: actions(&files), dir, meta, from_mod: None, guide: None, progress: None })
+    let k = known(&files);
+    Ok(Tool {
+        kind: k.map_or(ToolKind::Unknown, |k| k.kind),
+        about: k.map(|k| k.about.to_string()).unwrap_or_default(),
+        actions: actions(&files),
+        dir,
+        meta,
+    })
 }
 
-/// Installed standalone tools, by name.
+/// Installed tools, by name.
 pub fn list(paths: &Paths) -> Vec<Tool> {
     let mut v: Vec<Tool> = fs::read_dir(tools_dir(paths))
         .into_iter()
@@ -492,59 +346,9 @@ pub fn list(paths: &Paths) -> Vec<Tool> {
     v
 }
 
-/// Helpers that ship inside enabled mods (cpmm knows where each one's program sits).
-pub fn mod_helpers(paths: &Paths, st: &crate::state::State) -> Vec<Tool> {
-    let helpers: BTreeSet<&str> = PRESETS.iter().filter(|p| p.program.contains('/')).map(|p| p.program).collect();
-    let mut v = vec![];
-    for m in st.mods.iter().filter(|m| m.enabled) {
-        let files = paths.mod_files(&m.id);
-        for h in &helpers {
-            // staged paths keep their own case below the canonical game folders
-            let Some(rel) = find_ci(&files, h) else { continue };
-            let actions: Vec<ToolAction> = PRESETS.iter().filter(|p| p.program == *h).map(|p| from_preset(p, &rel)).collect();
-            v.push(Tool {
-                meta: ToolMeta {
-                    id: m.id.clone(),
-                    name: m.name.clone(),
-                    version: m.version.clone(),
-                    mod_id: m.nexus.as_ref().map(|n| n.mod_id),
-                    installed_at: m.installed_at.clone(),
-                    ..Default::default()
-                },
-                dir: files.clone(),
-                actions,
-                from_mod: Some(m.id.clone()),
-                guide: (*h == SLO).then(|| SLO_GUIDE.to_string()),
-                progress: (*h == SLO).then(|| slo_progress(paths, st, &files)),
-            });
-        }
-    }
-    v
-}
-
-/// `rel_lower` under `root`, matching each component without regard to case.
-fn find_ci(root: &Path, rel_lower: &str) -> Option<String> {
-    let mut at = root.to_path_buf();
-    let mut out = vec![];
-    for c in rel_lower.split('/') {
-        let name =
-            fs::read_dir(&at).ok()?.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).find(|n| n.to_lowercase() == c)?;
-        at.push(&name);
-        out.push(name);
-    }
-    at.is_file().then(|| out.join("/"))
-}
-
-/// Every tool: standalone ones, then helpers in mods.
-pub fn all(paths: &Paths, st: &crate::state::State) -> Vec<Tool> {
-    let mut v = list(paths);
-    v.extend(mod_helpers(paths, st));
-    v
-}
-
 /// A tool by id, number in the list (1-based), or unique part of its name.
-pub fn find(paths: &Paths, st: &crate::state::State, key: &str) -> Result<Tool> {
-    let all = all(paths, st);
+pub fn find(paths: &Paths, key: &str) -> Result<Tool> {
+    let all = list(paths);
     if let Ok(n) = key.parse::<usize>()
         && n >= 1
         && n <= all.len()
@@ -871,9 +675,9 @@ fn wine_env(cmd: &mut Command, wine: &Wine, prefix: &Path) {
     }
 }
 
-/// The tools prefix, created on first use, with the game's settings and saves folders
-/// linked in (tools read the in-game settings; save editors find the saves).
-fn prepare_prefix(paths: &Paths, wine: &Wine, out: &mut dyn FnMut(ToolEvent)) -> Result<PathBuf> {
+/// The tools prefix, created on first use, with the game's settings and the active profile's
+/// saves linked in ([`link_game_folders`]).
+fn prepare_prefix(paths: &Paths, st: &crate::state::State, wine: &Wine, out: &mut dyn FnMut(ToolEvent)) -> Result<PathBuf> {
     let pfx = prefix_dir(paths);
     if !pfx.join("system.reg").is_file() {
         out(ToolEvent::PrefixSetup(pfx.clone()));
@@ -894,26 +698,41 @@ fn prepare_prefix(paths: &Paths, wine: &Wine, out: &mut dyn FnMut(ToolEvent)) ->
         .find(|p| !p.as_os_str().is_empty() && p.is_dir())
         .or_else(|| fs::read_dir(&users).ok()?.flatten().map(|e| e.path()).find(|p| p.is_dir() && !p.ends_with("Public")));
     if let Some(user) = user {
-        let game_user = game_prefix(paths).join("drive_c/users/steamuser");
-        let saves = crate::safety::shared_saves_dir(paths);
-        let links = [
-            (user.join("AppData/Local/CD Projekt Red"), game_user.join("AppData/Local/CD Projekt Red")),
-            (user.join("Saved Games/CD Projekt Red"), saves.parent().map(Path::to_path_buf).unwrap_or(saves.clone())),
-        ];
-        for (link, target) in links {
+        link_game_folders(paths, st, &user)?;
+    }
+    Ok(pfx)
+}
+
+/// Link the game's settings folder and the save folder the game sees for the active profile
+/// (its own saves, else the shared folder) into a prefix user's folder, so tools read the
+/// in-game settings and save editors open the right saves. Relinks when the profile changes.
+fn link_game_folders(paths: &Paths, st: &crate::state::State, user: &Path) -> Result<()> {
+    let game_user = game_prefix(paths).join("drive_c/users/steamuser");
+    let cdpr = user.join("Saved Games/CD Projekt Red");
+    // earlier prefixes linked the whole CD Projekt Red folder to the shared one
+    if cdpr.is_symlink() {
+        fs::remove_file(&cdpr)?;
+    }
+    let links = [
+        (user.join("AppData/Local/CD Projekt Red"), game_user.join("AppData/Local/CD Projekt Red")),
+        (cdpr.join("Cyberpunk 2077"), crate::safety::active_saves_dir(paths, st)),
+    ];
+    for (link, target) in links {
+        if link.is_symlink() {
+            if target.is_dir() && fs::read_link(&link).ok().as_deref() == Some(target.as_path()) {
+                continue;
+            }
+            fs::remove_file(&link)?;
+        } else if link.exists() {
             // a real folder there is the user's: leave it
-            if !target.is_dir() || (link.exists() && !link.is_symlink()) {
-                continue;
-            }
-            if fs::read_link(&link).ok().as_deref() == Some(target.as_path()) {
-                continue;
-            }
-            let _ = fs::remove_file(&link);
+            continue;
+        }
+        if target.is_dir() {
             fs::create_dir_all(link.parent().unwrap())?;
             std::os::unix::fs::symlink(&target, &link)?;
         }
     }
-    Ok(pfx)
+    Ok(())
 }
 
 /* ------------------------------------------------------------------ runs */
@@ -930,11 +749,16 @@ pub enum OutputKind {
     LoadOrder,
     /// The tool deleted something; not applied (remove or disable the mod instead)
     Deleted,
+    /// A save file the run changed or added. Saves aren't caught: this is in effect already
+    /// (restoring the run's snapshot undoes it)
+    Save,
+    /// A save file the run removed
+    SaveRemoved,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, TS)]
 pub struct Output {
-    /// game-relative
+    /// game-relative; a save file's is relative to the save folder (`ManualSave-3/sav.dat`)
     pub path: String,
     pub size: u64,
     pub kind: OutputKind,
@@ -961,8 +785,10 @@ pub struct ToolRun {
     pub saved_as: Option<String>,
     /// Where its files are (reports open from here)
     pub upper: PathBuf,
-    /// It wrote where the game sees them (cpmm's overwrite folder); nothing to review or save
-    pub live: bool,
+    /// The save folder it saw: the active profile's
+    pub saves_dir: Option<PathBuf>,
+    /// The save snapshot taken before it ran (an action that can write saves)
+    pub snapshot: Option<String>,
 }
 
 impl ToolRun {
@@ -981,14 +807,26 @@ struct Launch {
     saves: Option<PathBuf>,
 }
 
+/// The save snapshot before an action that can write saves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SavesSnapshot {
+    /// Taken, under this name (restoring it undoes the run's save edits)
+    Taken(String),
+    /// The save folder holds no saves yet
+    NoSaves,
+    /// The snapshot_saves setting is off
+    Off,
+}
+
 /// What happens during a run, for the adapter.
 pub enum ToolEvent {
     PrefixSetup(PathBuf),
+    Snapshot(SavesSnapshot),
     Starting {
         label: String,
         wine: String,
         game_prefix: bool,
-        live: bool,
+        interactive: bool,
     },
     /// a line the tool printed (stderr: on its error stream)
     Output {
@@ -1027,6 +865,40 @@ pub fn scan_upper(upper: &Path) -> Vec<Output> {
     v
 }
 
+/// Every file under a save folder: its size and modification time.
+fn save_listing(dir: &Path) -> BTreeMap<String, (u64, Option<std::time::SystemTime>)> {
+    walkdir::WalkDir::new(dir)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| {
+            let rel = e.path().strip_prefix(dir).ok()?.to_string_lossy().into_owned();
+            let md = e.metadata().ok()?;
+            Some((rel, (md.len(), md.modified().ok())))
+        })
+        .collect()
+}
+
+/// The save files that differ between two listings of the save folder: changed or added
+/// ([`OutputKind::Save`]), or removed.
+fn changed_saves(
+    before: &BTreeMap<String, (u64, Option<std::time::SystemTime>)>,
+    after: &BTreeMap<String, (u64, Option<std::time::SystemTime>)>,
+) -> Vec<Output> {
+    let mut v: Vec<Output> = after
+        .iter()
+        .filter(|(rel, now)| before.get(*rel) != Some(*now))
+        .map(|(rel, (size, _))| Output { path: rel.clone(), size: *size, kind: OutputKind::Save })
+        .collect();
+    v.extend(before.keys().filter(|rel| !after.contains_key(*rel)).map(|rel| Output {
+        path: rel.clone(),
+        size: 0,
+        kind: OutputKind::SaveRemoved,
+    }));
+    v.sort_by(|a, b| a.path.cmp(&b.path));
+    v
+}
+
 /// Archives a tool's modlist.txt lists first that it also wrote: what it wants to win.
 pub fn load_first(modlist: &str, outputs: &[Output]) -> Vec<String> {
     let mine: BTreeSet<String> = outputs
@@ -1039,21 +911,21 @@ pub fn load_first(modlist: &str, outputs: &[Output]) -> Vec<String> {
 
 /// An action's arguments with `{game}` and `{input}` filled in.
 pub fn fill_args(args: &[String], game: &Path, input: &str) -> Vec<String> {
-    let unix = game.to_string_lossy();
-    args.iter().map(|a| a.replace("{game_dir}", &unix).replace("{game}", &windows_path(game)).replace("{input}", input)).collect()
+    args.iter().map(|a| a.replace("{game}", &windows_path(game)).replace("{input}", input)).collect()
 }
 
-fn which(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join(name)).find(|f| f.is_file()))
-}
-
-/// Run a tool action. `cpmm` is the binary that enters the sandbox (`cpmm tools sandbox`);
-/// `extra` arguments go after the action's own. With a terminal on stdin, the tool gets the
-/// terminal (it may ask things); otherwise its output is read line by line into `out`.
+/// Run a tool action with `wine`. `cpmm` is the binary that enters the sandbox (`cpmm tools
+/// sandbox`); `extra` arguments go after the action's own. With a terminal on stdin, the tool
+/// gets the terminal (it may ask things); otherwise its output is read line by line into `out`.
+///
+/// Saves aren't caught by the sandbox (a save editor's edits are the point). So an action
+/// that can write saves runs after a save snapshot (unless the snapshot_saves setting is
+/// off), and every run lists the save files it changed among its outputs.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     paths: &Paths,
     st: &crate::state::State,
+    wine: &Wine,
     tool: &Tool,
     action: &str,
     input: Option<&str>,
@@ -1081,38 +953,48 @@ pub fn run(
     let mut args = fill_args(&a.args, &paths.game, &input);
     args.extend(extra.iter().cloned());
     let program_host = paths.game.join(&a.program);
-    let mut env: Vec<(String, String)> = vec![];
-    let (runner_name, mut program) = match a.runner {
-        Runner::Python => {
-            let py = which("python3").context("python3 not found (install Python 3.11 or later)")?;
-            ("python3".to_string(), vec![py.to_string_lossy().into_owned(), program_host.to_string_lossy().into_owned()])
+    let prefix = if a.game_prefix {
+        let p = game_prefix(paths);
+        if !p.join("system.reg").is_file() {
+            bail!("the game's Wine prefix {} isn't set up (start the game once from Steam)", p.display());
         }
-        Runner::Wine => {
-            let wine = find_wine(paths)?;
-            let prefix = if a.game_prefix {
-                let p = game_prefix(paths);
-                if !p.join("system.reg").is_file() {
-                    bail!("the game's Wine prefix {} isn't set up (start the game once from Steam)", p.display());
-                }
-                p
-            } else {
-                prepare_prefix(paths, &wine, out)?
-            };
-            env.push(("WINEPREFIX".into(), prefix.to_string_lossy().into_owned()));
-            env.push(("WINEDEBUG".into(), "-all".into()));
-            if let Some(l) = &wine.lib {
-                env.push(("WINEDLLPATH".into(), l.to_string_lossy().into_owned()));
-            }
-            let mut p = vec![wine.wine.to_string_lossy().into_owned()];
-            if a.program.to_lowercase().ends_with(".exe") {
-                p.push(program_host.to_string_lossy().into_owned());
-            } else {
-                p.extend(["cmd".to_string(), "/c".to_string(), windows_path(&program_host)]);
-            }
-            (wine.name, p)
-        }
+        p
+    } else {
+        prepare_prefix(paths, st, wine, out)?
     };
+    let mut env: Vec<(String, String)> = vec![
+        ("WINEPREFIX".into(), prefix.to_string_lossy().into_owned()),
+        ("WINEDEBUG".into(), "-all".into()),
+        // .NET (5 and later) programs look for Windows' ICU, which Wine doesn't have, and stop
+        // ("Cannot get symbol u_charsToUChars from libicuuc"); Windows' older NLS works in Wine
+        ("DOTNET_SYSTEM_GLOBALIZATION_USENLS".into(), "1".into()),
+    ];
+    if let Some(l) = &wine.lib {
+        env.push(("WINEDLLPATH".into(), l.to_string_lossy().into_owned()));
+    }
+    let mut program = vec![wine.wine.to_string_lossy().into_owned()];
+    if a.program.to_lowercase().ends_with(".exe") {
+        program.push(program_host.to_string_lossy().into_owned());
+    } else {
+        program.extend(["cmd".to_string(), "/c".to_string(), windows_path(&program_host)]);
+    }
     program.extend(args);
+
+    let saves_dir = crate::safety::active_saves_dir(paths, st);
+    let snapshot = if !a.saves {
+        None
+    } else if !paths.cfg.snapshot_saves {
+        Some(SavesSnapshot::Off)
+    } else {
+        let reason = format!("before {}: {}", crate::state::short_name(&tool.meta.name), a.label);
+        // no snapshot, no run: its edits couldn't be undone
+        let name = crate::safety::snapshot_saves(paths, &reason).context("snapshotting your saves before the run")?;
+        Some(name.map_or(SavesSnapshot::NoSaves, SavesSnapshot::Taken))
+    };
+    if let Some(s) = &snapshot {
+        out(ToolEvent::Snapshot(s.clone()));
+    }
+    let saves_before = save_listing(&saves_dir);
 
     let base = format!("{}-{}", tool.meta.id, now().replace([':', '-'], "").replace('T', "-").trim_end_matches('Z'));
     // two runs in the same second each get their own folder
@@ -1129,10 +1011,14 @@ pub fn run(
         tool_name: tool.meta.name.clone(),
         action: a.id.clone(),
         label: a.label.clone(),
-        wine: runner_name.clone(),
+        wine: wine.name.clone(),
         started: now(),
-        live: a.live,
-        upper: if a.live { PathBuf::new() } else { dir.join("upper") },
+        upper: dir.join("upper"),
+        saves_dir: Some(saves_dir.clone()),
+        snapshot: match &snapshot {
+            Some(SavesSnapshot::Taken(name)) => Some(name.clone()),
+            _ => None,
+        },
         ..Default::default()
     };
     fs::write(dir.join("run.json"), serde_json::to_vec_pretty(&rec)?)?;
@@ -1142,45 +1028,32 @@ pub fn run(
     }
     out(ToolEvent::Starting {
         label: format!("{}: {}", tool.meta.name, a.label),
-        wine: runner_name,
+        wine: wine.name.clone(),
         game_prefix: a.game_prefix,
-        live: a.live,
+        interactive: a.interactive,
     });
 
+    let launch = Launch {
+        tool_files: tool_files(paths, &tool.meta.id),
+        cwd: program_host.parent().map(Path::to_path_buf).unwrap_or(paths.game.clone()),
+        program,
+        env,
+        // the tools prefix links the active profile's saves; the game's prefix has the shared
+        // folder, so the profile's own saves are bound over it, as in the game session
+        saves: if a.game_prefix { st.active_own_saves(paths) } else { None },
+    };
+    fs::write(dir.join("launch.json"), serde_json::to_vec_pretty(&launch)?)?;
     let mut c = Command::new(cpmm);
-    c.env_remove("LD_PRELOAD");
-    if a.live {
-        // the game's own view: joins a running session, else mounts one (writes go to overwrite/)
-        let cwd = if tool.from_mod.is_some() {
-            paths.game.clone()
-        } else {
-            program_host.parent().map(Path::to_path_buf).unwrap_or(paths.game.clone())
-        };
-        c.arg("exec").arg("--").args(&program).current_dir(&cwd).env("PWD", &cwd);
-        for (k, v) in &env {
-            c.env(k, v);
-        }
-    } else {
-        let launch = Launch {
-            tool_files: tool_files(paths, &tool.meta.id),
-            cwd: program_host.parent().map(Path::to_path_buf).unwrap_or(paths.game.clone()),
-            program,
-            env,
-            saves: st.active_own_saves(paths),
-        };
-        fs::write(dir.join("launch.json"), serde_json::to_vec_pretty(&launch)?)?;
-        c.args(["tools", "sandbox"]).arg(&dir);
-    }
+    c.env_remove("LD_PRELOAD").args(["tools", "sandbox"]).arg(&dir);
     let terminal = unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 };
     let code = if terminal { c.status().context("starting the tool")?.code() } else { stream(c, &dir.join("log.txt"), out)? };
     rec.finished = Some(now());
     rec.exit_code = code;
-    if !a.live {
-        rec.outputs = scan_upper(&rec.upper);
-        if let Ok(m) = fs::read_to_string(rec.upper.join("archive/pc/mod/modlist.txt")) {
-            rec.load_first = load_first(&m, &rec.outputs);
-        }
+    rec.outputs = scan_upper(&rec.upper);
+    if let Ok(m) = fs::read_to_string(rec.upper.join("archive/pc/mod/modlist.txt")) {
+        rec.load_first = load_first(&m, &rec.outputs);
     }
+    rec.outputs.extend(changed_saves(&saves_before, &save_listing(&saves_dir)));
     fs::write(dir.join("run.json"), serde_json::to_vec_pretty(&rec)?)?;
     let _ = fs::remove_dir_all(dir.join("work"));
     prune(paths, 20);
@@ -1418,78 +1291,169 @@ mod tests {
 
     #[test]
     fn ripperdoc_gets_its_presets_first() {
-        let a = actions(&s(&["tools/VRAM RipperDoc/1 - Scan my mods.bat", "tools/VRAM RipperDoc/VramRipperdoc.exe"]));
+        let f = s(&["tools/VRAM RipperDoc/1 - Scan my mods.bat", "tools/VRAM RipperDoc/VramRipperdoc.exe"]);
+        let a = actions(&f);
         assert_eq!(a[0].id, "scan");
         assert!(a.iter().take_while(|a| a.preset).count() == 4);
         assert!(a.iter().any(|a| !a.preset && a.program.ends_with(".bat")));
         let m = a.iter().find(|a| a.id == "measure").unwrap();
         assert!(m.game_prefix && m.input.is_some());
+        // it reports and makes a texture mod: no window, no saves
+        assert!(a.iter().filter(|a| a.preset).all(|a| !a.interactive && !a.saves));
+        assert_eq!(known(&f).map(|k| k.kind), Some(ToolKind::TextureOptimizer));
     }
 
     #[test]
-    fn save_load_optimizers_helper_runs_live_with_python() {
-        let a = actions(&s(&["bin/x64/plugins/cyber_engine_tweaks/mods/saveLoadOptimizer/init.lua", "tools/SaveLoadOptimizer/profile.py"]));
+    fn the_save_editor_opens_a_window_on_the_saves_with_the_game_closed() {
+        let f = s(&[
+            "tools/Save Editor (Project CyberCAT-SimpleGUI)/CP2077SaveEditor.exe",
+            "tools/Save Editor (Project CyberCAT-SimpleGUI)/kraken.dll",
+        ]);
+        let a = actions(&f);
         let ids: Vec<&str> = a.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["status", "initialize", "prepare", "activate", "verify", "rollback"]);
-        assert!(a.iter().all(|a| a.runner == Runner::Python && a.live && a.program == "tools/SaveLoadOptimizer/profile.py"));
-        assert_eq!(a.iter().find(|a| a.id == "activate").unwrap().when, GameState::Closed);
-        // a profile.py anywhere else is somebody else's
-        assert!(actions(&s(&["tools/Other/profile.py"])).is_empty());
+        assert_eq!(ids, ["edit", "tools/Save Editor (Project CyberCAT-SimpleGUI)/CP2077SaveEditor.exe"]);
+        assert!(a[0].preset && a[0].interactive && a[0].saves && a[0].when == GameState::Closed && a[0].args.is_empty());
+        assert_eq!(known(&f).map(|k| k.kind), Some(ToolKind::SaveEditor));
+        // a program cpmm doesn't know may write saves too
+        let other = actions(&s(&["tools/X/x.exe"]));
+        assert!(!other[0].preset && other[0].saves);
+        assert_eq!(known(&s(&["tools/X/x.exe"])).map(|k| k.kind), None);
+    }
+
+    /// A data folder whose game sits in a Steam library, so the shared save folder (in the
+    /// game's compatdata) is inside it too.
+    fn fixture(tag: &str) -> Paths {
+        let d = std::env::temp_dir().join(format!("cpmm-tools-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let paths = Paths { data: d.join("data"), game: d.join("steamapps/common/Cyberpunk 2077"), cfg: Default::default() };
+        fs::create_dir_all(&paths.game).unwrap();
+        paths
+    }
+
+    fn put_save(saves: &Path, name: &str, text: &str) {
+        fs::create_dir_all(saves.join(name)).unwrap();
+        fs::write(saves.join(name).join("sav.dat"), text).unwrap();
     }
 
     #[test]
-    fn save_load_optimizer_progress_follows_its_files() {
-        let d = std::env::temp_dir().join(format!("cpmm-slo-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        let paths = Paths { data: d.join("data"), game: d.join("game"), cfg: Default::default() };
-        let (ow, files) = (paths.upper(), d.join("mod"));
-        let cet = "bin/x64/plugins/cyber_engine_tweaks/mods/saveLoadOptimizer";
-        fs::create_dir_all(files.join(cet)).unwrap();
-        fs::create_dir_all(ow.join(cet)).unwrap();
-        fs::create_dir_all(ow.join("tools/SaveLoadOptimizer")).unwrap();
-        let at = |p: Progress| (p.current, p.active);
-        assert_eq!(at(slo_progress_files(&paths, &files)), (0, false));
-        fs::write(ow.join(cet).join("build.json"), "{}").unwrap();
-        assert_eq!(at(slo_progress_files(&paths, &files)), (1, false));
-        let now = crate::safety::now_unix();
-        fs::write(ow.join(cet).join("capture.json"), format!(r#"{{"captured_at": {now}}}"#)).unwrap();
-        assert_eq!(at(slo_progress_files(&paths, &files)), (2, false));
-        let profile = |p: &str| fs::write(ow.join("tools/SaveLoadOptimizer/profile.json"), p).unwrap();
-        profile(r#"{"status": "staged", "baseline": 1048576, "candidate": 1310720}"#);
-        assert_eq!(at(slo_progress_files(&paths, &files)), (3, false));
-        profile(&format!(r#"{{"status": "configured_unverified", "activated_at": {}}}"#, now + 10));
-        assert_eq!(at(slo_progress_files(&paths, &files)), (4, true));
-        profile(&format!(r#"{{"status": "configured_unverified", "activated_at": {}}}"#, now - 10));
-        assert_eq!(at(slo_progress_files(&paths, &files)), (5, true));
-        profile(r#"{"status": "configured_readback_verified"}"#);
-        assert_eq!(at(slo_progress_files(&paths, &files)), (6, true));
-        profile(&format!(r#"{{"status": "rolled_back", "rolled_back_at": {}}}"#, now + 10));
-        assert_eq!(at(slo_progress_files(&paths, &files)), (1, false));
-        let _ = fs::remove_dir_all(&d);
+    fn the_prefix_links_the_saves_the_game_sees_for_the_active_profile() {
+        let paths = fixture("link");
+        let shared = crate::safety::shared_saves_dir(&paths);
+        put_save(&shared, "ManualSave-1", "x");
+        let user = paths.data.join("pfx/drive_c/users/steamuser");
+        let link = user.join("Saved Games/CD Projekt Red/Cyberpunk 2077");
+        // an earlier prefix linked the whole CD Projekt Red folder
+        fs::create_dir_all(user.join("Saved Games")).unwrap();
+        std::os::unix::fs::symlink(shared.parent().unwrap(), user.join("Saved Games/CD Projekt Red")).unwrap();
+
+        let mut st = crate::state::State::load(&paths).unwrap();
+        link_game_folders(&paths, &st, &user).unwrap();
+        assert!(!user.join("Saved Games/CD Projekt Red").is_symlink());
+        assert_eq!(fs::read_link(&link).unwrap(), shared);
+
+        // a profile with its own saves: those, not the shared ones
+        st.create_profile("Story", None, false).unwrap();
+        let own = st.set_own_saves(&paths, "Story", true).unwrap();
+        st.switch_profile("Story").unwrap();
+        link_game_folders(&paths, &st, &user).unwrap();
+        assert_eq!(fs::read_link(&link).unwrap(), own);
+        assert!(shared.join("ManualSave-1/sav.dat").is_file(), "relinking leaves the saves alone");
+
+        // back to a shared profile
+        st.switch_profile(crate::profiles::DEFAULT).unwrap();
+        link_game_folders(&paths, &st, &user).unwrap();
+        assert_eq!(fs::read_link(&link).unwrap(), shared);
+        let _ = fs::remove_dir_all(paths.data.parent().unwrap());
     }
 
     #[test]
-    fn an_ini_setting_is_read_from_its_section() {
-        let t = "\u{feff}[Rendering]\nDedicatedDecompressionMemoryBytes = 1\n\n[ResourceLoaderThrottler]\ndedicateddecompressionmemorybytes = 16777216\t\t; ~16MB\n";
-        assert_eq!(ini_value(t, "ResourceLoaderThrottler", "DedicatedDecompressionMemoryBytes").as_deref(), Some("16777216"));
+    fn changed_saves_are_found_by_size_and_time() {
+        let paths = fixture("changed");
+        let saves = paths.data.join("saves");
+        put_save(&saves, "ManualSave-1", "one");
+        put_save(&saves, "ManualSave-2", "two");
+        put_save(&saves, "AutoSave-0", "auto");
+        let before = save_listing(&saves);
+        fs::write(saves.join("ManualSave-1/sav.dat"), "edited").unwrap();
+        // same size, newer time
+        let f = fs::File::options().write(true).open(saves.join("ManualSave-2/sav.dat")).unwrap();
+        f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
+        fs::remove_dir_all(saves.join("AutoSave-0")).unwrap();
+        put_save(&saves, "ManualSave-3", "new");
+        let got: Vec<(String, OutputKind)> = changed_saves(&before, &save_listing(&saves)).into_iter().map(|o| (o.path, o.kind)).collect();
         assert_eq!(
-            ini_value(
-                "; [ResourceLoaderThrottler]\n; DedicatedDecompressionMemoryBytes = 5",
-                "ResourceLoaderThrottler",
-                "DedicatedDecompressionMemoryBytes"
-            ),
-            None
+            got,
+            vec![
+                ("AutoSave-0/sav.dat".to_string(), OutputKind::SaveRemoved),
+                ("ManualSave-1/sav.dat".into(), OutputKind::Save),
+                ("ManualSave-2/sav.dat".into(), OutputKind::Save),
+                ("ManualSave-3/sav.dat".into(), OutputKind::Save),
+            ]
         );
+        assert!(changed_saves(&before, &before).is_empty());
+        let _ = fs::remove_dir_all(paths.data.parent().unwrap());
     }
 
     #[test]
-    fn a_helper_is_found_in_a_mod_whatever_its_case() {
-        let d = std::env::temp_dir().join(format!("cpmm-tools-ci-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(d.join("tools/SaveLoadOptimizer")).unwrap();
-        fs::write(d.join("tools/SaveLoadOptimizer/profile.py"), "").unwrap();
-        assert_eq!(find_ci(&d, SLO).as_deref(), Some("tools/SaveLoadOptimizer/profile.py"));
-        assert_eq!(find_ci(&d, "tools/saveloadoptimizer/missing.py"), None);
+    fn a_run_that_can_write_saves_snapshots_them_first_and_lists_what_it_changed() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut paths = fixture("run");
+        let d = paths.data.parent().unwrap().to_path_buf();
+        let shared = crate::safety::shared_saves_dir(&paths);
+        put_save(&shared, "ManualSave-1", "original");
+        // a tool cpmm doesn't know, so it may write saves
+        fs::create_dir_all(tool_files(&paths, "editor").join("tools/Editor")).unwrap();
+        fs::write(tool_files(&paths, "editor").join("tools/Editor/editor.exe"), "").unwrap();
+        fs::write(tool_dir(&paths, "editor").join("tool.json"), r#"{"id": "editor", "name": "Editor"}"#).unwrap();
+        // a prefix that exists already (no wineboot)
+        fs::create_dir_all(prefix_dir(&paths).join("drive_c/users/steamuser")).unwrap();
+        fs::write(prefix_dir(&paths).join("system.reg"), "").unwrap();
+        // stands in for `cpmm tools sandbox`: notes the snapshots there are, then edits saves
+        let cpmm = d.join("cpmm");
+        let snaps = paths.data.join("save-snapshots");
+        fs::write(
+            &cpmm,
+            format!(
+                "#!/bin/sh\nls '{}' > '{}/seen'\nprintf edited > '{}/ManualSave-1/sav.dat'\nmkdir -p '{}/ManualSave-2' && printf new > '{}/ManualSave-2/sav.dat'\n",
+                snaps.display(),
+                d.display(),
+                shared.display(),
+                shared.display(),
+                shared.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&cpmm, fs::Permissions::from_mode(0o755)).unwrap();
+        let wine = Wine { name: "test wine".into(), wine: "/bin/false".into(), lib: None, games: false };
+        let st = crate::state::State::load(&paths).unwrap();
+        let tool = find(&paths, "editor").unwrap();
+
+        let mut events = vec![];
+        let r = run(&paths, &st, &wine, &tool, "tools/Editor/editor.exe", None, &[], &cpmm, &mut |e| match e {
+            ToolEvent::Snapshot(s) => events.push(format!("{s:?}")),
+            ToolEvent::Starting { .. } => events.push("starting".into()),
+            _ => {}
+        })
+        .unwrap();
+        let name = r.snapshot.clone().expect("a snapshot");
+        assert_eq!(events, [format!("Taken({name:?})"), "starting".into()]);
+        assert_eq!(fs::read_to_string(d.join("seen")).unwrap().trim(), name, "taken before the tool started");
+        assert_eq!(fs::read_to_string(snaps.join(&name).join("ManualSave-1/sav.dat")).unwrap(), "original");
+        assert_eq!(r.saves_dir.as_deref(), Some(shared.as_path()));
+        let saves: Vec<&str> = r.outputs.iter().filter(|o| o.kind == OutputKind::Save).map(|o| o.path.as_str()).collect();
+        assert_eq!(saves, ["ManualSave-1/sav.dat", "ManualSave-2/sav.dat"]);
+
+        // with snapshots turned off, the run says so and takes none
+        paths.cfg.snapshot_saves = false;
+        events.clear();
+        let r = run(&paths, &st, &wine, &tool, "tools/Editor/editor.exe", None, &[], &cpmm, &mut |e| {
+            if let ToolEvent::Snapshot(s) = e {
+                events.push(format!("{s:?}"))
+            }
+        })
+        .unwrap();
+        assert_eq!((r.snapshot, events), (None, vec!["Off".to_string()]));
+        assert_eq!(fs::read_dir(&snaps).unwrap().count(), 1);
         let _ = fs::remove_dir_all(&d);
     }
 
@@ -1497,10 +1461,6 @@ mod tests {
     fn args_get_the_game_folder_as_windows_sees_it() {
         let a = fill_args(&s(&["--game", "{game}", "--label", "{input}"]), Path::new("/home/u/Cyberpunk 2077"), "after");
         assert_eq!(a, s(&["--game", "Z:\\home\\u\\Cyberpunk 2077", "--label", "after"]));
-        assert_eq!(
-            fill_args(&s(&["--game", "{game_dir}"]), Path::new("/home/u/Cyberpunk 2077"), ""),
-            s(&["--game", "/home/u/Cyberpunk 2077"])
-        );
     }
 
     #[test]

@@ -368,11 +368,13 @@ pub enum ToolNote {
         trash: PathBuf,
     },
     PrefixSetup(PathBuf),
+    /// The save snapshot before an action that can write saves
+    Snapshot(crate::tools::SavesSnapshot),
     Starting {
         label: String,
         wine: String,
         game_prefix: bool,
-        live: bool,
+        interactive: bool,
     },
     /// A line the tool printed
     Output {

@@ -97,3 +97,17 @@ How a file in the overwrite folder relates to installed files: a deleted file, a
 
 **Shadowed mod file**:
 A file in the overwrite folder that hides the copy shipped by the enabled mod that would otherwise win.
+
+## Tools
+
+**Tool**:
+A Windows program that works on the modded game rather than being loaded by it (a texture optimiser, a save editor). Staged like a mod but never mounted in the game session.
+
+**Preset**:
+An action cpmm knows for a tool's program: its arguments, whether it needs the game closed, whether it is interactive (opens a window for the user) or unattended (runs without questions), and whether it can write saves. Any other program in a tool runs as it is and counts as able to write saves.
+
+**Tool run**:
+One run of a tool action in its own view of the game: the tool's files over the overwrite folder, the enabled mods and the game, with a scratch layer catching its writes. Saves are the exception: it sees the active profile's real save folder.
+
+**Run output**:
+What a tool run wrote, by kind: reports, game files (applied only by saving the run as a mod), load-order edits and deletions (never applied), and changed saves (already in effect; the run's save snapshot undoes them).

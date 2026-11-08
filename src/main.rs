@@ -796,11 +796,7 @@ fn real_main() -> Result<()> {
             ToolsCmd::Run { tool, action, input, extra } => {
                 let action = match action {
                     Some(a) => a,
-                    None => cpmm::tools::find(&paths, &State::load(&paths)?, &tool)?
-                        .actions
-                        .first()
-                        .map(|a| a.id.clone())
-                        .context("this tool has no programs")?,
+                    None => cpmm::tools::find(&paths, &tool)?.actions.first().map(|a| a.id.clone()).context("this tool has no programs")?,
                 };
                 act(Action::ToolRun { tool, action, input, extra })?
             }

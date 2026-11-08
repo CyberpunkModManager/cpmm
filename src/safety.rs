@@ -641,10 +641,16 @@ fn profile_saves_dir(paths: &Paths, st: &State, profile: Option<&str>) -> PathBu
     p.own_saves_dir(paths).unwrap_or_else(|| shared_saves_dir(paths))
 }
 
-/// The active profile's save folder, as the game sees it.
+/// The active profile's save folder, as the game sees it: its own saves if it has them,
+/// else the shared folder.
+pub fn active_saves_dir(paths: &Paths, st: &State) -> PathBuf {
+    profile_saves_dir(paths, st, None)
+}
+
+/// [`active_saves_dir`] for the state on disk.
 pub fn saves_dir(paths: &Paths) -> PathBuf {
     match State::load(paths) {
-        Ok(st) => profile_saves_dir(paths, &st, None),
+        Ok(st) => active_saves_dir(paths, &st),
         Err(_) => shared_saves_dir(paths),
     }
 }

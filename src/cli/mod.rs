@@ -546,25 +546,20 @@ pub fn tools(v: &query::ToolsView) {
         (None, Some(e)) => println!("can't run tools: {e}"),
         _ => {}
     }
+    println!("saves they see: {}", v.saves.display());
     if v.tools.is_empty() {
         println!("no tools installed (cpmm tools install <nexus id|download|archive>)");
     }
     for (i, t) in v.tools.iter().enumerate() {
-        println!(
-            "{:>3}  {:<28} {:<40} {}{}",
-            i + 1,
-            t.meta.id,
-            t.meta.name.chars().take(40).collect::<String>(),
-            t.meta.version,
-            t.from_mod.as_ref().map(|m| format!("  (comes with mod {m})")).unwrap_or_default()
-        );
-        if let Some(g) = &t.guide {
-            println!("       {g}");
+        println!("{:>3}  {:<28} {:<40} {}", i + 1, t.meta.id, t.meta.name.chars().take(40).collect::<String>(), t.meta.version);
+        if !t.about.is_empty() {
+            println!("       {}", t.about);
         }
         for a in &t.actions {
             let notes = [
+                (a.interactive, "opens a window"),
+                (a.saves, "can change saves: snapshot first"),
                 (a.game_prefix, "game's prefix"),
-                (a.live, "writes where the game sees them"),
                 (a.when == cpmm::tools::GameState::Closed, "game closed"),
             ];
             let notes: Vec<&str> = notes.iter().filter(|(on, _)| *on).map(|(_, n)| *n).collect();
@@ -587,13 +582,16 @@ pub fn tool_runs(runs: &[cpmm::tools::ToolRun]) {
         println!("no tool runs yet");
     }
     for r in runs {
+        let saves = r.count(K::Save) + r.count(K::SaveRemoved);
         println!(
-            "{:<44} {:<28} exit {:<4} {} report(s), {} game file(s){}",
+            "{:<44} {:<28} exit {:<4} {} report(s), {} game file(s){}{}{}",
             r.id,
             r.label.chars().take(28).collect::<String>(),
             r.exit_code.map(|c| c.to_string()).unwrap_or("-".into()),
             r.count(K::Report),
             r.count(K::GameFile),
+            if saves > 0 { format!(", {saves} save file(s) changed") } else { String::new() },
+            r.snapshot.as_ref().map(|s| format!(", snapshot {s}")).unwrap_or_default(),
             r.saved_as.as_ref().map(|m| format!(", saved as {m}")).unwrap_or_default()
         );
     }
